@@ -1,0 +1,33 @@
+[package]
+name = "searchos-application"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Application use cases: search, fetch, memory, cost orchestration (RFC-012 12.1)."
+
+[dependencies]
+searchos-storage-sqlite = { workspace = true }
+searchos-storage-fs = { workspace = true }
+searchos-fetch = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+searchos-domain = { workspace = true }
+searchos-policy = { workspace = true }
+searchos-query = { workspace = true }
+searchos-decision = { workspace = true }
+searchos-planner = { workspace = true }
+searchos-cost = { workspace = true }
+searchos-cache = { workspace = true }
+searchos-retrieval = { workspace = true }
+searchos-memory = { workspace = true }
+searchos-provider = { workspace = true }
+searchos-document = { workspace = true }
+searchos-observability = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

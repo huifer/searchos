@@ -1,0 +1,42 @@
+[package]
+name = "searchos-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Runtime assembly and lifecycle from config (RFC-002 core crate, RFC-006 6.5 data layout)."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+chrono = { workspace = true }
+async-trait = { workspace = true }
+rusqlite = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+searchos-domain = { workspace = true }
+searchos-policy = { workspace = true }
+searchos-query = { workspace = true }
+searchos-decision = { workspace = true }
+searchos-planner = { workspace = true }
+searchos-cost = { workspace = true }
+searchos-cache = { workspace = true }
+searchos-retrieval = { workspace = true }
+searchos-memory = { workspace = true }
+searchos-provider = { workspace = true }
+searchos-document = { workspace = true }
+searchos-application = { workspace = true }
+searchos-observability = { workspace = true }
+searchos-storage-fs = { workspace = true }
+searchos-storage-sqlite = { workspace = true }
+searchos-index-tantivy = { workspace = true }
+searchos-vector-lancedb = { workspace = true }
+searchos-extension = { workspace = true }
+searchos-crawler = { workspace = true }
+searchos-fetch = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
