@@ -9,10 +9,13 @@
 //! decision → plan → execute (local / external) → persist → final quality
 //! gate → response with cost + trace.
 
+pub mod analytics;
 pub mod fetch_service;
+pub mod merge;
 pub mod search_service;
 pub mod singleflight;
 
+pub use analytics::{AnalyticsQuery, AnalyticsQueryService};
 pub use fetch_service::{FetchService, FetchServiceImpl};
 pub use search_service::{SearchService, SearchServiceImpl};
 pub use singleflight::SingleflightCoordinator;
@@ -29,6 +32,9 @@ pub struct SearchOsApplication {
     pub fetch_service: Arc<dyn FetchService>,
     pub memory_service: Arc<dyn MemoryUseCase>,
     pub cost_service: Arc<dyn CostUseCase>,
+    /// RFC-026: single Analytics Query Service behind the Dashboard API.
+    /// The frontend never reads operational tables directly.
+    pub analytics_service: Arc<dyn analytics::AnalyticsQueryService>,
 }
 
 /// Memory use case (thin facade over MemoryService with namespace guard).
@@ -67,6 +73,34 @@ pub trait CostUseCase: Send + Sync {
         q: &searchos_domain::cost::CostQuery,
     ) -> Result<searchos_domain::cost::CostSummary, SearchOsError>;
     async fn singleflight_saved_micros(&self) -> Result<i64, SearchOsError>;
+
+    /// Savings / CPQPA report against an equivalent-quality external-only
+    /// baseline (RFC-006 6.10, Appendix C).
+    async fn savings(
+        &self,
+        _baseline_per_query_micros: i64,
+    ) -> Result<searchos_domain::cost::SavingsReport, SearchOsError> {
+        Ok(searchos_domain::cost::SavingsReport {
+            currency: "USD".into(),
+            is_estimate: true,
+            ..Default::default()
+        })
+    }
+    /// Budget reservation ledger view (RFC-004 v1.1 15).
+    async fn reservations(&self, _limit: u32) -> Result<serde_json::Value, SearchOsError> {
+        Ok(serde_json::json!({ "reservations": [] }))
+    }
+    /// Provider-bill reconciliation: estimated cost is never rewritten
+    /// (RFC-006 6.7).
+    async fn reconcile(
+        &self,
+        _cost_event_id: &str,
+        _actual_cost_micros: i64,
+        _source: &str,
+        _currency: &str,
+    ) -> Result<(), SearchOsError> {
+        Ok(())
+    }
 }
 
 /// Memory facade delegating to a [`searchos_memory::MemoryService`].

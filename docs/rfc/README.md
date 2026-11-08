@@ -52,6 +52,26 @@ SearchOS 负责前两者及其成本优化，不在核心产品中重新实现�
 | RFC-015 | Observability & Evaluation                | 质量评估、成本指标、实验             | P0  |
 | RFC-016 | Deployment, Release & Engineering Roadmap | 构建、发布、部署、实施计划            | P0  |
 
+> 源对话包含 25 份基线 RFC、RFC-004 v1.1 工程细化，以及后续 UI 专项的
+> RFC-026/027/028。上述 16 份是浓缩基线；附录 17–24 补齐数据库、CLI、ADR、
+> DoD、执行流程、最终决策、决策引擎工程基线、API / 安全 / 可靠性 / 治理基线；
+> 新增 RFC-026–028 定义可视化与分析层、Analytics Read Model、Dashboard API
+> 与前端集成。功能遗漏分析见 [`docs/gap-analysis.md`](../gap-analysis.md)。
+
+| 附录 | 名称 |
+| --- | --- |
+| Part 17 | Database Schema Baseline |
+| Part 18 | CLI Command Contract |
+| Part 19 | ADR Decisions |
+| Part 20 | Definition of Done |
+| Part 21 | GitHub Engineering Execution |
+| Part 22 | Final Architecture Decisions |
+| Part 23 | Search Decision Engine — Engineering Baseline (RFC-004 v1.1) |
+| Part 24 | Product API, Security, Reliability & Governance Baseline (RFC-017…025) |
+| RFC-026 | Visualization & Analytics Architecture |
+| RFC-027 | Analytics Data Model & Aggregation |
+| RFC-028 | Dashboard API & Frontend Integration |
+
 ## 0.2 RFC 规范
 
 每份 RFC 必须包含：
@@ -104,6 +124,6 @@ RFC 不允许仅描述功能目标而缺少可验证的接口、数据结构和�
 2. **跨 Agent 知识隔离**：默认 Workspace 隔离，显式授权后才共享，不应该默认全局共享。
 3. **质量评估边界**：SearchOS 验证证据质量，不保证上层 LLM 最终答案绝对正确。
 
-**RFC Suite Version:** 1.0
-**Status:** Proposed Engineering Baseline
-**Next Step:** Convert RFCs into GitHub Issues, dependency graph, implementation tasks, and acceptance tests.
+**RFC Suite Version:** 1.0 (+ Annexes 23/24, feature-completion pass)
+**Status:** Implemented Engineering Baseline
+**Next Step:** Keep RFC-004 v1.1 acceptance tests (Part 23) green on every change; revisit deferred distributed/WASM capabilities in v1.5+.

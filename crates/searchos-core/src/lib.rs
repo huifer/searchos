@@ -9,7 +9,7 @@ pub mod config;
 pub mod hash_util;
 pub mod runtime;
 
-pub use config::{load_config, SearchOsConfig};
+pub use config::{load_config, load_config_report, SearchOsConfig};
 pub use runtime::SearchOsRuntime;
 
 /// Crate version.

@@ -2,6 +2,9 @@
 # 示例 SearchOS 配置
 # This file is provided as a reference. Copy to ~/.searchos/config/config.yaml and edit.
 # 本文件仅供参考。复制为 ~/.searchos/config/config.yaml 后按需修改。
+# Validate with: searchos --format json config validate
+
+config_version: 1             # RFC-019 19.4: schema version
 
 app:
   name: searchos
@@ -12,6 +15,14 @@ server:
   enabled: true
   host: 127.0.0.1
   port: 8787
+  api_version: "1"            # explicit transport version; /v1 routes too
+  rate_limit_per_minute: 600   # 0 disables; HTTP 429 when exceeded
+  cors_origin: http://localhost:3100  # Next.js console origin; empty disables CORS
+  # Bind a bearer token to exactly one workspace (RFC-017 17.6).
+  # Leave empty for local dev; requires server.auth_token when non-empty.
+  workspace_tokens: {}
+  # token-a: ws-a
+  # auth_token: from SEARCHOS_AUTH_TOKEN, never plaintext here
 
 storage:
   metadata: sqlite            # sqlite | postgres
@@ -35,6 +46,39 @@ intelligence:
   query_expansion: true
   reranking: true
   answer_generation: false
+
+indexes:
+  rebuild_on_start: false
+  verify_on_start: true
+
+policies:
+  default_profile: general
+  minimum_quality: 0.6
+  require_provenance: true
+
+budgets:
+  default_max_external_queries: 5
+  default_max_total_cost_micros: 100000
+  baseline_per_query_micros: 5000   # external-only baseline for savings reports
+
+crawler:
+  default_timeout_ms: 15000
+  max_concurrent: 4
+  respect_robots: true
+
+extensions:
+  allow_native: true
+  wasm_enabled: false          # ADR-024: later phase
+
+security:
+  ssrf_protection: true
+  max_response_bytes: 10485760
+  max_redirects: 5
+
+observability:
+  log_level: warn
+  trace_retention_days: 30
+  metrics_enabled: true
 
 providers:
   tavily:

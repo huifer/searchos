@@ -37,6 +37,15 @@ struct Counters {
     cost_micros: AtomicI64,
     index_outbox_processed: AtomicU64,
     index_outbox_dead: AtomicU64,
+    external_calls: AtomicU64,
+    external_avoided: AtomicU64,
+    valid_local_resolutions: AtomicU64,
+}
+
+/// Status counters are a small map; search statuses are low-cardinality.
+#[derive(Debug, Default)]
+struct StatusCounts {
+    inner: Mutex<std::collections::BTreeMap<String, u64>>,
 }
 
 /// Global in-process metrics registry.
@@ -44,6 +53,7 @@ struct Counters {
 pub struct MetricsRegistry {
     counters: Counters,
     search_latencies: Mutex<Vec<f64>>,
+    statuses: StatusCounts,
 }
 
 impl MetricsRegistry {
@@ -129,6 +139,29 @@ impl MetricsRegistry {
             .cost_micros
             .fetch_add(micros, Ordering::Relaxed);
     }
+    /// Records an explicit search task status (RFC-002 2.8).
+    pub fn record_status(&self, status: &str) {
+        *self
+            .statuses
+            .inner
+            .lock()
+            .unwrap()
+            .entry(status.to_string())
+            .or_insert(0) += 1;
+    }
+    pub fn record_external_call(&self) {
+        self.counters.external_calls.fetch_add(1, Ordering::Relaxed);
+    }
+    pub fn record_external_avoided(&self) {
+        self.counters
+            .external_avoided
+            .fetch_add(1, Ordering::Relaxed);
+    }
+    pub fn record_valid_local_resolution(&self) {
+        self.counters
+            .valid_local_resolutions
+            .fetch_add(1, Ordering::Relaxed);
+    }
     pub fn record_outbox(&self, processed: bool, dead: bool) {
         if processed {
             self.counters
@@ -194,6 +227,20 @@ impl MetricsRegistry {
             },
             index_outbox_processed: c.index_outbox_processed.load(Ordering::Relaxed),
             index_outbox_dead: c.index_outbox_dead.load(Ordering::Relaxed),
+            status_counts: self.statuses.inner.lock().unwrap().clone(),
+            external_avoidance_rate: rate(c.external_avoided.load(Ordering::Relaxed), requests),
+            valid_local_resolution_rate: rate(
+                c.valid_local_resolutions.load(Ordering::Relaxed),
+                requests,
+            ),
+            cost_per_quality_passing_answer_micros: {
+                let passing = c.quality_pass.load(Ordering::Relaxed);
+                if passing > 0 {
+                    c.cost_micros.load(Ordering::Relaxed) / passing as i64
+                } else {
+                    0
+                }
+            },
         }
     }
 }
@@ -226,6 +273,15 @@ pub struct MetricsSnapshot {
     pub crawler_success_rate: f64,
     pub index_outbox_processed: u64,
     pub index_outbox_dead: u64,
+    /// Explicit task statuses (RFC-002 2.8) — never silently collapse
+    /// partial / insufficient results into `completed`.
+    pub status_counts: std::collections::BTreeMap<String, u64>,
+    /// External searches avoided while still passing the quality gate.
+    pub external_avoidance_rate: f64,
+    /// Local resolutions that passed the final quality gate (Appendix C).
+    pub valid_local_resolution_rate: f64,
+    /// Total cost / quality-passing tasks (CPQPA).
+    pub cost_per_quality_passing_answer_micros: i64,
 }
 
 #[cfg(test)]

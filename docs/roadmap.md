@@ -47,7 +47,7 @@ separation (ADR-014), and Open Core (ADR-020).
 
 ## Related RFCs
 
-- [RFC-002: Core Crate Specification](rfc/rfc-002-core-crate-specification.md) — workspace, crates, traits.
-- [RFC-003: Extension System](rfc/rfc-003-extension-system.md) — extension protocol & crawler isolation.
-- [RFC-004: Storage & Memory](rfc/rfc-004-storage-and-memory.md) — schema, indexing, memory lifecycle.
-- [RFC-005: Execution Plan](rfc/rfc-005-execution-plan.md) — issues, dependency order, acceptance gates.
+- [RFC-002: Core Crate Specification](rfc/archive/rfc-002-core-crate-specification.md) — workspace, crates, traits.
+- [RFC-003: Extension System](rfc/archive/rfc-003-extension-system.md) — extension protocol & crawler isolation.
+- [RFC-004: Storage & Memory](rfc/archive/rfc-004-storage-and-memory.md) — schema, indexing, memory lifecycle.
+- [RFC-005: Execution Plan](rfc/archive/rfc-005-execution-plan.md) — issues, dependency order, acceptance gates.

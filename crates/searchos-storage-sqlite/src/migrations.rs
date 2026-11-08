@@ -14,10 +14,11 @@ pub struct Migration {
 
 /// All migrations in order. Version 1 = Part 17 core schema + the additional
 /// required tables listed in 17.13.
-pub static MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "part17_schema_baseline",
-    sql: r#"
+pub static MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "part17_schema_baseline",
+        sql: r#"
 -- 17.1 Workspaces
 CREATE TABLE IF NOT EXISTS workspaces (
     id TEXT PRIMARY KEY,
@@ -431,7 +432,97 @@ CREATE TABLE IF NOT EXISTS singleflight_records (
 );
 CREATE INDEX IF NOT EXISTS idx_singleflight_fp ON singleflight_records(fingerprint);
 "#,
-}];
+    },
+    // v2 — feature-completion pass against the source RFC baseline:
+    // idempotent request replay, budget reservation/settlement, provider bill
+    // reconciliation, staged decision traces, and refresh outbox events.
+    Migration {
+        version: 2,
+        name: "decision_gap_and_governance_completion",
+        sql: r#"
+-- RFC-014 14.7 / RFC-004 v1.1 14.2: request-level idempotency.
+CREATE TABLE IF NOT EXISTS request_idempotency (
+    request_id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    status TEXT NOT NULL,               -- running | completed | failed
+    response_json TEXT,
+    created_at TEXT NOT NULL,
+    completed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_idempotency_ws ON request_idempotency(workspace_id, created_at);
+
+-- RFC-004 v1.1 15 / RFC-006 6.11: reserve -> execute -> settle.
+CREATE TABLE IF NOT EXISTS budget_reservations (
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL,
+    trace_id TEXT,
+    estimated_cost_micros INTEGER NOT NULL,
+    spent_cost_micros INTEGER NOT NULL DEFAULT 0,
+    currency TEXT NOT NULL,
+    status TEXT NOT NULL,               -- reserved | settled | released | exceeded
+    created_at TEXT NOT NULL,
+    settled_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_reservations_task ON budget_reservations(task_id);
+
+-- RFC-006 6.7: estimated cost is never presented as a confirmed bill.
+CREATE TABLE IF NOT EXISTS cost_reconciliations (
+    id TEXT PRIMARY KEY,
+    cost_event_id TEXT NOT NULL,
+    actual_cost_micros INTEGER NOT NULL,
+    source TEXT NOT NULL,               -- provider_billing | local_measurement | user
+    currency TEXT NOT NULL,
+    at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_reconciliation_event ON cost_reconciliations(cost_event_id);
+
+-- RFC-004 v1.1 11.1: structured, immutable decision stage traces.
+ALTER TABLE decision_traces ADD COLUMN stages_json TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE decision_traces ADD COLUMN final_strategy TEXT;
+ALTER TABLE decision_traces ADD COLUMN final_outcome TEXT;
+"#,
+    },
+    // v3 - RFC-026/027/028 Visualization & Analytics Layer.
+    // Analytics events are an append-only ledger; the read model is the ONLY
+    // source the Web Dashboard is allowed to query.
+    Migration {
+        version: 3,
+        name: "analytics_event_store_and_read_model",
+        sql: r#"
+CREATE TABLE IF NOT EXISTS analytics_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id TEXT NOT NULL UNIQUE,
+    event_type TEXT NOT NULL,
+    schema_version INTEGER NOT NULL DEFAULT 1,
+    occurred_at TEXT NOT NULL,
+    recorded_at TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    request_id TEXT,
+    execution_id TEXT,
+    source_module TEXT NOT NULL,
+    correlation_id TEXT,
+    payload_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_analytics_events_type_time
+    ON analytics_events(event_type, occurred_at);
+CREATE INDEX IF NOT EXISTS idx_analytics_events_workspace
+    ON analytics_events(workspace_id, occurred_at);
+
+CREATE TABLE IF NOT EXISTS analytics_read_models (
+    model_key TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    bucket_start TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    aggregation_version TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(model_key, workspace_id, bucket_start)
+);
+CREATE INDEX IF NOT EXISTS idx_analytics_read_models_key
+    ON analytics_read_models(model_key, bucket_start);
+"#,
+    },
+];
 
 /// Applies pending migrations to a connection. Released migrations are
 /// immutable; schema changes append new steps.
@@ -457,11 +548,12 @@ mod tests {
     #[test]
     fn migrates_fresh_db_and_is_idempotent() {
         let conn = Connection::open_in_memory().unwrap();
+        let expected = MIGRATIONS.last().unwrap().version;
         let v = migrate(&conn).unwrap();
-        assert_eq!(v, 1);
+        assert_eq!(v, expected);
         // Idempotent: second run applies nothing.
         let v2 = migrate(&conn).unwrap();
-        assert_eq!(v2, 1);
+        assert_eq!(v2, expected);
 
         // Core tables exist.
         for t in [
@@ -498,6 +590,11 @@ mod tests {
             "decision_traces",
             "memory_entries",
             "singleflight_records",
+            "request_idempotency",
+            "budget_reservations",
+            "cost_reconciliations",
+            "analytics_events",
+            "analytics_read_models",
         ] {
             let count: i64 = conn
                 .query_row(

@@ -10,13 +10,19 @@
 //!    partial results instead.
 
 use async_trait::async_trait;
-use searchos_domain::decision::{CoverageGap, DecisionReason, DecisionTrace, SearchDecision};
+use searchos_domain::decision::{
+    CoverageGap, DecisionReason, DecisionTrace, GapPriority, GapResolutionStrategy,
+    RequirementStatus, SearchDecision,
+};
 use searchos_domain::request::{FreshnessRequirement, SearchBudget, SearchMode};
 use searchos_domain::retrieval::RetrievalCandidate;
 use searchos_domain::{DocumentId, Money, SearchOsError, TaskId, TraceId};
 use searchos_policy::SearchProfile;
 use searchos_query::QueryAnalysis;
 use serde::{Deserialize, Serialize};
+
+use crate::gap::GapAnalyzer;
+use crate::state::{DecisionStage, DecisionState, DecisionStateMachine, StageStatus};
 
 /// One locally retrieved candidate with gate-facing metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -63,6 +69,9 @@ pub struct DecisionInput {
     /// Constraints merged into the source policy by the caller.
     pub required_domains: Vec<String>,
     pub excluded_domains: Vec<String>,
+    /// Local documents known to be stale (RFC-004 v1.1 10.1: prefer
+    /// RefreshExistingSource instead of deleting or re-buying knowledge).
+    pub stale_document_ids: Vec<DocumentId>,
 }
 
 impl DecisionInput {
@@ -155,33 +164,238 @@ impl DefaultDecisionEngine {
             || !input.required_domains.is_empty()
     }
 
-    /// Coverage gap computation for hybrid decisions (Rule 4).
+    /// Coverage gap computation (Rule 4) with structured requirement states
+    /// and minimal acquisition strategies (RFC-004 v1.1 6.7/10.1).
     fn coverage_gaps(input: &DecisionInput) -> Vec<CoverageGap> {
-        // Reuse the query expander's gap questions: uncovered sub-questions.
-        input
-            .required_subquestions
+        let covered_texts: Vec<String> = input
+            .hard_passing()
             .iter()
-            .filter(|sq| {
-                // A sub-question is "covered" when some hard-passing
-                // candidate matches most of its tokens.
-                let passing = input.hard_passing();
-                let tokens = crate::quality::content_tokens(sq);
-                !passing.iter().any(|c| {
-                    let text = format!(
-                        "{} {} {}",
-                        c.candidate.title.as_deref().unwrap_or("").to_lowercase(),
-                        c.candidate.url.to_lowercase(),
-                        c.candidate.snippet.to_lowercase()
-                    );
-                    let hits = tokens.iter().filter(|t| text.contains(t.as_str())).count();
-                    tokens.is_empty() || hits * 2 >= tokens.len()
-                })
+            .map(|c| {
+                format!(
+                    "{} {} {}",
+                    c.candidate.title.as_deref().unwrap_or(""),
+                    c.candidate.url,
+                    c.candidate.snippet
+                )
             })
-            .map(|sq| CoverageGap {
-                question: sq.clone(),
-                missing_kind: "evidence".into(),
+            .collect();
+        let needs = GapAnalyzer::analyze(
+            &input.required_subquestions,
+            &covered_texts,
+            &input.required_domains,
+            Self::query_strict_freshness(input) || Self::profile_strict_freshness(input),
+            !input.stale_document_ids.is_empty(),
+        );
+        needs
+            .into_iter()
+            .filter(|n| n.is_open())
+            .map(|n| CoverageGap {
+                question: n.description,
+                missing_kind: if n.status == RequirementStatus::PartiallyCovered {
+                    "partial_evidence".into()
+                } else {
+                    "evidence".into()
+                },
+                status: n.status,
+                priority: n.priority,
+                strategy: n.strategy,
+                requirement_id: n.id,
             })
             .collect()
+    }
+
+    /// Strategy label attached to a decision trace (RFC-004 v1.1 8.2).
+    fn strategy_for(decision: &SearchDecision, mode: SearchMode) -> &'static str {
+        match decision {
+            SearchDecision::LocalOnly { .. } => "local_resolve",
+            SearchDecision::LocalWithRefresh { .. } => "local_then_refresh",
+            SearchDecision::Hybrid { .. } if mode == SearchMode::ExternalFirst => {
+                "external_then_local"
+            }
+            SearchDecision::Hybrid { .. } => "local_and_external_parallel",
+            SearchDecision::ExternalOnly { reason } => {
+                if *reason == DecisionReason::ExternalFirstRequested {
+                    "external_then_local"
+                } else {
+                    "external_only"
+                }
+            }
+            SearchDecision::Reject { .. } => "reject",
+        }
+    }
+
+    /// Walks the canonical state machine, marking unused stages `skipped`,
+    /// and returns the immutable stage records (RFC-004 v1.1 7/11).
+    ///
+    /// Every transition is legal by construction; the state machine still
+    /// validates each jump so a future edit cannot silently add an illegal
+    /// one.
+    fn trace_stages(
+        decision: &SearchDecision,
+        mode: SearchMode,
+    ) -> Vec<searchos_domain::decision::DecisionStageTrace> {
+        let mut m = DecisionStateMachine::new();
+        let local_used = mode != SearchMode::ExternalOnly;
+        let external_used = decision.requires_external();
+        let budget_rejected = matches!(
+            decision,
+            SearchDecision::Reject {
+                reason: DecisionReason::BudgetExceeded,
+                ..
+            }
+        );
+        let step = |m: &mut DecisionStateMachine,
+                    to: DecisionState,
+                    stage: DecisionStage,
+                    used: bool,
+                    status: StageStatus,
+                    output: &str,
+                    reasons: Vec<String>| {
+            m.transition(to).expect("canonical decision path");
+            m.record(
+                stage,
+                if used { status } else { StageStatus::Skipped },
+                0,
+                stage.as_str(),
+                output,
+                reasons,
+            );
+        };
+        step(
+            &mut m,
+            DecisionState::Validating,
+            DecisionStage::Validation,
+            true,
+            StageStatus::Completed,
+            "request validated",
+            vec![],
+        );
+        step(
+            &mut m,
+            DecisionState::PolicyResolved,
+            DecisionStage::PolicyResolution,
+            true,
+            StageStatus::Completed,
+            "profile resolved",
+            vec![],
+        );
+        step(
+            &mut m,
+            DecisionState::QueryUnderstood,
+            DecisionStage::QueryUnderstanding,
+            true,
+            StageStatus::Completed,
+            "intent classified",
+            vec![],
+        );
+        step(
+            &mut m,
+            DecisionState::LocalRetrieving,
+            DecisionStage::LocalRetrieval,
+            local_used,
+            StageStatus::Completed,
+            "local candidates retrieved",
+            vec![],
+        );
+        step(
+            &mut m,
+            DecisionState::LocalEvaluating,
+            DecisionStage::EvidenceEvaluation,
+            local_used,
+            StageStatus::Completed,
+            "evidence evaluated",
+            vec![],
+        );
+        step(
+            &mut m,
+            DecisionState::QualityChecking,
+            DecisionStage::QualityGate,
+            local_used,
+            if external_used {
+                StageStatus::Partial
+            } else {
+                StageStatus::Completed
+            },
+            "quality gate",
+            vec![decision.reason().code().into()],
+        );
+        step(
+            &mut m,
+            DecisionState::GapAnalyzing,
+            DecisionStage::GapAnalysis,
+            external_used,
+            StageStatus::Completed,
+            "missing requirements identified",
+            vec![],
+        );
+        step(
+            &mut m,
+            DecisionState::PlanningExternal,
+            DecisionStage::ExternalPlanning,
+            external_used,
+            if budget_rejected {
+                StageStatus::Failed
+            } else {
+                StageStatus::Completed
+            },
+            "targeted queries generated",
+            if budget_rejected {
+                vec!["budget_exceeded".into()]
+            } else {
+                vec![]
+            },
+        );
+        if budget_rejected {
+            m.transition(DecisionState::BudgetExceeded).unwrap();
+            return m.into_stages();
+        }
+        step(
+            &mut m,
+            DecisionState::SelectingProvider,
+            DecisionStage::ProviderSelection,
+            external_used,
+            StageStatus::Completed,
+            "provider selected",
+            vec![],
+        );
+        step(
+            &mut m,
+            DecisionState::ExecutingExternal,
+            DecisionStage::ExternalExecution,
+            external_used,
+            StageStatus::Completed,
+            "external acquisition",
+            vec![],
+        );
+        step(
+            &mut m,
+            DecisionState::MergingEvidence,
+            DecisionStage::EvidenceMerge,
+            external_used,
+            StageStatus::Completed,
+            "evidence merged",
+            vec![],
+        );
+        step(
+            &mut m,
+            DecisionState::FinalQualityChecking,
+            DecisionStage::FinalQualityGate,
+            external_used,
+            StageStatus::Completed,
+            "final quality gate",
+            vec![],
+        );
+        step(
+            &mut m,
+            DecisionState::PersistingKnowledge,
+            DecisionStage::Persistence,
+            external_used,
+            StageStatus::Completed,
+            "knowledge persisted",
+            vec![],
+        );
+        m.transition(DecisionState::Completed).unwrap();
+        m.into_stages()
     }
 }
 
@@ -217,7 +431,39 @@ impl DecisionEngine for DefaultDecisionEngine {
             }
         }
 
-        // Mode-forced shortcuts (ExternalOnly / LocalOnly).
+        // ExternalOnly: never intercepted by local cache, and no local
+        // retrieval by default (RFC-004 v1.1 9.5).
+        if input.mode == SearchMode::ExternalOnly {
+            let decision = SearchDecision::ExternalOnly {
+                reason: DecisionReason::ModeForcesExternal,
+            };
+            let trace = self.build_trace(
+                &trace_id,
+                &task_id,
+                &input,
+                &decision,
+                0,
+                &Money::zero(&input.currency),
+            );
+            return Ok((decision, trace));
+        }
+        // ExternalFirst: external evidence is primary, local knowledge is a
+        // supplement in the merge stage (RFC-004 v1.1 9.4). The pipeline
+        // performs the local retrieval + merge using the original mode.
+        if input.mode == SearchMode::ExternalFirst {
+            let decision = SearchDecision::ExternalOnly {
+                reason: DecisionReason::ExternalFirstRequested,
+            };
+            let trace = self.build_trace(
+                &trace_id,
+                &task_id,
+                &input,
+                &decision,
+                input.local_candidates.len(),
+                &Money::zero(&input.currency),
+            );
+            return Ok((decision, trace));
+        }
         if !local_allowed {
             let decision = SearchDecision::ExternalOnly {
                 reason: DecisionReason::ModeForcesExternal,
@@ -334,10 +580,11 @@ impl DecisionEngine for DefaultDecisionEngine {
             }
             let mut gaps = Self::coverage_gaps(&input);
             if gaps.is_empty() {
-                gaps.push(CoverageGap {
-                    question: input.analysis.normalized.clone(),
-                    missing_kind: "fresh_evidence".into(),
-                });
+                gaps.push(
+                    CoverageGap::new(input.analysis.normalized.clone(), "fresh_evidence")
+                        .with_strategy(GapResolutionStrategy::RefreshExistingSource)
+                        .with_priority(GapPriority::High),
+                );
             }
             let decision = SearchDecision::Hybrid {
                 missing_requirements: gaps,
@@ -382,13 +629,33 @@ impl DecisionEngine for DefaultDecisionEngine {
             .gate
             .evaluate_set(&evidence, &relevances, &input.required_subquestions);
 
-        // Rule 3: stale documents should be refreshed even when enough
-        // non-stale evidence exists.
-        let stale_ids = vec![]; // filled by caller via stale port when used
-
+        // Rule 3 / RFC-004 v1.1 10.1: when the corpus contains stale
+        // documents, prefer RefreshExistingSource (re-fetch the same URL)
+        // over buying a fresh full external search. Strict-freshness queries
+        // were already escalated above and never take this path.
         if verdict.passed() {
             let decision = SearchDecision::LocalOnly {
                 reason: DecisionReason::LocalEvidencePassedQualityGate,
+            };
+            let trace = self.build_trace(
+                &trace_id,
+                &task_id,
+                &input,
+                &decision,
+                local_candidates_count,
+                &Money::zero(&input.currency),
+            );
+            return Ok((decision, trace));
+        }
+
+        // Refresh over re-buying (RFC-004 v1.1 10.1).
+        if !input.stale_document_ids.is_empty()
+            && !Self::query_strict_freshness(&input)
+            && !Self::profile_strict_freshness(&input)
+        {
+            let decision = SearchDecision::LocalWithRefresh {
+                documents: input.stale_document_ids.clone(),
+                reason: DecisionReason::LocalEvidenceStale,
             };
             let trace = self.build_trace(
                 &trace_id,
@@ -411,10 +678,10 @@ impl DecisionEngine for DefaultDecisionEngine {
             }
             let decision = if gaps.is_empty() {
                 SearchDecision::Hybrid {
-                    missing_requirements: vec![CoverageGap {
-                        question: input.analysis.normalized.clone(),
-                        missing_kind: "fresh_evidence".into(),
-                    }],
+                    missing_requirements: vec![CoverageGap::new(
+                        input.analysis.normalized.clone(),
+                        "fresh_evidence",
+                    )],
                     reason: DecisionReason::LocalCoverageInsufficient,
                 }
             } else {
@@ -434,23 +701,7 @@ impl DecisionEngine for DefaultDecisionEngine {
             return Ok((decision, trace));
         }
 
-        // Nothing usable locally (Rule 3 / fail): external, or refresh.
-        if !stale_ids.is_empty() {
-            let decision = SearchDecision::LocalWithRefresh {
-                documents: stale_ids,
-                reason: DecisionReason::LocalEvidenceStale,
-            };
-            let trace = self.build_trace(
-                &trace_id,
-                &task_id,
-                &input,
-                &decision,
-                local_candidates_count,
-                &Money::zero(&input.currency),
-            );
-            return Ok((decision, trace));
-        }
-
+        // Nothing usable locally (Rule 3 / fail): external acquisition.
         let decision = SearchDecision::ExternalOnly {
             reason: DecisionReason::NoValidExecutionPath,
         };
@@ -495,6 +746,19 @@ impl DefaultDecisionEngine {
             estimated_cost: estimated_cost.clone(),
             actual_cost: None,
             decision_at: chrono::Utc::now(),
+            stages: Self::trace_stages(decision, input.mode),
+            final_strategy: Some(Self::strategy_for(decision, input.mode).into()),
+            final_outcome: Some(match decision {
+                SearchDecision::Reject { reason } => {
+                    if *reason == DecisionReason::BudgetExceeded {
+                        "budget_exceeded".into()
+                    } else {
+                        "failed".into()
+                    }
+                }
+                SearchDecision::Hybrid { .. } => "partial_then_external".into(),
+                _ => "completed".into(),
+            }),
         }
     }
 }
@@ -552,6 +816,7 @@ mod tests {
             required_subquestions: vec![],
             required_domains: vec![],
             excluded_domains: vec![],
+            stale_document_ids: vec![],
         }
     }
 
@@ -701,5 +966,87 @@ mod tests {
     #[test]
     fn normalize_still_exported_for_callers() {
         assert!(!normalize_query("A  B").is_empty());
+    }
+
+    #[tokio::test]
+    async fn external_first_is_distinct_from_external_only() {
+        // RFC-004 v1.1 9.4: external evidence primary, local supplements.
+        let inp = input(
+            "What is Tokio?",
+            "general",
+            SearchMode::ExternalFirst,
+            vec![candidate("https://tokio.rs", "Tokio", true)],
+        );
+        let (d, t) = engine().decide(inp).await.unwrap();
+        assert!(matches!(
+            d,
+            SearchDecision::ExternalOnly {
+                reason: DecisionReason::ExternalFirstRequested,
+                ..
+            }
+        ));
+        assert_eq!(t.final_strategy.as_deref(), Some("external_then_local"));
+    }
+
+    #[tokio::test]
+    async fn stale_documents_trigger_refresh_not_deletion() {
+        // RFC-004 v1.1 10.1: RefreshExistingSource is preferred.
+        let mut inp = input(
+            "what is raft consensus algorithm",
+            "general",
+            SearchMode::LocalFirst,
+            vec![candidate("https://raft.github.io", "Raft", false)],
+        );
+        inp.stale_document_ids = vec![inp.local_candidates[0].candidate.document_id.clone()];
+        let (d, _) = engine().decide(inp).await.unwrap();
+        assert!(
+            matches!(d, SearchDecision::LocalWithRefresh { .. }),
+            "expected LocalWithRefresh, got {d:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn trace_contains_structured_stages() {
+        let inp = input(
+            "What is Tokio?",
+            "general",
+            SearchMode::ExternalOnly,
+            vec![],
+        );
+        let (_, t) = engine().decide(inp).await.unwrap();
+        assert!(!t.stages.is_empty(), "every decision records stage traces");
+        assert_eq!(t.stages[0].stage, "validation");
+        assert_eq!(t.final_strategy.as_deref(), Some("external_only"));
+        assert!(t
+            .stages
+            .iter()
+            .any(|s| s.stage == "local_retrieval" && s.status == "skipped"));
+    }
+
+    #[tokio::test]
+    async fn hybrid_gaps_carry_status_priority_and_strategy() {
+        let q = "compare tokio and axum performance";
+        let inp = input(
+            q,
+            "research",
+            SearchMode::LocalFirst,
+            vec![candidate("https://tokio.rs", "Tokio perf", true)],
+        );
+        let (d, _) = engine().decide(inp).await.unwrap();
+        match d {
+            SearchDecision::Hybrid {
+                missing_requirements,
+                ..
+            } => {
+                assert!(!missing_requirements.is_empty());
+                assert!(missing_requirements
+                    .iter()
+                    .all(|g| !g.requirement_id.is_empty()));
+                assert!(missing_requirements
+                    .iter()
+                    .any(|g| g.question.to_lowercase().contains("axum")));
+            }
+            other => panic!("expected hybrid, got {other:?}"),
+        }
     }
 }

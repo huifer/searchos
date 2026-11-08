@@ -1,11 +1,28 @@
-# SearchOS
+<p align="center">
+  <img src="web/public/og.png" alt="SearchOS — The Search & Memory Infrastructure for AI Agents" width="640" />
+</p>
 
-> The Search & Memory Infrastructure for AI Agents.
-> One search engine. Two runtime modes. Shared intelligence.
+<h1 align="center">SearchOS</h1>
+
+<p align="center">
+  <strong>The Search &amp; Memory Infrastructure for AI Agents.</strong><br/>
+  One search engine. Two runtime modes. Shared intelligence.
+</p>
+
+<p align="center">
+  <a href="#quick-start">Quick Start</a> ·
+  <a href="#highlights">Highlights</a> ·
+  <a href="#console">Console</a> ·
+  <a href="#architecture">Architecture</a> ·
+  <a href="#documentation">Docs</a> ·
+  <a href="README.zh.md">中文</a>
+</p>
+
+---
 
 ## Why SearchOS
 
-AI-agent workflows depend heavily on Web Search, but today every agent, every tool, and
+AI-agent workflows depend heavily on web search, but today every agent, every tool, and
 every task tends to use its own search service (Tavily, Brave, Exa…). That produces:
 
 - The same or near-duplicate searches executed over and over.
@@ -36,6 +53,69 @@ SearchOS fixes this with one unifying infrastructure.
 - **Distributed-ready** — the data model and interfaces are designed for multi-node from
   day one, without forcing distributed complexity in v1.
 
+## Console
+
+The operator console (`web/`) is a Next.js 16 / React 19 interface over the gateway's
+**Analytics Read Model** — the browser never touches operational tables directly.
+
+![SearchOS Console — System Overview](docs/assets/console-overview.png)
+
+Six surfaces: **Overview** (KPI cards with denominators, activity/strategy charts,
+export), **Search** workbench, **Traces** (staged decision timeline), **Analytics**
+(search / cost / quality / knowledge / providers / crawlers / infrastructure), **Cost**
+(ledger, reservations, reconciliation) and **Knowledge** (documents, semantic memory,
+runtime health). Light / Dark, square-cornered tactical telemetry, one hazard-red
+accent. See [docs/ui.md](docs/ui.md) and [web/README.md](web/README.md).
+
+## Quick Start
+
+### Prerequisites
+
+- Rust 1.75+ (`rustup`)
+- Node.js 20+ (console only)
+
+### 1. Build and run the CLI (Local Mode)
+
+```bash
+cargo build --release --bin searchos
+
+# data lives in SEARCHOS_DATA_DIR (or ~/.searchos by default)
+SEARCHOS_DATA_DIR=./data ./target/release/searchos init
+SEARCHOS_DATA_DIR=./data ./target/release/searchos search "What is Rust ownership?" --mode local-only --format json
+SEARCHOS_DATA_DIR=./data ./target/release/searchos doctor
+```
+
+### 2. Start the gateway (Gateway Mode)
+
+```bash
+SEARCHOS_DATA_DIR=./data ./target/release/searchos gateway start --port 8787
+```
+
+### 3. Point your Tavily client at it
+
+```bash
+curl -s http://127.0.0.1:8787/search \
+  -H 'content-type: application/json' \
+  -d '{"query":"What is Rust ownership?","mode":"local_first"}'
+```
+
+### 4. Run the console
+
+```bash
+cd web
+npm ci
+npm run dev                     # http://localhost:3100
+```
+
+The console proxies `/api/searchos/*` to the gateway's `/api/v1/dashboard/*` Read
+Model; `SEARCHOS_AUTH_TOKEN` stays server-side only. Production: `npm run build && npm start`.
+
+### MCP
+
+```bash
+searchos mcp                    # stdio MCP server exposing all 7 RFC-021 tools
+```
+
 ## Architecture
 
 ```text
@@ -45,25 +125,38 @@ SearchOS fixes this with one unifying infrastructure.
 └──────────────────┬───────────────────────┘
                    │
 ┌──────────────────▼───────────────────────┐
-│             Application Layer             │
+│             Application Layer            │
 │  Search · Fetch · Crawl · Memory · Research │
 └──────────────────┬───────────────────────┘
                    │
 ┌──────────────────▼───────────────────────┐
-│               Core Runtime                │
+│               Core Runtime               │
 │  Query · Planner · Router · Cache ·        │
 │  Retrieval · Memory · Crawler · Extension  │
 └──────────────────┬───────────────────────┘
                    │
 ┌──────────────────▼───────────────────────┐
-│            Infrastructure                 │
+│            Infrastructure                │
 │  SQLite · Tantivy · LanceDB · File/Object  │
 │  Queue · Provider · Embedding · Browser    │
 └──────────────────────────────────────────┘
 ```
 
 See [`docs/architecture.md`](docs/architecture.md) and the canonical design in
-[`docs/rfc/rfc-001-searchos.md`](docs/rfc/rfc-001-searchos.md).
+[`docs/rfc/README.md`](docs/rfc/README.md).
+
+## Development
+
+```bash
+cargo test --workspace          # 295 tests across 57 suites
+cargo clippy --workspace --all-targets
+cargo fmt --all -- --check
+
+cd web && npm ci && npm run typecheck && npm run build
+```
+
+CI runs fmt / clippy / test plus the console typecheck + build on every push and PR
+([.github/workflows/ci.yml](.github/workflows/ci.yml)).
 
 ## Roadmap
 
@@ -84,12 +177,17 @@ A phased, deliverable-driven plan (~16 weeks to v1.0). Full detail in
 ## Documentation
 
 - [Architecture](docs/architecture.md)
-- RFC set:
-  - [RFC-001: SearchOS](docs/rfc/rfc-001-searchos.md)
-  - [RFC-002: Core Crate Specification](docs/rfc/rfc-002-core-crate-specification.md)
-  - [RFC-003: Extension System](docs/rfc/rfc-003-extension-system.md)
-  - [RFC-004: Storage & Memory](docs/rfc/rfc-004-storage-and-memory.md)
-  - [RFC-005: Execution Plan](docs/rfc/rfc-005-execution-plan.md)
+- [Canonical RFC Suite (16 RFCs + annexes 17–24, RFC-026..028)](docs/rfc/README.md)
+  - [RFC-001: Product Architecture](docs/rfc/rfc-001-product-architecture.md)
+  - [RFC-004: Search Decision Engine](docs/rfc/rfc-004-search-decision-engine.md)
+  - [Part 23: Decision Engine Engineering Baseline (RFC-004 v1.1)](docs/rfc/part-23-decision-engineering-baseline.md)
+  - [Part 24: API / Security / Reliability / Governance](docs/rfc/part-24-api-governance-baseline.md)
+  - [RFC-026: Visualization & Analytics Architecture](docs/rfc/rfc-026-visualization-analytics-architecture.md)
+  - [RFC-027: Analytics Data Model](docs/rfc/rfc-027-analytics-data-model.md)
+  - [RFC-028: Dashboard API & Frontend](docs/rfc/rfc-028-dashboard-api-frontend.md)
+- [Feature Gap Analysis: source design vs. implementation](docs/gap-analysis.md)
+- [Visual Console (Next.js / React)](docs/ui.md) · [web/README.md](web/README.md)
+- [HTTP API](docs/api/http.md) · [CLI Reference](docs/api/cli.md)
 - [Extension & Crawler System](docs/extensions.md)
 - [Roadmap & ADRs](docs/roadmap.md)
 - [Docs hub](docs/index.md)
@@ -97,5 +195,5 @@ A phased, deliverable-driven plan (~16 weeks to v1.0). Full detail in
 
 ## License
 
-See [LICENSE](LICENSE). (Open Core: the community edition is open source; hosted/enterprise
-capabilities are offered separately.)
+[MIT](LICENSE). Open Core: the community edition is open source; hosted/enterprise
+capabilities are offered separately.

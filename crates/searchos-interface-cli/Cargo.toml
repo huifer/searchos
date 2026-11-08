@@ -34,5 +34,6 @@ searchos-crawler = { workspace = true }
 searchos-extension = { workspace = true }
 searchos-fetch = { workspace = true }
 searchos-observability = { workspace = true }
+searchos-evaluation = { workspace = true }
 searchos-interface-http = { workspace = true }
 searchos-interface-mcp = { workspace = true }

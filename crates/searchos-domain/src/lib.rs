@@ -21,8 +21,13 @@ pub mod request;
 pub mod response;
 pub mod retrieval;
 
-pub use cost::{CostEvent, CostOperation, CostQuery, CostSummary, Money};
-pub use decision::{CoverageGap, DecisionReason, DecisionTrace, SearchDecision};
+pub use cost::{
+    CostEvent, CostOperation, CostQuery, CostSummary, Money, ReuseCostViews, SavingsReport,
+};
+pub use decision::{
+    CoverageGap, DecisionReason, DecisionStageTrace, DecisionTrace, GapPriority,
+    GapResolutionStrategy, RequirementStatus, SearchDecision,
+};
 pub use document::{Document, DocumentChunk, DocumentStatus, DocumentVersion};
 pub use error::{SearchOsError, ValidationError};
 pub use evidence::{Evidence, Provenance, ProvenanceOrigin, ReliabilityLevel};
@@ -33,7 +38,9 @@ pub use provider::ProviderCapabilities;
 pub use request::{
     FreshnessRequirement, SearchBudget, SearchConstraints, SearchIntent, SearchMode, SearchRequest,
 };
-pub use response::{CostReport, DecisionReport, QualityReport, SearchResponse, SearchResultItem};
+pub use response::{
+    CostReport, DecisionReport, QualityReport, SearchResponse, SearchResultItem, SearchStatus,
+};
 pub use retrieval::{IndexedDocument, RetrievalCandidate, RetrievalQuery, SearchCacheKey};
 
 use chrono::{DateTime, Utc};

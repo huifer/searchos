@@ -81,4 +81,4 @@ BM25 + Vector + Metadata → **RRF Fusion** → Reranker → Top-K. Embedding mu
 version, dimensions, normalization, and generation time so models can be swapped and indexes
 rebuilt safely.
 
-See the canonical spec: [RFC-001](rfc/rfc-001-searchos.md).
+See the canonical spec: [RFC-001](rfc/rfc-001-product-architecture.md).

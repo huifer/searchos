@@ -2,7 +2,7 @@
 
 **Engineering Specification · Version 1.0 · 2026-11-08 · Status: Proposed**
 
-Companion to [RFC-001](rfc-001-searchos.md). This document specifies the extension protocol,
+Companion to [RFC-001](rfc-001-searchos-v2.md). This document specifies the extension protocol,
 directory layout, registry, lifecycle, permission model, crawler selection & failure
 isolation, and the debugging experience.
 

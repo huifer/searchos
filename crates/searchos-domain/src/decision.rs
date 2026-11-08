@@ -21,6 +21,14 @@ pub enum DecisionReason {
     BudgetExceeded,
     NoValidExecutionPath,
     CacheHit,
+    /// ExternalFirst keeps external evidence primary and local as supplement.
+    ExternalFirstRequested,
+    /// Unresolved contradictions in the merged evidence set.
+    ConflictingEvidence,
+    /// No healthy provider can satisfy the plan.
+    ProviderUnavailable,
+    /// Workspace policy forbids this request.
+    WorkspacePolicyDenied,
 }
 
 impl DecisionReason {
@@ -38,17 +46,122 @@ impl DecisionReason {
             Self::BudgetExceeded => "budget_exceeded",
             Self::NoValidExecutionPath => "no_valid_execution_path",
             Self::CacheHit => "cache_hit",
+            Self::ExternalFirstRequested => "external_first_requested",
+            Self::ConflictingEvidence => "conflicting_evidence",
+            Self::ProviderUnavailable => "provider_unavailable",
+            Self::WorkspacePolicyDenied => "workspace_policy_denied",
         }
     }
 }
 
-/// A missing sub-question / requirement discovered by gap analysis (RFC-005 5.6).
+/// Coverage state of one information requirement (RFC-004 v1.1 5.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RequirementStatus {
+    #[default]
+    Missing,
+    PartiallyCovered,
+    Covered,
+    Conflicting,
+    NotApplicable,
+}
+
+/// How urgently a gap must be resolved (RFC-004 v1.1 6.7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum GapPriority {
+    Critical,
+    High,
+    #[default]
+    Normal,
+    Low,
+}
+
+/// Minimal acquisition strategy for one gap (RFC-004 v1.1 10.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum GapResolutionStrategy {
+    ReuseExistingEvidence,
+    RefreshExistingSource,
+    SearchOfficialSource,
+    #[default]
+    SearchIndependentSources,
+    FetchExistingUrl,
+    CrawlDomain,
+    SearchAlternativeSources,
+}
+
+/// A missing sub-question / requirement discovered by gap analysis (RFC-005 5.6,
+/// RFC-004 v1.1 6.7/10.1).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CoverageGap {
     /// The uncovered sub-question.
     pub question: String,
     /// What kind of evidence is missing.
     pub missing_kind: String,
+    /// Requirement coverage state (Missing / PartiallyCovered / Conflicting).
+    #[serde(default)]
+    pub status: RequirementStatus,
+    /// Resolution priority used by the external planner.
+    #[serde(default)]
+    pub priority: GapPriority,
+    /// Minimal acquisition strategy for this gap.
+    #[serde(default)]
+    pub strategy: GapResolutionStrategy,
+    /// Stable requirement id (links an external query back to the gap).
+    #[serde(default)]
+    pub requirement_id: String,
+}
+
+impl CoverageGap {
+    /// A newly discovered missing requirement with a stable id.
+    pub fn new(question: impl Into<String>, missing_kind: impl Into<String>) -> Self {
+        let question = question.into();
+        Self {
+            requirement_id: crate::new_id("need"),
+            question,
+            missing_kind: missing_kind.into(),
+            status: RequirementStatus::Missing,
+            priority: GapPriority::Normal,
+            strategy: GapResolutionStrategy::SearchIndependentSources,
+        }
+    }
+
+    /// Builder-style status upgrade used by gap analysis.
+    pub fn with_status(mut self, status: RequirementStatus) -> Self {
+        self.status = status;
+        self
+    }
+
+    /// Builder-style priority.
+    pub fn with_priority(mut self, priority: GapPriority) -> Self {
+        self.priority = priority;
+        self
+    }
+
+    /// Builder-style acquisition strategy.
+    pub fn with_strategy(mut self, strategy: GapResolutionStrategy) -> Self {
+        self.strategy = strategy;
+        self
+    }
+}
+
+impl Default for CoverageGap {
+    fn default() -> Self {
+        Self::new("", "evidence")
+    }
+}
+
+/// One structured, immutable stage of a decision trace (RFC-004 v1.1 11.1).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DecisionStageTrace {
+    pub stage: String,
+    pub status: String,
+    pub started_at_ms: u64,
+    pub duration_ms: u64,
+    pub input_summary: String,
+    pub output_summary: String,
+    pub reasons: Vec<String>,
 }
 
 /// The decision the engine produced for one task (RFC-004 4.3).
@@ -120,4 +233,13 @@ pub struct DecisionTrace {
     pub estimated_cost: Money,
     pub actual_cost: Option<Money>,
     pub decision_at: DateTime<Utc>,
+    /// Ordered stage trace (RFC-004 v1.1 11.1).
+    #[serde(default)]
+    pub stages: Vec<DecisionStageTrace>,
+    /// Strategy selected by the decision engine (RFC-004 v1.1 8.2).
+    #[serde(default)]
+    pub final_strategy: Option<String>,
+    /// Final outcome (success / partial / insufficient / budget_exceeded).
+    #[serde(default)]
+    pub final_outcome: Option<String>,
 }

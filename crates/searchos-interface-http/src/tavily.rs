@@ -204,6 +204,10 @@ mod tests {
             },
             provenance: vec![],
             trace_id: TraceId::generate(),
+            status: searchos_domain::response::SearchStatus::Completed,
+            warnings: vec![],
+            task_id: None,
+            replayed: false,
         };
         let out = TavilySearchResponse::from_domain(&core, 5, vec![], 120);
         assert_eq!(out.results.len(), 1);

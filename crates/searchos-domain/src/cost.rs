@@ -204,6 +204,45 @@ pub struct CostQuery {
     pub until: Option<DateTime<Utc>>,
 }
 
+/// Four separated reuse cost views (RFC-006 6.9).
+///
+/// A reused result is not a new external purchase; acquisition, reuse,
+/// amortised and marginal costs must stay distinguishable.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ReuseCostViews {
+    /// Cost of originally acquiring the knowledge.
+    pub original_acquisition_micros: i64,
+    /// Cost of executing the reuse (local compute, cache lookup).
+    pub reuse_execution_micros: i64,
+    /// Allocated amortised cost of the reused knowledge.
+    pub amortized_micros: i64,
+    /// Cost actually added by the reuse operation.
+    pub marginal_micros: i64,
+}
+
+/// Savings / CPQPA report (RFC-006 6.10, Appendix C).
+///
+/// The baseline is an *equivalent-quality* external-only strategy; an
+/// estimate is never presented as a confirmed invoice.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct SavingsReport {
+    pub currency: String,
+    pub task_count: u64,
+    pub baseline_micros: i64,
+    pub searchos_micros: i64,
+    pub savings_micros: i64,
+    pub savings_rate: f64,
+    pub quality_passing_tasks: u64,
+    pub cost_per_quality_passing_answer_micros: Option<i64>,
+    pub external_avoidance_rate: f64,
+    pub valid_local_resolution_rate: f64,
+    pub external_calls: u64,
+    pub local_resolved_tasks: u64,
+    pub reuse_views: ReuseCostViews,
+    /// True when no provider billing data has been reconciled yet.
+    pub is_estimate: bool,
+}
+
 /// Aggregated ledger summary (RFC-008 8.6).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CostSummary {

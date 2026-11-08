@@ -37,10 +37,20 @@ The canonical specification is the **RFC Suite v1.0** under [`docs/rfc/`](rfc/).
 - [Part 20: Definition of Done](rfc/part-20-definition-of-done.md)
 - [Part 21: GitHub Engineering Execution](rfc/part-21-github-engineering-execution.md)
 - [Part 22: Final Architecture Decisions](rfc/part-22-final-architecture-decisions.md)
+- [Part 23: Search Decision Engine — Engineering Baseline](rfc/part-23-decision-engineering-baseline.md)
+- [Part 24: Product API, Security, Reliability & Governance](rfc/part-24-api-governance-baseline.md)
+- [RFC-026: Visualization & Analytics Architecture](rfc/rfc-026-visualization-analytics-architecture.md)
+- [RFC-027: Analytics Data Model & Aggregation](rfc/rfc-027-analytics-data-model.md)
+- [RFC-028: Dashboard API & Frontend Integration](rfc/rfc-028-dashboard-api-frontend.md)
+
+## Gap Analysis
+
+- [Feature Gap Analysis: source conversation vs. implementation](gap-analysis.md) — 源对话功能遗漏分析与补强清单。
 
 ## Guides & References
 
 - [Architecture](architecture.md) — layered architecture, dual runtime, storage, providers.
+- [Visual Console](ui.md) — Next.js + Tailwind + shadcn/ui operator console over the Analytics Read Model.
 - [Extension & Crawler System](extensions.md) — the extension-first crawler architecture.
 - [Roadmap & ADRs](roadmap.md) — phased plan, version strategy, architecture decisions.
 - [ADR Index](adr/index.md) — all Architecture Decision Records.
@@ -56,6 +66,8 @@ The canonical specification is the **RFC Suite v1.0** under [`docs/rfc/`](rfc/).
 
 - [API Reference (HTTP gateway)](api/http.md)
 - [CLI Reference](api/cli.md)
+- [Visual Console (Next.js)](ui.md) — browser UI under `web/`
+- [Feature Gap Analysis](gap-analysis.md)
 - [Development Guide](development/README.md)
 
 > The RFC suite describes the *spec*; the `crates/` workspace implements it.

@@ -291,10 +291,7 @@ impl QualityGate {
             });
             covered[i] = hit;
             if !hit {
-                gaps.push(CoverageGap {
-                    question: sq.clone(),
-                    missing_kind: "evidence".into(),
-                });
+                gaps.push(CoverageGap::new(sq.clone(), "evidence"));
             }
         }
         let ratio =

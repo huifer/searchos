@@ -360,10 +360,9 @@ mod tests {
             .build(
                 TaskId::generate(),
                 &SearchDecision::Hybrid {
-                    missing_requirements: vec![searchos_domain::decision::CoverageGap {
-                        question: "q".into(),
-                        missing_kind: "evidence".into(),
-                    }],
+                    missing_requirements: vec![searchos_domain::decision::CoverageGap::new(
+                        "q", "evidence",
+                    )],
                     reason: searchos_domain::decision::DecisionReason::LocalCoverageInsufficient,
                 },
                 &SearchBudget::default(),

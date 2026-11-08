@@ -3,6 +3,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use searchos_application::analytics::{AnalyticsEvent, AnalyticsQuery, AnalyticsQueryService};
 use searchos_application::fetch_service::{DocumentPort, FetchServiceImpl};
 use searchos_application::singleflight::SingleflightCoordinator;
 use searchos_application::{CostUseCase, MemoryFacade, MemoryUseCase, SearchOsApplication};
@@ -183,11 +184,20 @@ impl SearchOsRuntime {
             store: Arc::clone(&sqlite),
         });
 
+        let analytics_service: Arc<dyn AnalyticsQueryService> = Arc::new(SqliteAnalyticsService {
+            store: Arc::clone(&sqlite),
+            baseline_per_query_micros: config.budgets.baseline_per_query_micros,
+        });
+        // Best-effort initial Read Model build. Failure must not prevent the
+        // runtime from starting (RFC-026 2.3).
+        let _ = analytics_service.refresh().await;
+
         let application = Arc::new(SearchOsApplication {
             search_service,
             fetch_service,
             memory_service: memory_service_facade,
             cost_service,
+            analytics_service,
         });
 
         Ok(Arc::new(Self {
@@ -365,6 +375,28 @@ impl SearchOsRuntime {
                 )
                 .await
                 .is_ok()
+            } else if row.operation == "refresh" {
+                // RFC-004 v1.1 10.1: re-fetch the existing source instead of
+                // deleting authoritative knowledge or buying a full search.
+                let parsed: Result<serde_json::Value, _> =
+                    serde_json::from_str(row.payload.as_deref().unwrap_or(""));
+                match parsed {
+                    Ok(v) => {
+                        let url = v.get("url").and_then(|x| x.as_str()).unwrap_or("");
+                        let ws = v
+                            .get("workspace_id")
+                            .and_then(|x| x.as_str())
+                            .unwrap_or("default");
+                        !url.is_empty()
+                            && self
+                                .application
+                                .fetch_service
+                                .fetch_and_persist(url, &searchos_domain::ids::WorkspaceId::new(ws))
+                                .await
+                                .is_ok()
+                    }
+                    Err(_) => false,
+                }
             } else if let Ok(payload) =
                 repos::parse_index_payload(row.payload.as_deref().unwrap_or(""))
             {
@@ -469,6 +501,77 @@ impl searchos_application::search_service::TaskRecorder for SqliteTaskRecorder {
     ) -> Result<(), SearchOsError> {
         repos::TaskRepo::new(&self.store).finish(task_id, status)
     }
+
+    async fn idempotency_get(
+        &self,
+        request_id: &str,
+    ) -> Result<Option<serde_json::Value>, SearchOsError> {
+        let rec = repos::IdempotencyRepo::new(&self.store).get(request_id)?;
+        Ok(rec
+            .filter(|r| r.status == "completed")
+            .and_then(|r| r.response_json)
+            .and_then(|s| serde_json::from_str(&s).ok()))
+    }
+
+    async fn idempotency_begin(
+        &self,
+        request_id: &str,
+        task_id: &str,
+        workspace_id: &str,
+    ) -> Result<(), SearchOsError> {
+        repos::IdempotencyRepo::new(&self.store).begin(request_id, task_id, workspace_id)?;
+        Ok(())
+    }
+
+    async fn idempotency_complete(
+        &self,
+        request_id: &str,
+        payload: &serde_json::Value,
+    ) -> Result<(), SearchOsError> {
+        repos::IdempotencyRepo::new(&self.store).complete(request_id, &payload.to_string())
+    }
+
+    async fn idempotency_fail(&self, request_id: &str) -> Result<(), SearchOsError> {
+        repos::IdempotencyRepo::new(&self.store).fail(request_id)
+    }
+
+    async fn record_search_completed(
+        &self,
+        response: &serde_json::Value,
+    ) -> Result<(), SearchOsError> {
+        repos::AnalyticsRepo::new(&self.store).record_event(
+            &searchos_domain::new_id("evt"),
+            "search.request.completed",
+            response
+                .get("workspace_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("default"),
+            response.get("request_id").and_then(|v| v.as_str()),
+            response.get("task_id").and_then(|v| v.as_str()),
+            "search_service",
+            response.get("trace_id").and_then(|v| v.as_str()),
+            &serde_json::json!({
+                "status": response.get("status").and_then(|v| v.as_str()).unwrap_or("unknown"),
+                "path": response.get("decision").and_then(|d| d.get("path")).and_then(|v| v.as_str()).unwrap_or("unknown"),
+                "quality": response.get("quality").and_then(|q| q.get("status")).and_then(|v| v.as_str()).unwrap_or("unknown"),
+                "cost_estimated": response.get("cost").and_then(|c| c.get("estimated")).and_then(|v| v.as_f64()).unwrap_or(0.0),
+            })
+            .to_string(),
+        )
+    }
+
+    async fn enqueue_refresh(
+        &self,
+        urls: &[String],
+        workspace_id: &str,
+    ) -> Result<usize, SearchOsError> {
+        let mut n = 0;
+        for url in urls {
+            repos::enqueue_refresh(&self.store, url, workspace_id)?;
+            n += 1;
+        }
+        Ok(n)
+    }
 }
 
 /// TraceCollector over sqlite.
@@ -533,6 +636,30 @@ impl searchos_application::search_service::CostEventSink for SqliteCostSink {
             saved,
         )
     }
+
+    async fn reserve_budget(
+        &self,
+        task_id: &str,
+        trace_id: &str,
+        estimated_micros: i64,
+        currency: &str,
+    ) -> Result<(), SearchOsError> {
+        repos::BudgetRepo::new(&self.store).reserve(
+            &searchos_domain::new_id("res"),
+            task_id,
+            Some(trace_id),
+            estimated_micros,
+            currency,
+        )
+    }
+
+    async fn settle_budget(&self, task_id: &str, actual_micros: i64) -> Result<(), SearchOsError> {
+        repos::BudgetRepo::new(&self.store).settle(task_id, actual_micros)
+    }
+
+    async fn exceed_budget(&self, task_id: &str) -> Result<(), SearchOsError> {
+        repos::BudgetRepo::new(&self.store).mark_exceeded(task_id)
+    }
 }
 
 #[async_trait::async_trait]
@@ -564,6 +691,227 @@ impl CostUseCase for SqliteCostSink {
     async fn singleflight_saved_micros(&self) -> Result<i64, SearchOsError> {
         repos::SingleflightRepo::new(&self.store).total_saved()
     }
+
+    async fn savings(
+        &self,
+        baseline_per_query_micros: i64,
+    ) -> Result<searchos_domain::cost::SavingsReport, SearchOsError> {
+        use searchos_domain::cost::{ReuseCostViews, SavingsReport};
+        let (task_count, external_calls, total_estimated, total_actual, quality_passing, local_resolved, original_acquisition, reuse_execution) =
+            self.store.with_conn(|c| {
+                let q = |sql: &str| -> Result<i64, SearchOsError> {
+                    c.query_row(sql, [], |r| r.get(0))
+                        .map_err(|e| SearchOsError::Storage(e.to_string()))
+                };
+                Ok((
+                    q("SELECT count(*) FROM search_tasks")?,
+                    q("SELECT count(*) FROM cost_events WHERE operation IN ('web_search','web_fetch','web_crawl') AND shared = 0")?,
+                    q("SELECT COALESCE(sum(estimated_cost_micros),0) FROM cost_events")?,
+                    q("SELECT COALESCE(sum(actual_cost_micros),0) FROM cost_events")?,
+                    q("SELECT count(DISTINCT target) FROM audit_events WHERE action = 'task_passed'")?,
+                    q("SELECT count(*) FROM decision_traces dt
+                       WHERE dt.selected_path IN ('local','local_with_refresh')
+                         AND EXISTS (SELECT 1 FROM audit_events ae
+                                     WHERE ae.action = 'task_passed' AND ae.target = dt.task_id)")?,
+                    q("SELECT COALESCE(sum(estimated_cost_micros),0) FROM cost_events WHERE operation IN ('web_search','web_fetch','web_crawl') AND shared = 0")?,
+                    q("SELECT COALESCE(sum(estimated_cost_micros),0) FROM cost_events WHERE operation LIKE 'local_%' OR shared = 1")?,
+                ))
+            })?;
+        let task_count = task_count.max(0) as u64;
+        let baseline = (task_count as i64).saturating_mul(baseline_per_query_micros);
+        // Actual cost only replaces the estimate when billing data has been
+        // reconciled (RFC-006 6.7).
+        let searchos_micros = if total_actual > 0 {
+            total_actual
+        } else {
+            total_estimated
+        };
+        let is_estimate = total_actual == 0;
+        let savings_micros = baseline - searchos_micros;
+        let savings_rate = if baseline > 0 {
+            1.0 - (searchos_micros as f64 / baseline as f64)
+        } else {
+            0.0
+        };
+        let external_avoidance_rate = if task_count > 0 {
+            (1.0 - (external_calls.max(0) as f64 / task_count as f64)).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let valid_local_resolution_rate = if task_count > 0 {
+            (local_resolved.max(0) as f64 / task_count as f64).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let quality_passing_tasks = quality_passing.max(0) as u64;
+        Ok(SavingsReport {
+            currency: "USD".into(),
+            task_count,
+            baseline_micros: baseline,
+            searchos_micros,
+            savings_micros,
+            savings_rate,
+            quality_passing_tasks,
+            cost_per_quality_passing_answer_micros: if quality_passing_tasks > 0 {
+                Some(searchos_micros / quality_passing_tasks as i64)
+            } else {
+                None
+            },
+            external_avoidance_rate,
+            valid_local_resolution_rate,
+            external_calls: external_calls.max(0) as u64,
+            local_resolved_tasks: local_resolved.max(0) as u64,
+            reuse_views: ReuseCostViews {
+                original_acquisition_micros: original_acquisition,
+                reuse_execution_micros: reuse_execution,
+                amortized_micros: if task_count > 0 {
+                    original_acquisition / task_count as i64
+                } else {
+                    0
+                },
+                marginal_micros: (searchos_micros - original_acquisition).max(0),
+            },
+            is_estimate,
+        })
+    }
+
+    async fn reservations(&self, limit: u32) -> Result<serde_json::Value, SearchOsError> {
+        let rows = repos::BudgetRepo::new(&self.store).list(limit)?;
+        Ok(serde_json::json!({ "reservations": rows }))
+    }
+
+    async fn reconcile(
+        &self,
+        cost_event_id: &str,
+        actual_cost_micros: i64,
+        source: &str,
+        currency: &str,
+    ) -> Result<(), SearchOsError> {
+        repos::ReconciliationRepo::new(&self.store).record(
+            cost_event_id,
+            actual_cost_micros,
+            source,
+            currency,
+        )
+    }
+}
+
+/// RFC-026/028 Analytics Query Service over the SQLite Read Model.
+struct SqliteAnalyticsService {
+    store: Arc<SqliteStore>,
+    baseline_per_query_micros: i64,
+}
+
+#[async_trait::async_trait]
+impl AnalyticsQueryService for SqliteAnalyticsService {
+    async fn refresh(&self) -> Result<(), SearchOsError> {
+        repos::AnalyticsRepo::new(&self.store).rebuild(self.baseline_per_query_micros)
+    }
+
+    async fn dataset(
+        &self,
+        model_key: &str,
+        query: &AnalyticsQuery,
+    ) -> Result<serde_json::Value, SearchOsError> {
+        query.validate()?;
+        // Refresh on read so a fresh gateway always serves complete data.
+        // A refresh failure is reported in meta, never as a fake zero.
+        let refresh_ok = self.refresh().await.is_ok();
+        // `local_resolution` in the Overview must be quality-valid. A local
+        // decision that did not pass the final gate is not a valid reuse.
+        if model_key == "overview" {
+            self.constrain_local_resolution_to_quality_passed().await?;
+        }
+        let repo = repos::AnalyticsRepo::new(&self.store);
+        let data = match model_key {
+            "overview" => repo
+                .read_model("overview")?
+                .unwrap_or(serde_json::Value::Null),
+            "search_timeseries" | "knowledge_growth" => {
+                serde_json::json!({ "items": repo.read_series(model_key, 90)? })
+            }
+            key => repo.read_model(key)?.unwrap_or(serde_json::Value::Null),
+        };
+        Ok(dashboard_envelope(data, query, refresh_ok))
+    }
+
+    async fn overview(&self, query: &AnalyticsQuery) -> Result<serde_json::Value, SearchOsError> {
+        self.dataset("overview", query).await
+    }
+
+    async fn record(&self, event: AnalyticsEvent) -> Result<(), SearchOsError> {
+        repos::AnalyticsRepo::new(&self.store).record_event(
+            &searchos_domain::new_id("evt"),
+            &event.event_type,
+            &event.workspace_id,
+            event.request_id.as_deref(),
+            event.execution_id.as_deref(),
+            &event.source_module,
+            event.correlation_id.as_deref(),
+            &event.payload.to_string(),
+        )
+    }
+
+    async fn events_since(
+        &self,
+        cursor: i64,
+        limit: u32,
+    ) -> Result<Vec<serde_json::Value>, SearchOsError> {
+        repos::AnalyticsRepo::new(&self.store).events_since(cursor, limit)
+    }
+}
+
+impl SqliteAnalyticsService {
+    /// Recomputes the quality-valid local count inside the Overview Read Model.
+    async fn constrain_local_resolution_to_quality_passed(&self) -> Result<(), SearchOsError> {
+        let valid: i64 = self.store.with_conn(|c| {
+            c.query_row(
+                "SELECT count(*) FROM decision_traces dt
+                 WHERE dt.selected_path IN ('local','local_with_refresh')
+                   AND EXISTS (SELECT 1 FROM audit_events ae
+                               WHERE ae.action = 'task_passed' AND ae.target = dt.task_id)",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(|e| SearchOsError::Storage(e.to_string()))
+        })?;
+        let overview = repos::AnalyticsRepo::new(&self.store)
+            .read_model("overview")?
+            .ok_or_else(|| SearchOsError::Retrieval("overview Read Model missing".into()))?;
+        let total = overview["searches"]["total"].as_i64().unwrap_or(0);
+        let mut next = overview;
+        next["local_resolution"]["count"] = serde_json::json!(valid);
+        next["local_resolution"]["rate"] = serde_json::json!(if total > 0 {
+            valid as f64 / total as f64
+        } else {
+            0.0
+        });
+        next["evidence_reuse_rate"] = next["local_resolution"]["rate"].clone();
+        repos::AnalyticsRepo::new(&self.store).write_model("overview", &next)
+    }
+}
+
+/// Standard Dashboard API response wrapper (RFC-028 3).
+fn dashboard_envelope(
+    data: serde_json::Value,
+    query: &AnalyticsQuery,
+    refresh_ok: bool,
+) -> serde_json::Value {
+    serde_json::json!({
+        "data": data,
+        "meta": {
+            "generated_at": chrono::Utc::now().to_rfc3339(),
+            "time_range": {
+                "from": query.from,
+                "to": query.to,
+                "timezone": query.timezone.clone().unwrap_or_else(|| "UTC".into()),
+            },
+            "interval": query.interval.clone().unwrap_or_else(|| "day".into()),
+            "aggregation_version": "1",
+            "data_freshness": if refresh_ok { "complete" } else { "stale" },
+            "workspace_scope": query.workspace_id.clone().unwrap_or_else(|| "*".into()),
+        }
+    })
 }
 
 /// Memory service over sqlite.

@@ -82,7 +82,10 @@ mod tests {
     #[test]
     fn in_memory_store_ready() {
         let s = SqliteStore::open_in_memory().unwrap();
-        assert_eq!(s.schema_version().unwrap(), 1);
+        assert_eq!(
+            s.schema_version().unwrap(),
+            crate::migrations::MIGRATIONS.last().unwrap().version
+        );
         s.with_conn(|c| {
             c.execute(
                 "INSERT INTO workspaces (id,name,config_version,created_at,updated_at) VALUES ('ws1','default',1,'t','t')",

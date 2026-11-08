@@ -177,8 +177,8 @@ impl<'a> DecisionRepo<'a> {
     pub fn insert_trace(&self, t: &DecisionTrace) -> Result<(), SearchOsError> {
         self.store.with_conn(|c| {
             c.execute(
-                "INSERT OR REPLACE INTO decision_traces (id, task_id, intents_json, profile_version, local_candidates, accepted_candidates, freshness_status, coverage_status, source_status, selected_path, rejection_reasons_json, estimated_cost_micros, estimated_currency, actual_cost_micros, decision_at)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
+                "INSERT OR REPLACE INTO decision_traces (id, task_id, intents_json, profile_version, local_candidates, accepted_candidates, freshness_status, coverage_status, source_status, selected_path, rejection_reasons_json, estimated_cost_micros, estimated_currency, actual_cost_micros, decision_at, stages_json, final_strategy, final_outcome)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)",
                 params![
                     t.trace_id.as_str(),
                     t.task_id.as_str(),
@@ -195,6 +195,10 @@ impl<'a> DecisionRepo<'a> {
                     t.estimated_cost.currency,
                     t.actual_cost.as_ref().map(|m| m.amount_micros),
                     t.decision_at.to_rfc3339(),
+                    serde_json::to_string(&t.stages)
+                        .map_err(|er| SearchOsError::Internal(er.to_string()))?,
+                    t.final_strategy,
+                    t.final_outcome,
                 ],
             )
             .map(|_| ())
@@ -202,12 +206,32 @@ impl<'a> DecisionRepo<'a> {
         })
     }
 
+    /// Recent traces for the console (`GET /traces`, RFC-015 15.1).
+    pub fn list_traces(&self, limit: u32) -> Result<Vec<DecisionTrace>, SearchOsError> {
+        let ids: Vec<String> = self.store.with_conn(|c| {
+            let mut stmt = c
+                .prepare("SELECT id FROM decision_traces ORDER BY decision_at DESC LIMIT ?1")
+                .map_err(e)?;
+            let rows = stmt
+                .query_map([limit.clamp(1, 100)], |r| r.get::<_, String>(0))
+                .map_err(e)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(e)
+        })?;
+        let mut out = Vec::with_capacity(ids.len());
+        for id in ids {
+            if let Some(trace) = self.get_trace(&id)? {
+                out.push(trace);
+            }
+        }
+        Ok(out)
+    }
+
     /// Fetches a trace (GET /decisions/:trace_id).
     pub fn get_trace(&self, trace_id: &str) -> Result<Option<DecisionTrace>, SearchOsError> {
         self.store.with_conn(|c| {
             let row = c
                 .query_row(
-                    "SELECT id, task_id, intents_json, profile_version, local_candidates, accepted_candidates, freshness_status, coverage_status, source_status, selected_path, rejection_reasons_json, estimated_cost_micros, estimated_currency, actual_cost_micros, decision_at
+                    "SELECT id, task_id, intents_json, profile_version, local_candidates, accepted_candidates, freshness_status, coverage_status, source_status, selected_path, rejection_reasons_json, estimated_cost_micros, estimated_currency, actual_cost_micros, decision_at, stages_json, final_strategy, final_outcome
                      FROM decision_traces WHERE id = ?1",
                     params![trace_id],
                     |r| {
@@ -227,6 +251,9 @@ impl<'a> DecisionRepo<'a> {
                             r.get::<_, String>(12)?,
                             r.get::<_, Option<i64>>(13)?,
                             r.get::<_, String>(14)?,
+                            r.get::<_, String>(15)?,
+                            r.get::<_, Option<String>>(16)?,
+                            r.get::<_, Option<String>>(17)?,
                         ))
                     },
                 )
@@ -238,6 +265,9 @@ impl<'a> DecisionRepo<'a> {
             let reasons: Vec<String> =
                 serde_json::from_str(&row.10).map_err(|er| SearchOsError::Internal(er.to_string()))?;
             let currency = row.12.clone();
+            let stages: Vec<searchos_domain::decision::DecisionStageTrace> =
+                serde_json::from_str(&row.15)
+                    .map_err(|er| SearchOsError::Internal(er.to_string()))?;
             Ok(Some(DecisionTrace {
                 trace_id: searchos_domain::ids::TraceId::new(row.0),
                 task_id: searchos_domain::ids::TaskId::new(row.1),
@@ -255,6 +285,9 @@ impl<'a> DecisionRepo<'a> {
                 decision_at: chrono::DateTime::parse_from_rfc3339(&row.14)
                     .map_err(|er| SearchOsError::Internal(er.to_string()))?
                     .into(),
+                stages,
+                final_strategy: row.16,
+                final_outcome: row.17,
             }))
         })
     }
@@ -1432,10 +1465,23 @@ mod tests {
             estimated_cost: Money::zero("USD"),
             actual_cost: None,
             decision_at: Utc::now(),
+            stages: vec![searchos_domain::decision::DecisionStageTrace {
+                stage: "validation".into(),
+                status: "completed".into(),
+                started_at_ms: 0,
+                duration_ms: 1,
+                input_summary: "request".into(),
+                output_summary: "valid".into(),
+                reasons: vec![],
+            }],
+            final_strategy: Some("local_resolve".into()),
+            final_outcome: Some("completed".into()),
         };
         d.insert_trace(&trace).unwrap();
         let back = d.get_trace(trace.trace_id.as_str()).unwrap().unwrap();
         assert_eq!(back.selected_path, "local");
+        assert_eq!(back.stages.len(), 1);
+        assert_eq!(back.final_strategy.as_deref(), Some("local_resolve"));
         assert_eq!(
             back.intents,
             vec![searchos_domain::request::SearchIntent::Technical]
@@ -1474,5 +1520,708 @@ mod tests {
         )
         .unwrap();
         assert_eq!(sf.total_saved().unwrap(), 5000);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// RFC-014 14.7 / RFC-004 v1.1 14.2 — request-level idempotency.
+// ---------------------------------------------------------------------------
+
+/// Replay record for one client-supplied `request_id`.
+#[derive(Debug, Clone)]
+pub struct IdempotencyRecord {
+    pub request_id: String,
+    pub task_id: String,
+    pub status: String,
+    pub response_json: Option<String>,
+}
+
+/// Idempotency ledger: a repeated `request_id` must not re-run an external
+/// search, re-bill, or re-write the same document version.
+pub struct IdempotencyRepo<'a> {
+    store: &'a SqliteStore,
+}
+
+impl<'a> IdempotencyRepo<'a> {
+    pub fn new(store: &'a SqliteStore) -> Self {
+        Self { store }
+    }
+
+    /// Atomically claims a request id. Returns `true` for the first caller.
+    pub fn begin(
+        &self,
+        request_id: &str,
+        task_id: &str,
+        workspace_id: &str,
+    ) -> Result<bool, SearchOsError> {
+        self.store.with_conn(|c| {
+            let n = c
+                .execute(
+                    "INSERT OR IGNORE INTO request_idempotency (request_id, task_id, workspace_id, status, created_at)
+                     VALUES (?1, ?2, ?3, 'running', ?4)",
+                    params![request_id, task_id, workspace_id, now()],
+                )
+                .map_err(e)?;
+            Ok(n == 1)
+        })
+    }
+
+    /// Fetches a completed replay payload, if any.
+    pub fn get(&self, request_id: &str) -> Result<Option<IdempotencyRecord>, SearchOsError> {
+        self.store.with_conn(|c| {
+            c.query_row(
+                "SELECT request_id, task_id, status, response_json FROM request_idempotency WHERE request_id = ?1",
+                params![request_id],
+                |r| {
+                    Ok(IdempotencyRecord {
+                        request_id: r.get(0)?,
+                        task_id: r.get(1)?,
+                        status: r.get(2)?,
+                        response_json: r.get(3)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(e)
+        })
+    }
+
+    /// Stores the response so a replay returns the recoverable task state.
+    pub fn complete(&self, request_id: &str, payload_json: &str) -> Result<(), SearchOsError> {
+        self.store.with_conn(|c| {
+            c.execute(
+                "UPDATE request_idempotency SET status = 'completed', response_json = ?2, completed_at = ?3 WHERE request_id = ?1",
+                params![request_id, payload_json, now()],
+            )
+            .map(|_| ())
+            .map_err(e)
+        })
+    }
+
+    /// Marks a failed task so replays do not hide the failure.
+    pub fn fail(&self, request_id: &str) -> Result<(), SearchOsError> {
+        self.store.with_conn(|c| {
+            c.execute(
+                "UPDATE request_idempotency SET status = 'failed', completed_at = ?2 WHERE request_id = ?1",
+                params![request_id, now()],
+            )
+            .map(|_| ())
+            .map_err(e)
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// RFC-004 v1.1 15 / RFC-006 6.11 — reserve, execute, settle.
+// ---------------------------------------------------------------------------
+
+/// One budget reservation row.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct BudgetReservationRow {
+    pub id: String,
+    pub task_id: String,
+    pub trace_id: Option<String>,
+    pub estimated_cost_micros: i64,
+    pub spent_cost_micros: i64,
+    pub currency: String,
+    pub status: String,
+    pub created_at: String,
+    pub settled_at: Option<String>,
+}
+
+/// Budget reservation ledger (estimated cost is reserved before execution).
+pub struct BudgetRepo<'a> {
+    store: &'a SqliteStore,
+}
+
+impl<'a> BudgetRepo<'a> {
+    pub fn new(store: &'a SqliteStore) -> Self {
+        Self { store }
+    }
+
+    pub fn reserve(
+        &self,
+        id: &str,
+        task_id: &str,
+        trace_id: Option<&str>,
+        estimated_cost_micros: i64,
+        currency: &str,
+    ) -> Result<(), SearchOsError> {
+        self.store.with_conn(|c| {
+            c.execute(
+                "INSERT INTO budget_reservations (id, task_id, trace_id, estimated_cost_micros, spent_cost_micros, currency, status, created_at)
+                 VALUES (?1, ?2, ?3, ?4, 0, ?5, 'reserved', ?6)",
+                params![id, task_id, trace_id, estimated_cost_micros, currency, now()],
+            )
+            .map(|_| ())
+            .map_err(e)
+        })
+    }
+
+    /// Writes back actual spend and releases the unused reservation.
+    pub fn settle(&self, task_id: &str, spent_micros: i64) -> Result<(), SearchOsError> {
+        self.store.with_conn(|c| {
+            c.execute(
+                "UPDATE budget_reservations SET spent_cost_micros = ?2, status = 'settled', settled_at = ?3 WHERE task_id = ?1 AND status = 'reserved'",
+                params![task_id, spent_micros, now()],
+            )
+            .map(|_| ())
+            .map_err(e)
+        })
+    }
+
+    pub fn mark_exceeded(&self, task_id: &str) -> Result<(), SearchOsError> {
+        self.store.with_conn(|c| {
+            c.execute(
+                "UPDATE budget_reservations SET status = 'exceeded', settled_at = ?2 WHERE task_id = ?1 AND status = 'reserved'",
+                params![task_id, now()],
+            )
+            .map(|_| ())
+            .map_err(e)
+        })
+    }
+
+    pub fn list(&self, limit: u32) -> Result<Vec<BudgetReservationRow>, SearchOsError> {
+        self.store.with_conn(|c| {
+            let mut stmt = c
+                .prepare(
+                    "SELECT id, task_id, trace_id, estimated_cost_micros, spent_cost_micros, currency, status, created_at, settled_at
+                     FROM budget_reservations ORDER BY created_at DESC LIMIT ?1",
+                )
+                .map_err(e)?;
+            let rows = stmt
+                .query_map([limit], |r| {
+                    Ok(BudgetReservationRow {
+                        id: r.get(0)?,
+                        task_id: r.get(1)?,
+                        trace_id: r.get(2)?,
+                        estimated_cost_micros: r.get(3)?,
+                        spent_cost_micros: r.get(4)?,
+                        currency: r.get(5)?,
+                        status: r.get(6)?,
+                        created_at: r.get(7)?,
+                        settled_at: r.get(8)?,
+                    })
+                })
+                .map_err(e)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(e)
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// RFC-006 6.7 — estimated vs actual reconciliation from provider billing.
+// ---------------------------------------------------------------------------
+
+pub struct ReconciliationRepo<'a> {
+    store: &'a SqliteStore,
+}
+
+impl<'a> ReconciliationRepo<'a> {
+    pub fn new(store: &'a SqliteStore) -> Self {
+        Self { store }
+    }
+
+    /// Appends a billing adjustment and updates the event's actual cost.
+    /// The original estimated cost is never rewritten.
+    pub fn record(
+        &self,
+        cost_event_id: &str,
+        actual_cost_micros: i64,
+        source: &str,
+        currency: &str,
+    ) -> Result<(), SearchOsError> {
+        self.store.with_conn(|c| {
+            c.execute(
+                "INSERT INTO cost_reconciliations (id, cost_event_id, actual_cost_micros, source, currency, at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    searchos_domain::new_id("recon"),
+                    cost_event_id,
+                    actual_cost_micros,
+                    source,
+                    currency,
+                    now()
+                ],
+            )
+            .map_err(e)?;
+            let n = c
+                .execute(
+                    "UPDATE cost_events SET actual_cost_micros = ?2 WHERE id = ?1",
+                    params![cost_event_id, actual_cost_micros],
+                )
+                .map_err(e)?;
+            if n != 1 {
+                return Err(SearchOsError::Retrieval(format!(
+                    "cost event {cost_event_id} not found"
+                )));
+            }
+            Ok(())
+        })
+    }
+
+    pub fn count(&self) -> Result<u64, SearchOsError> {
+        self.store.with_conn(|c| {
+            c.query_row("SELECT count(*) FROM cost_reconciliations", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .map(|n| n as u64)
+            .map_err(e)
+        })
+    }
+}
+
+/// Enqueues a document refresh event (RFC-004 v1.1 10.1: refresh the existing
+/// source rather than deleting knowledge or re-buying a full search).
+pub fn enqueue_refresh(
+    store: &SqliteStore,
+    url: &str,
+    workspace_id: &str,
+) -> Result<(), SearchOsError> {
+    let payload = serde_json::json!({ "url": url, "workspace_id": workspace_id }).to_string();
+    store.with_conn(|c| {
+        c.execute(
+            "INSERT INTO index_outbox (id, entity_type, entity_id, operation, status, attempts, payload, created_at)
+             VALUES (?1, 'document', ?2, 'refresh', 'pending', 0, ?3, ?4)",
+            params![searchos_domain::new_id("out"), url, payload, now()],
+        )
+        .map(|_| ())
+        .map_err(e)
+    })
+}
+
+#[cfg(test)]
+mod completion_tests {
+    use super::*;
+
+    fn store() -> SqliteStore {
+        crate::store::SqliteStore::open_in_memory().unwrap()
+    }
+
+    #[test]
+    fn idempotency_replay_is_atomic() {
+        let s = store();
+        let r = IdempotencyRepo::new(&s);
+        assert!(r.begin("req_1", "task_1", "ws").unwrap());
+        assert!(!r.begin("req_1", "task_2", "ws").unwrap());
+        assert!(r.get("req_1").unwrap().unwrap().response_json.is_none());
+        r.complete("req_1", "{\"status\":\"completed\"}").unwrap();
+        let rec = r.get("req_1").unwrap().unwrap();
+        assert_eq!(rec.status, "completed");
+        assert_eq!(rec.task_id, "task_1");
+        assert!(rec.response_json.unwrap().contains("completed"));
+    }
+
+    #[test]
+    fn reservation_settles_and_exceeds() {
+        let s = store();
+        let r = BudgetRepo::new(&s);
+        r.reserve("r1", "t1", Some("tr1"), 10_000, "USD").unwrap();
+        r.settle("t1", 4_000).unwrap();
+        let rows = r.list(10).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].status, "settled");
+        assert_eq!(rows[0].spent_cost_micros, 4_000);
+        assert_eq!(rows[0].estimated_cost_micros, 10_000);
+        r.reserve("r2", "t2", None, 5_000, "USD").unwrap();
+        r.mark_exceeded("t2").unwrap();
+        assert_eq!(r.list(10).unwrap()[0].status, "exceeded");
+    }
+
+    #[test]
+    fn reconciliation_requires_existing_event() {
+        let s = store();
+        let r = ReconciliationRepo::new(&s);
+        assert!(r.record("missing", 100, "provider_billing", "USD").is_err());
+    }
+
+    #[test]
+    fn refresh_events_are_outbox_rows() {
+        let s = store();
+        enqueue_refresh(&s, "https://example.com/a", "default").unwrap();
+        let rows = super::OutboxRepo::new(&s).pending(10).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].operation, "refresh");
+        assert!(rows[0].payload.as_deref().unwrap().contains("example.com"));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// RFC-027 / RFC-028 Analytics Event Store and Read Model repository.
+// ---------------------------------------------------------------------------
+
+/// Aggregated Dashboard Read Models. The HTTP layer only reads these rows,
+/// never the operational tables directly.
+pub struct AnalyticsRepo<'a> {
+    store: &'a SqliteStore,
+}
+
+impl<'a> AnalyticsRepo<'a> {
+    pub fn new(store: &'a SqliteStore) -> Self {
+        Self { store }
+    }
+
+    /// Append-only event ledger (RFC-027 3).
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_event(
+        &self,
+        event_id: &str,
+        event_type: &str,
+        workspace_id: &str,
+        request_id: Option<&str>,
+        execution_id: Option<&str>,
+        source_module: &str,
+        correlation_id: Option<&str>,
+        payload_json: &str,
+    ) -> Result<(), SearchOsError> {
+        let now = chrono::Utc::now().to_rfc3339();
+        self.store.with_conn(|c| {
+            c.execute(
+                "INSERT OR IGNORE INTO analytics_events (event_id, event_type, schema_version, occurred_at, recorded_at, workspace_id, request_id, execution_id, source_module, correlation_id, payload_json)
+                 VALUES (?1, ?2, 1, ?3, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    event_id,
+                    event_type,
+                    now,
+                    workspace_id,
+                    request_id,
+                    execution_id,
+                    source_module,
+                    correlation_id,
+                    payload_json
+                ],
+            )
+            .map(|_| ())
+            .map_err(e)
+        })
+    }
+
+    /// Rebuilds all Dashboard Read Models from operational records.
+    /// This is the Analytics Aggregation Engine for the MVP.
+    pub fn rebuild(&self, baseline_per_query_micros: i64) -> Result<(), SearchOsError> {
+        const VERSION: &str = "1";
+        let now = chrono::Utc::now().to_rfc3339();
+        let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        self.store.with_conn(|c| {
+            let scalar = |sql: &str| -> Result<i64, SearchOsError> {
+                c.query_row(sql, [], |r| r.get(0))
+                    .map_err(|e| SearchOsError::Storage(e.to_string()))
+            };
+            let put = |key: &str, bucket: &str, value: &serde_json::Value| -> Result<(), SearchOsError> {
+                c.execute(
+                    "INSERT OR REPLACE INTO analytics_read_models (model_key, workspace_id, bucket_start, payload_json, aggregation_version, updated_at)
+                     VALUES (?1, '*', ?2, ?3, ?4, ?5)",
+                    params![key, bucket, value.to_string(), VERSION, now],
+                )
+                .map(|_| ())
+                .map_err(e)
+            };
+
+            let total = scalar("SELECT count(*) FROM search_tasks")?;
+            let completed = scalar("SELECT count(*) FROM search_tasks WHERE status = 'completed'")?;
+            let failed = scalar("SELECT count(*) FROM search_tasks WHERE status = 'failed'")?;
+            let partial = scalar("SELECT count(*) FROM search_tasks WHERE status = 'partial'")?;
+            // Local resolution is a quality-valid local answer, not merely a
+            // decision path. An insufficient local-only task must not inflate
+            // this KPI (RFC-026 6.1).
+            let local = scalar(
+                "SELECT count(*) FROM decision_traces dt
+                 WHERE dt.selected_path IN ('local','local_with_refresh')
+                   AND EXISTS (SELECT 1 FROM audit_events ae
+                               WHERE ae.action = 'task_passed' AND ae.target = dt.task_id)",
+            )?;
+            let external = scalar(
+                "SELECT count(*) FROM decision_traces WHERE selected_path IN ('hybrid','external')",
+            )?;
+            let quality_passed = scalar(
+                "SELECT count(DISTINCT target) FROM audit_events WHERE action = 'task_passed'",
+            )?;
+            let cost_estimated = scalar("SELECT COALESCE(sum(estimated_cost_micros),0) FROM cost_events")?;
+            let cost_actual_rows = scalar("SELECT count(*) FROM cost_events WHERE actual_cost_micros IS NOT NULL")?;
+            let cost_actual = scalar("SELECT COALESCE(sum(actual_cost_micros),0) FROM cost_events")?;
+            let documents = scalar("SELECT count(*) FROM documents WHERE status != 'deleted'")?;
+            let chunks = scalar("SELECT count(*) FROM document_chunks")?;
+            let embeddings = scalar("SELECT count(*) FROM embeddings")?;
+            let baseline = total.saturating_mul(baseline_per_query_micros);
+            let savings = baseline - cost_estimated;
+            let rate = |part: i64, whole: i64| -> f64 {
+                if whole > 0 { part as f64 / whole as f64 } else { 0.0 }
+            };
+
+            let overview = serde_json::json!({
+                "searches": { "total": total, "completed": completed, "failed": failed, "partial": partial },
+                "local_resolution": { "count": local, "rate": rate(local, total), "denominator": total,
+                    "definition": "quality-valid tasks served by local knowledge / all tasks", "drilldown": "/search?filter=local" },
+                "external_search": { "count": external, "rate": rate(external, total), "denominator": total,
+                    "definition": "tasks with an external acquisition path / all tasks", "drilldown": "/search?filter=external" },
+                "quality": { "passed": quality_passed, "partial": partial, "failed": failed,
+                    "pass_rate": rate(quality_passed, total), "denominator": total,
+                    "definition": "quality-gate passing tasks / all tasks", "drilldown": "/quality" },
+                "cost": { "estimated_micros": cost_estimated,
+                    "actual_micros": if cost_actual_rows > 0 { Some(cost_actual) } else { None },
+                    "estimated_savings_micros": savings, "baseline_micros": baseline, "currency": "USD",
+                    "is_estimate": cost_actual_rows == 0,
+                    "definition": "baseline minus full SearchOS cost; estimates are not invoices",
+                    "drilldown": "/cost" },
+                "knowledge": { "documents": documents, "chunks": chunks, "embeddings": embeddings,
+                    "definition": "active document / chunk / embedding rows", "drilldown": "/knowledge" },
+                "evidence_reuse_rate": rate(local, total),
+                "data_freshness": if total > 0 { "complete" } else { "empty" },
+                "aggregation_version": VERSION,
+                "metric_definitions_version": "1",
+            });
+            put("overview", &today, &overview)?;
+
+            // Search activity time series. One Read Model row per day.
+            let mut stmt = c.prepare(
+                "SELECT substr(st.started_at,1,10) AS day, count(*),
+                        sum(CASE WHEN dt.selected_path IN ('local','local_with_refresh') THEN 1 ELSE 0 END),
+                        sum(CASE WHEN dt.selected_path IN ('hybrid','external') THEN 1 ELSE 0 END),
+                        sum(CASE WHEN st.status = 'failed' THEN 1 ELSE 0 END)
+                 FROM search_tasks st LEFT JOIN decision_traces dt ON dt.task_id = st.id
+                 GROUP BY day ORDER BY day",
+            ).map_err(e)?;
+            let rows = stmt.query_map([], |r| Ok((
+                r.get::<_, String>(0)?, r.get::<_, i64>(1)?,
+                r.get::<_, Option<i64>>(2)?.unwrap_or(0),
+                r.get::<_, Option<i64>>(3)?.unwrap_or(0),
+                r.get::<_, Option<i64>>(4)?.unwrap_or(0),
+            ))).map_err(e)?;
+            let mut series: Vec<(String, i64, i64, i64, i64)> = Vec::new();
+            for row in rows { series.push(row.map_err(e)?); }
+            for (day, n, l, x, f) in series {
+                put("search_timeseries", &day, &serde_json::json!({
+                    "date": day, "total": n, "local": l, "external": x, "failed": f,
+                }))?;
+            }
+
+            // Strategy distribution.
+            let mut stmt = c.prepare(
+                "SELECT COALESCE(final_strategy,'unknown'), count(*) FROM decision_traces GROUP BY 1",
+            ).map_err(e)?;
+            let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))).map_err(e)?;
+            let mut strategies = Vec::new();
+            for row in rows { strategies.push(row.map_err(e)?); }
+            put("search_strategies", &today, &serde_json::json!({ "items": strategies }))?;
+
+            // Cost breakdown by four dimensions.
+            let breakdown = |sql: &str| -> Result<Vec<(String, i64, i64)>, SearchOsError> {
+                let mut st = c.prepare(sql).map_err(e)?;
+                let rs = st.query_map([], |r| Ok((
+                    r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?,
+                ))).map_err(e)?;
+                let mut out = Vec::new();
+                for row in rs { out.push(row.map_err(e)?); }
+                Ok(out)
+            };
+            put("cost_breakdown", &today, &serde_json::json!({
+                "by_operation": breakdown("SELECT operation, count(*), COALESCE(sum(estimated_cost_micros),0) FROM cost_events GROUP BY operation")?,
+                "by_provider": breakdown("SELECT COALESCE(provider_id,'local'), count(*), COALESCE(sum(estimated_cost_micros),0) FROM cost_events GROUP BY 1")?,
+                "by_workspace": breakdown("SELECT workspace_id, count(*), COALESCE(sum(estimated_cost_micros),0) FROM cost_events GROUP BY workspace_id")?,
+                "by_agent": breakdown("SELECT COALESCE(agent_id,'unattributed'), count(*), COALESCE(sum(estimated_cost_micros),0) FROM cost_events GROUP BY 1")?,
+                "is_estimate": cost_actual_rows == 0,
+            }))?;
+
+            // Quality dimensions and failure classes.
+            let dim = |sql: &str| -> Result<Vec<(String, i64)>, SearchOsError> {
+                let mut st = c.prepare(sql).map_err(e)?;
+                let rs = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))).map_err(e)?;
+                let mut out = Vec::new();
+                for row in rs { out.push(row.map_err(e)?); }
+                Ok(out)
+            };
+            put("quality_dimensions", &today, &serde_json::json!({
+                "freshness": dim("SELECT COALESCE(freshness_status,'unknown'), count(*) FROM decision_traces GROUP BY 1")?,
+                "coverage": dim("SELECT COALESCE(coverage_status,'unknown'), count(*) FROM decision_traces GROUP BY 1")?,
+                "source": dim("SELECT COALESCE(source_status,'unknown'), count(*) FROM decision_traces GROUP BY 1")?,
+                "failures": dim("SELECT COALESCE(rejection_reasons_json,'none'), count(*) FROM decision_traces GROUP BY 1")?,
+            }))?;
+
+            // Knowledge growth and freshness buckets.
+            let mut stmt = c.prepare(
+                "SELECT substr(created_at,1,10) AS day, count(*) FROM documents GROUP BY day ORDER BY day",
+            ).map_err(e)?;
+            let rs = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))).map_err(e)?;
+            let mut growth = Vec::new();
+            for row in rs { growth.push(row.map_err(e)?); }
+            put("knowledge_growth", &today, &serde_json::json!({ "items": growth, "chunks": chunks, "embeddings": embeddings }))?;
+            put("knowledge_freshness", &today, &serde_json::json!({
+                "fresh": null, "near_expiry": null, "stale": null, "expired": null, "unknown": null,
+                "reason": "document-level freshness classification is not instrumented in the MVP; missing values are not zero",
+            }))?;
+
+            // Provider and crawler summaries.
+            put("providers", &today, &serde_json::json!({
+                "items": breakdown("SELECT COALESCE(provider_id,'local'), count(*), COALESCE(sum(estimated_cost_micros),0) FROM cost_events GROUP BY 1")?,
+                "health": "see /cost/providers",
+            }))?;
+            let crawl_total = scalar("SELECT count(*) FROM crawler_runs")?;
+            let crawl_ok = scalar("SELECT count(*) FROM crawler_runs WHERE status = 'success'")?;
+            let crawl_failed = scalar("SELECT count(*) FROM crawler_runs WHERE status != 'success'")?;
+            put("crawlers_summary", &today, &serde_json::json!({
+                "total": crawl_total, "successful": crawl_ok, "failed": crawl_failed,
+                "extensions": null, "reason": "extension health comes from the crawler registry, not from a fake zero",
+                "drilldown": "/crawlers",
+            }))?;
+
+            // Infrastructure: only measured values; unavailable dimensions are null.
+            let page_count = scalar("PRAGMA page_count")?;
+            let page_size = scalar("PRAGMA page_size")?;
+            put("infrastructure_summary", &today, &serde_json::json!({
+                "sqlite_bytes": page_count.saturating_mul(page_size),
+                "index_chunks": chunks,
+                "cpu": null, "gpu": null, "memory": null, "network": null,
+                "reason": "process resource sampling is not instrumented in the MVP; null is not zero",
+            }))?;
+
+            // Recent search requests for the data table.
+            let mut stmt = c.prepare(
+                "SELECT st.id, st.query, st.mode, st.status, st.started_at,
+                        COALESCE(dt.selected_path,'unknown'), COALESCE(dt.final_strategy,'unknown')
+                 FROM search_tasks st LEFT JOIN decision_traces dt ON dt.task_id = st.id
+                 ORDER BY st.started_at DESC LIMIT 200",
+            ).map_err(e)?;
+            let rs = stmt.query_map([], |r| Ok(serde_json::json!({
+                "request_id": r.get::<_, String>(0)?,
+                "query": r.get::<_, String>(1)?,
+                "mode": r.get::<_, String>(2)?,
+                "status": r.get::<_, String>(3)?,
+                "created_at": r.get::<_, String>(4)?,
+                "strategy": r.get::<_, String>(5)?,
+                "final_strategy": r.get::<_, String>(6)?,
+            }))).map_err(e)?;
+            let mut requests = Vec::new();
+            for row in rs { requests.push(row.map_err(e)?); }
+            put("search_requests", &today, &serde_json::json!({ "items": requests, "limit": 200 }))?;
+
+            Ok(())
+        })
+    }
+
+    /// Reads one aggregate Read Model payload.
+    pub fn read_model(&self, key: &str) -> Result<Option<serde_json::Value>, SearchOsError> {
+        self.store.with_conn(|c| {
+            let row: Option<String> = c.query_row(
+                "SELECT payload_json FROM analytics_read_models WHERE model_key = ?1 AND workspace_id = '*' ORDER BY bucket_start DESC LIMIT 1",
+                params![key], |r| r.get(0),
+            ).optional().map_err(e)?;
+            Ok(row.and_then(|s| serde_json::from_str(&s).ok()))
+        })
+    }
+
+    /// Reads a time-series Read Model as ordered buckets.
+    pub fn read_series(
+        &self,
+        key: &str,
+        limit: u32,
+    ) -> Result<Vec<serde_json::Value>, SearchOsError> {
+        self.store.with_conn(|c| {
+            let mut stmt = c.prepare(
+                "SELECT payload_json FROM analytics_read_models WHERE model_key = ?1 AND workspace_id = '*' ORDER BY bucket_start ASC LIMIT ?2",
+            ).map_err(e)?;
+            let rows = stmt.query_map(params![key, limit.clamp(1, 500)], |r| r.get::<_, String>(0)).map_err(e)?;
+            let mut out = Vec::new();
+            for row in rows {
+                let s = row.map_err(e)?;
+                if let Ok(v) = serde_json::from_str(&s) { out.push(v); }
+            }
+            Ok(out)
+        })
+    }
+
+    pub fn events_since(
+        &self,
+        cursor: i64,
+        limit: u32,
+    ) -> Result<Vec<serde_json::Value>, SearchOsError> {
+        self.store.with_conn(|c| {
+            let mut stmt = c.prepare(
+                "SELECT id, event_id, event_type, occurred_at, workspace_id, request_id, payload_json
+                 FROM analytics_events WHERE id > ?1 ORDER BY id ASC LIMIT ?2",
+            ).map_err(e)?;
+            let rows = stmt.query_map(params![cursor, limit.clamp(1, 100)], |r| Ok(serde_json::json!({
+                "id": r.get::<_, i64>(0)?,
+                "event_id": r.get::<_, String>(1)?,
+                "event_type": r.get::<_, String>(2)?,
+                "occurred_at": r.get::<_, String>(3)?,
+                "workspace_id": r.get::<_, String>(4)?,
+                "request_id": r.get::<_, Option<String>>(5)?,
+                "payload": r.get::<_, String>(6)?,
+            }))).map_err(e)?;
+            let mut out = Vec::new();
+            for row in rows { out.push(row.map_err(e)?); }
+            Ok(out)
+        })
+    }
+
+    pub fn event_count(&self) -> Result<i64, SearchOsError> {
+        self.store.with_conn(|c| {
+            c.query_row("SELECT count(*) FROM analytics_events", [], |r| r.get(0))
+                .map_err(e)
+        })
+    }
+}
+
+#[cfg(test)]
+mod analytics_tests {
+    use super::*;
+
+    fn store() -> SqliteStore {
+        crate::store::SqliteStore::open_in_memory().unwrap()
+    }
+
+    #[test]
+    fn event_ledger_is_append_only_and_read_model_rebuilds() {
+        let s = store();
+        let repo = AnalyticsRepo::new(&s);
+        repo.record_event(
+            "evt_1",
+            "search.request.completed",
+            "default",
+            Some("req_1"),
+            Some("task_1"),
+            "search_service",
+            None,
+            "{\"status\":\"completed\"}",
+        )
+        .unwrap();
+        repo.record_event(
+            "evt_1",
+            "search.request.completed",
+            "default",
+            Some("req_1"),
+            Some("task_1"),
+            "search_service",
+            None,
+            "{\"status\":\"completed\"}",
+        )
+        .unwrap();
+        assert_eq!(repo.event_count().unwrap(), 1, "event_id is unique");
+        repo.rebuild(5_000).unwrap();
+        let overview = repo.read_model("overview").unwrap().unwrap();
+        assert_eq!(overview["searches"]["total"], 0);
+        assert_eq!(overview["cost"]["baseline_micros"], 0);
+        assert_eq!(overview["aggregation_version"], "1");
+        assert!(repo
+            .read_series("search_timeseries", 30)
+            .unwrap()
+            .is_empty());
+        assert_eq!(repo.events_since(0, 10).unwrap().len(), 1);
+    }
+}
+
+impl<'a> AnalyticsRepo<'a> {
+    /// Overwrites one global Read Model row (aggregation engine only).
+    pub fn write_model(&self, key: &str, value: &serde_json::Value) -> Result<(), SearchOsError> {
+        let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        self.store.with_conn(|c| {
+            c.execute(
+                "INSERT OR REPLACE INTO analytics_read_models (model_key, workspace_id, bucket_start, payload_json, aggregation_version, updated_at)
+                 VALUES (?1, '*', ?2, ?3, '1', ?4)",
+                params![key, today, value.to_string(), now()],
+            )
+            .map(|_| ())
+            .map_err(e)
+        })
     }
 }

@@ -5516,6 +5516,7 @@ dependencies = [
  "searchos-crawler",
  "searchos-decision",
  "searchos-domain",
+ "searchos-evaluation",
  "searchos-extension",
  "searchos-fetch",
  "searchos-index-tantivy",
@@ -5540,6 +5541,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "chrono",
+ "futures-util",
  "searchos-application",
  "searchos-core",
  "searchos-domain",

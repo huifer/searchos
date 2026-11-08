@@ -454,3 +454,220 @@ use searchos_domain::memory::SharingPolicy as SharingPolicyPriv;
 fn searchos_document_content_hash(content: &str) -> String {
     searchos_core::hash_util::content_hash_hex(content.as_bytes())
 }
+
+// ---------------------------------------------------------------------------
+// Feature-completion regression tests (source RFC baseline gaps).
+// ---------------------------------------------------------------------------
+
+/// RFC-004 v1.1 SDE-007: ExternalOnly must not be silently intercepted by the
+/// exact cache, and a failed external path must not be reported as a
+/// completed quality-passing search.
+#[tokio::test]
+async fn external_only_bypasses_cache_and_reports_insufficient_evidence() {
+    let h = Harness::new().await;
+    h.seed(
+        "tokio_cache",
+        "Tokio is an asynchronous runtime for the Rust language",
+        "https://tokio.rs/tokio/tutorial",
+    )
+    .await;
+    // First request populates the exact cache with a passing response.
+    let first = h
+        .service
+        .search(request(
+            "What is tokio async runtime?",
+            SearchMode::LocalOnly,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        first.quality.status,
+        searchos_domain::response::QualityStatus::Passed
+    );
+
+    let mut external = request("What is tokio async runtime?", SearchMode::ExternalOnly);
+    external.budget.max_external_queries = 1;
+    let resp = h.service.search(external).await.unwrap();
+    assert!(
+        !resp.replayed,
+        "ExternalOnly cannot be served from exact cache"
+    );
+    assert_eq!(
+        resp.decision.path, "reject",
+        "offline external path is rejected explicitly"
+    );
+    assert_eq!(
+        resp.status,
+        searchos_domain::response::SearchStatus::InsufficientEvidence,
+        "no external provider available ⇒ explicit insufficient evidence"
+    );
+    assert!(resp
+        .warnings
+        .iter()
+        .any(|w| w.contains("provider_unavailable")));
+}
+
+/// RFC-014 14.7: a repeated request_id must replay the recoverable task
+/// state without creating another task or another bill.
+#[tokio::test]
+async fn repeated_request_id_is_idempotent() {
+    let h = Harness::new().await;
+    h.seed(
+        "raft_idem",
+        "Raft consensus algorithm leader election",
+        "https://raft.github.io",
+    )
+    .await;
+    let base = request("What is raft consensus?", SearchMode::LocalOnly);
+    let first = h
+        .service
+        .search(base.clone().with_request_id("fixed-request-1"))
+        .await
+        .unwrap();
+    let second = h
+        .service
+        .search(base.with_request_id("fixed-request-1"))
+        .await
+        .unwrap();
+    assert!(second.replayed, "second call replays the stored response");
+    assert_eq!(first.trace_id.as_str(), second.trace_id.as_str());
+    let tasks: i64 = h
+        .runtime
+        .sqlite
+        .with_conn(|c| {
+            c.query_row("SELECT count(*) FROM search_tasks", [], |r| r.get(0))
+                .map_err(|e| searchos_domain::SearchOsError::Storage(e.to_string()))
+        })
+        .unwrap();
+    assert_eq!(tasks, 1, "no duplicate task row / external purchase");
+}
+
+/// RFC-004 v1.1 11.1: traces carry structured stages and a final strategy.
+#[tokio::test]
+async fn decision_trace_has_stages_and_strategy() {
+    let h = Harness::new().await;
+    h.seed(
+        "tokio_trace",
+        "Tokio async runtime for rust",
+        "https://tokio.rs",
+    )
+    .await;
+    let resp = h
+        .service
+        .search(request("What is tokio runtime?", SearchMode::LocalOnly))
+        .await
+        .unwrap();
+    let trace = h
+        .runtime
+        .traces()
+        .get(resp.trace_id.as_str())
+        .await
+        .unwrap()
+        .expect("trace persisted");
+    assert!(
+        !trace.stages.is_empty(),
+        "structured stage records persisted"
+    );
+    assert_eq!(trace.stages[0].stage, "validation");
+    assert_eq!(trace.final_strategy.as_deref(), Some("local_resolve"));
+    assert!(trace.final_outcome.is_some());
+}
+
+/// RFC-004 v1.1 15 / RFC-006 6.7/6.10: reservations settle, savings are
+/// computed against an equivalent-quality baseline, and provider billing
+/// reconciliation keeps estimates separate from actuals.
+#[tokio::test]
+async fn savings_reservations_and_reconciliation() {
+    let h = Harness::new().await;
+    h.seed(
+        "tokio_cost",
+        "Tokio async runtime for rust",
+        "https://tokio.rs",
+    )
+    .await;
+    let _ = h
+        .service
+        .search(request("What is tokio runtime?", SearchMode::LocalOnly))
+        .await
+        .unwrap();
+    let cost = &h.runtime.application.cost_service;
+    let report = cost.savings(5_000).await.unwrap();
+    assert_eq!(report.task_count, 1);
+    assert_eq!(report.baseline_micros, 5_000);
+    assert!(report.is_estimate, "no provider bill reconciled yet");
+    assert_eq!(report.quality_passing_tasks, 1);
+    assert!(report.cost_per_quality_passing_answer_micros.is_some());
+
+    let reservations = cost.reservations(10).await.unwrap();
+    let rows = reservations["reservations"].as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["status"], "settled");
+
+    let events = searchos_storage_sqlite::repos::CostRepo::new(&h.runtime.sqlite)
+        .query(&searchos_domain::cost::CostQuery::default())
+        .unwrap();
+    assert!(!events.is_empty(), "local compute cost event recorded");
+    let id = events[0].id.as_str().to_string();
+    cost.reconcile(&id, 123, "provider_billing", "USD")
+        .await
+        .unwrap();
+    let summary = cost
+        .summary(&searchos_domain::cost::CostQuery::default())
+        .await
+        .unwrap();
+    assert_eq!(summary.total_actual.unwrap().amount_micros, 123);
+    assert!(
+        summary.total_estimated.amount_micros > 0,
+        "estimate is never rewritten by reconciliation"
+    );
+}
+
+/// RFC-004 v1.1 10.1: stale local knowledge is refreshed, never deleted,
+/// and the refresh is an auditable outbox event.
+#[tokio::test]
+async fn stale_knowledge_is_refreshed_not_deleted() {
+    let h = Harness::new().await;
+    use searchos_domain::ids::{ChunkId, DocumentId, DocumentVersionId};
+    let stale = searchos_domain::retrieval::IndexedDocument {
+        chunk_id: ChunkId::new("stale_refresh_chunk"),
+        document_id: DocumentId::new("stale_refresh_doc"),
+        version_id: DocumentVersionId::new("stale_refresh_v"),
+        title: Some("Raft consensus".into()),
+        body: "Raft consensus algorithm leader election".into(),
+        url: "https://raft.github.io/raft".into(),
+        language: Some("en".into()),
+        workspace_id: "*".into(),
+        fetched_at: chrono::Utc::now() - chrono::Duration::days(400),
+    };
+    h.runtime.tantivy.index(stale).await.unwrap();
+    h.runtime.tantivy.commit().await.unwrap();
+    let resp = h
+        .service
+        .search(request(
+            "What is raft consensus algorithm?",
+            SearchMode::LocalFirst,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.decision.path, "local_with_refresh",
+        "got {:?}",
+        resp.decision
+    );
+    let rows = searchos_storage_sqlite::repos::OutboxRepo::new(&h.runtime.sqlite)
+        .pending(10)
+        .unwrap();
+    assert!(
+        rows.iter().any(|r| r.operation == "refresh"),
+        "refresh enqueued instead of deleting the document"
+    );
+    assert!(
+        !h.runtime
+            .tantivy
+            .search(&RetrievalQuery::new("leader election", 5))
+            .await
+            .unwrap()
+            .is_empty(),
+        "authoritative local knowledge is preserved"
+    );
+}

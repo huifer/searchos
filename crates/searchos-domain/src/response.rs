@@ -76,6 +76,44 @@ pub struct SearchResultItem {
     pub source: String,
 }
 
+/// Explicit outcome of a search task (RFC-002 2.8, RFC-004 v1.1 6.12).
+///
+/// A partial or insufficient result must never be reported as a completed,
+/// quality-passing search.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchStatus {
+    Completed,
+    CompletedWithWarnings,
+    Partial,
+    InsufficientEvidence,
+    BudgetExhausted,
+    Failed,
+    Cancelled,
+}
+
+impl SearchStatus {
+    /// Snake-case wire name.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::CompletedWithWarnings => "completed_with_warnings",
+            Self::Partial => "partial",
+            Self::InsufficientEvidence => "insufficient_evidence",
+            Self::BudgetExhausted => "budget_exhausted",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+        }
+    }
+}
+
+impl Default for SearchStatus {
+    /// Legacy cached payloads (pre-status) were passing responses.
+    fn default() -> Self {
+        Self::Completed
+    }
+}
+
 /// Full search response returned by the application layer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchResponse {
@@ -86,6 +124,19 @@ pub struct SearchResponse {
     pub cost: CostReport,
     pub provenance: Vec<Evidence>,
     pub trace_id: TraceId,
+    /// Explicit task outcome (RFC-002 2.8). `#[serde(default)]` keeps old
+    /// cached payloads deserializable.
+    #[serde(default)]
+    pub status: SearchStatus,
+    /// Machine-readable warnings ("partial success" must be visible).
+    #[serde(default)]
+    pub warnings: Vec<String>,
+    /// Task id for cost / trace attribution.
+    #[serde(default)]
+    pub task_id: Option<String>,
+    /// Set when this response was replayed from the idempotency ledger.
+    #[serde(default)]
+    pub replayed: bool,
 }
 
 impl QualityStatus {

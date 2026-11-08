@@ -1,7 +1,8 @@
-//! MCP stdio server (RFC-012 12.8).
+//! MCP stdio server (RFC-012 12.8, RFC-021 21.5).
 //!
 //! JSON-RPC 2.0 over stdin/stdout. Tools expose explicit parameter schemas:
-//! `search`, `extract`, `memory_search`, `cost_summary`, `search_trace`.
+//! `search`, `fetch`, `extract`, `memory_search`, `document_search`,
+//! `cost_summary`, `trace_inspect`, `search_trace` (compat alias).
 
 use std::sync::Arc;
 
@@ -16,7 +17,7 @@ pub fn tools() -> Vec<Value> {
     vec![
         json!({
             "name": "search",
-            "description": "Search local knowledge and the web with a quality-gated, cost-aware path.",
+            "description": "Search local knowledge and the web with a quality-gated, cost-aware path. mode=local_only forbids ALL external calls and returns insufficient_evidence when local knowledge cannot pass the quality gate; local_first/hybrid/external_first/external_only may acquire external evidence. Read the quality.status and status fields before trusting results.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -25,9 +26,22 @@ pub fn tools() -> Vec<Value> {
                     "mode": { "type": "string", "enum": ["local_only","local_first","external_first","external_only","hybrid"] },
                     "workspace_id": { "type": "string" },
                     "max_external_queries": { "type": "integer", "minimum": 0 },
-                    "max_total_cost": { "type": "number", "minimum": 0 }
+                    "max_total_cost": { "type": "number", "minimum": 0 },
+                    "request_id": { "type": "string", "description": "Client idempotency key; replaying it does not re-run or re-bill an external search." }
                 },
                 "required": ["query"]
+            }
+        }),
+        json!({
+            "name": "fetch",
+            "description": "Fetch and extract readable content from a URL without persisting it (SSRF-guarded, no external search). Use extract to persist the page as reusable local knowledge.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "url": { "type": "string" },
+                    "workspace_id": { "type": "string" }
+                },
+                "required": ["url"]
             }
         }),
         json!({
@@ -59,13 +73,34 @@ pub fn tools() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "document_search",
+            "description": "Search persisted local documents by URL text (no external calls).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string" },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 100, "default": 20 }
+                },
+                "required": ["query"]
+            }
+        }),
+        json!({
             "name": "cost_summary",
             "description": "Aggregate cost ledger summary (estimates, not real bills).",
             "inputSchema": { "type": "object", "properties": {} }
         }),
         json!({
+            "name": "trace_inspect",
+            "description": "Fetch the explainable, staged decision trace for a search.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "trace_id": { "type": "string" } },
+                "required": ["trace_id"]
+            }
+        }),
+        json!({
             "name": "search_trace",
-            "description": "Fetch the explainable decision trace for a search.",
+            "description": "Compatibility alias for trace_inspect (RFC-021 21.5).",
             "inputSchema": {
                 "type": "object",
                 "properties": { "trace_id": { "type": "string" } },
@@ -78,9 +113,12 @@ pub fn tools() -> Vec<Value> {
 /// Tool catalogue constant (name list).
 pub const TOOLS: &[&str] = &[
     "search",
+    "fetch",
     "extract",
     "memory_search",
+    "document_search",
     "cost_summary",
+    "trace_inspect",
     "search_trace",
 ];
 
@@ -148,6 +186,9 @@ async fn call_tool(runtime: Arc<SearchOsRuntime>, params: &Value) -> Result<Valu
             if let Some(c) = args.get("max_total_cost").and_then(|c| c.as_f64()) {
                 req.budget.max_total_cost_micros = (c * 1_000_000.0).round() as i64;
             }
+            if let Some(rid) = args.get("request_id").and_then(|r| r.as_str()) {
+                req = req.with_request_id(rid);
+            }
             let resp = runtime
                 .application
                 .search_service
@@ -156,6 +197,42 @@ async fn call_tool(runtime: Arc<SearchOsRuntime>, params: &Value) -> Result<Valu
                 .map_err(|e| json!({ "code": -32603, "message": e.to_string() }))?;
             serde_json::to_value(resp)
                 .map_err(|e| json!({ "code": -32603, "message": e.to_string() }))?
+        }
+        "fetch" => {
+            // Non-persisting URL read (RFC-021 21.5). No external search.
+            let url = args
+                .get("url")
+                .and_then(|u| u.as_str())
+                .unwrap_or("")
+                .to_string();
+            if url.trim().is_empty() {
+                return Err(json!({ "code": -32602, "message": "url required" }));
+            }
+            let content = runtime
+                .application
+                .fetch_service
+                .fetch_preview(&url)
+                .await
+                .map_err(|e| json!({ "code": -32603, "message": e.to_string() }))?;
+            json!({ "url": url, "title": content.title, "content": content.text })
+        }
+        "document_search" => {
+            let query = args
+                .get("query")
+                .and_then(|q| q.as_str())
+                .unwrap_or("")
+                .to_lowercase();
+            let limit = args.get("limit").and_then(|l| l.as_u64()).unwrap_or(20) as usize;
+            let repo = searchos_storage_sqlite::repos::DocumentRepo::new(&runtime.sqlite);
+            let docs = repo
+                .list(500)
+                .map_err(|e| json!({ "code": -32603, "message": e.to_string() }))?;
+            let matches: Vec<_> = docs
+                .into_iter()
+                .filter(|d| d.canonical_url.to_lowercase().contains(&query))
+                .take(limit.min(100))
+                .collect();
+            json!({ "documents": serde_json::to_value(matches).unwrap_or_default() })
         }
         "extract" => {
             let url = args
@@ -232,7 +309,7 @@ async fn call_tool(runtime: Arc<SearchOsRuntime>, params: &Value) -> Result<Valu
                 .map_err(|e| json!({ "code": -32603, "message": e.to_string() }))?;
             json!({ "summary": summary, "is_estimate": true })
         }
-        "search_trace" => {
+        "trace_inspect" | "search_trace" => {
             let trace_id = args
                 .get("trace_id")
                 .and_then(|t| t.as_str())
@@ -363,6 +440,59 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("summary"));
+    }
+
+    #[tokio::test]
+    async fn rfc021_tool_catalogue_is_complete() {
+        let (rt, _d) = runtime().await;
+        let list = handle_message(rt, &json!({"jsonrpc":"2.0","id":5,"method":"tools/list"}))
+            .await
+            .unwrap();
+        let names: Vec<String> = list["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap().to_string())
+            .collect();
+        for required in [
+            "search",
+            "fetch",
+            "extract",
+            "memory_search",
+            "document_search",
+            "cost_summary",
+            "trace_inspect",
+        ] {
+            assert!(names.contains(&required.to_string()), "missing {required}");
+        }
+        let search_tool = &list["result"]["tools"][0];
+        assert!(search_tool["description"]
+            .as_str()
+            .unwrap()
+            .contains("local_only"));
+    }
+
+    #[tokio::test]
+    async fn document_search_and_trace_inspect_tools_work() {
+        let (rt, _d) = runtime().await;
+        let docs = handle_message(
+            rt.clone(),
+            &json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"document_search","arguments":{"query":"example.com"}}}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(docs["result"]["isError"], false);
+        assert!(docs["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("documents"));
+        let missing = handle_message(
+            rt,
+            &json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"trace_inspect","arguments":{"trace_id":"nope"}}}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(missing["error"]["code"], -32602);
     }
 
     #[tokio::test]

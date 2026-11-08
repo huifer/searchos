@@ -146,6 +146,18 @@ pub struct SearchRequest {
 }
 
 impl SearchRequest {
+    /// Overrides the client-supplied idempotency key (RFC-014 14.7).
+    ///
+    /// Reusing a `request_id` must not create a second external search,
+    /// a second bill, or a second document version.
+    pub fn with_request_id(mut self, request_id: impl Into<String>) -> Self {
+        let id = request_id.into();
+        if !id.trim().is_empty() {
+            self.request_id = crate::ids::RequestId::new(id);
+        }
+        self
+    }
+
     /// Creates a request with defaults; validates non-empty query.
     pub fn new(
         query: impl Into<String>,

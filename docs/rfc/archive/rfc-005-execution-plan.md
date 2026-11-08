@@ -2,7 +2,7 @@
 
 **Engineering Specification · Version 1.0 · 2026-11-08 · Status: Proposed**
 
-Companion to [RFC-001](rfc-001-searchos.md). This document turns the architecture into an
+Companion to [RFC-001](rfc-001-searchos-v2.md). This document turns the architecture into an
 executable plan: issue breakdown, dependency order, acceptance criteria, agent-assisted dev
 workflow (Codex / Claude Code), and release strategy.
 

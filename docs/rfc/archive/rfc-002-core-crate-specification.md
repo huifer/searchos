@@ -2,7 +2,7 @@
 
 **Engineering Specification · Version 1.0 · 2026-11-08 · Status: Proposed**
 
-Companion to [RFC-001](rfc-001-searchos.md). This document defines the Cargo Workspace layout,
+Companion to [RFC-001](rfc-001-searchos-v2.md). This document defines the Cargo Workspace layout,
 per-crate responsibilities, the core Traits/contracts, and the inter-crate dependency rules that
 implement the RFC-001 architecture.
 
