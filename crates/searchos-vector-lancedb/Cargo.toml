@@ -1,0 +1,20 @@
+[package]
+name = "searchos-vector-lancedb"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "LanceDB vector index adapter with pluggable embedding (ADR-009, ADR-022)."
+
+[dependencies]
+lancedb = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+futures = { package = "futures", version = "0.3" }
+chrono = { workspace = true }
+searchos-domain = { workspace = true }
+searchos-retrieval = { workspace = true }
+searchos-provider = { workspace = true }

@@ -1,0 +1,22 @@
+[package]
+name = "searchos-storage-sqlite"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "SQLite metadata source of truth, versioned migrations, repositories, transactional outbox (Part 17, ADR-011)."
+
+[dependencies]
+searchos-cost = { workspace = true }
+rusqlite = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+searchos-domain = { workspace = true }
+searchos-document = { workspace = true }
+searchos-memory = { workspace = true }
+searchos-decision = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
