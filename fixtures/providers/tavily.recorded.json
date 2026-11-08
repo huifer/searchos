@@ -1,0 +1,23 @@
+{
+  "_comment": "Recorded Tavily response shape for offline adapter tests (not a real API key response). Numbers are illustrative.",
+  "provider": "tavily",
+  "response": {
+    "results": [
+      {
+        "title": "Tokio - an asynchronous Rust runtime",
+        "url": "https://tokio.rs/tokio/tutorial",
+        "content": "Tokio is an asynchronous runtime for the Rust language.",
+        "score": 0.98,
+        "raw_content": null
+      },
+      {
+        "title": "Tokio tutorial: async in depth",
+        "url": "https://tokio.rs/tokio/tutorial/async",
+        "content": "Async/await in Rust with the tokio runtime.",
+        "score": 0.87,
+        "raw_content": null
+      }
+    ],
+    "response_time": 0.42
+  }
+}

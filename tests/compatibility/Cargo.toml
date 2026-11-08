@@ -1,0 +1,12 @@
+[package]
+name = "searchos-compatibility-tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Compatibility suite: schema versioning, migration idempotence, restart preservation."
+
+[dependencies]
+tempfile = "3"
+searchos-domain = { workspace = true }
+searchos-storage-sqlite = { workspace = true }

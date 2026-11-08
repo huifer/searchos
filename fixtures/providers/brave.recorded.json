@@ -1,0 +1,13 @@
+{
+  "_comment": "Recorded Brave web-search response shape for offline adapter tests (illustrative).",
+  "provider": "brave",
+  "response": {
+    "results": [
+      {
+        "title": "Brave Search API",
+        "url": "https://api.search.brave.com/app/documentation/web-search",
+        "description": "The Brave Search API offers web search results."
+      }
+    ]
+  }
+}

@@ -1,0 +1,500 @@
+{"id": "static-000", "question": "What is Rust?", "category": "static_tech_knowledge", "expected_keywords": ["rust"], "time_sensitive": false}
+{"id": "static-001", "question": "What is Tokio?", "category": "static_tech_knowledge", "expected_keywords": ["tokio"], "time_sensitive": false}
+{"id": "static-002", "question": "What is Axum?", "category": "static_tech_knowledge", "expected_keywords": ["axum"], "time_sensitive": false}
+{"id": "static-003", "question": "What is Serde?", "category": "static_tech_knowledge", "expected_keywords": ["serde"], "time_sensitive": false}
+{"id": "static-004", "question": "What is Tantivy?", "category": "static_tech_knowledge", "expected_keywords": ["tantivy"], "time_sensitive": false}
+{"id": "static-005", "question": "What is SQLite?", "category": "static_tech_knowledge", "expected_keywords": ["sqlite"], "time_sensitive": false}
+{"id": "static-006", "question": "What is Raft?", "category": "static_tech_knowledge", "expected_keywords": ["raft"], "time_sensitive": false}
+{"id": "static-007", "question": "What is CAP theorem?", "category": "static_tech_knowledge", "expected_keywords": ["cap"], "time_sensitive": false}
+{"id": "static-008", "question": "What is gRPC?", "category": "static_tech_knowledge", "expected_keywords": ["grpc"], "time_sensitive": false}
+{"id": "static-009", "question": "What is Protobuf?", "category": "static_tech_knowledge", "expected_keywords": ["protobuf"], "time_sensitive": false}
+{"id": "static-010", "question": "What is Kubernetes?", "category": "static_tech_knowledge", "expected_keywords": ["kubernetes"], "time_sensitive": false}
+{"id": "static-011", "question": "What is Docker?", "category": "static_tech_knowledge", "expected_keywords": ["docker"], "time_sensitive": false}
+{"id": "static-012", "question": "What is Git?", "category": "static_tech_knowledge", "expected_keywords": ["git"], "time_sensitive": false}
+{"id": "static-013", "question": "What is LLVM?", "category": "static_tech_knowledge", "expected_keywords": ["llvm"], "time_sensitive": false}
+{"id": "static-014", "question": "What is WASM?", "category": "static_tech_knowledge", "expected_keywords": ["wasm"], "time_sensitive": false}
+{"id": "static-015", "question": "What is HTTP/2?", "category": "static_tech_knowledge", "expected_keywords": ["http/2"], "time_sensitive": false}
+{"id": "static-016", "question": "What is QUIC?", "category": "static_tech_knowledge", "expected_keywords": ["quic"], "time_sensitive": false}
+{"id": "static-017", "question": "What is TLS?", "category": "static_tech_knowledge", "expected_keywords": ["tls"], "time_sensitive": false}
+{"id": "static-018", "question": "What is JWT?", "category": "static_tech_knowledge", "expected_keywords": ["jwt"], "time_sensitive": false}
+{"id": "static-019", "question": "What is OAuth?", "category": "static_tech_knowledge", "expected_keywords": ["oauth"], "time_sensitive": false}
+{"id": "static-020", "question": "What is CRDT?", "category": "static_tech_knowledge", "expected_keywords": ["crdt"], "time_sensitive": false}
+{"id": "static-021", "question": "What is Bloom filter?", "category": "static_tech_knowledge", "expected_keywords": ["bloom"], "time_sensitive": false}
+{"id": "static-022", "question": "What is LSM tree?", "category": "static_tech_knowledge", "expected_keywords": ["lsm"], "time_sensitive": false}
+{"id": "static-023", "question": "What is B-tree?", "category": "static_tech_knowledge", "expected_keywords": ["b-tree"], "time_sensitive": false}
+{"id": "static-024", "question": "What is MMAP?", "category": "static_tech_knowledge", "expected_keywords": ["mmap"], "time_sensitive": false}
+{"id": "static-025", "question": "What is Zero-copy?", "category": "static_tech_knowledge", "expected_keywords": ["zero-copy"], "time_sensitive": false}
+{"id": "static-026", "question": "What is Async runtime?", "category": "static_tech_knowledge", "expected_keywords": ["async"], "time_sensitive": false}
+{"id": "static-027", "question": "What is Actor model?", "category": "static_tech_knowledge", "expected_keywords": ["actor"], "time_sensitive": false}
+{"id": "static-028", "question": "What is Backpressure?", "category": "static_tech_knowledge", "expected_keywords": ["backpressure"], "time_sensitive": false}
+{"id": "static-029", "question": "What is Circuit breaker?", "category": "static_tech_knowledge", "expected_keywords": ["circuit"], "time_sensitive": false}
+{"id": "static-030", "question": "What is Consistent hashing?", "category": "static_tech_knowledge", "expected_keywords": ["consistent"], "time_sensitive": false}
+{"id": "static-031", "question": "What is Vector embedding?", "category": "static_tech_knowledge", "expected_keywords": ["vector"], "time_sensitive": false}
+{"id": "static-032", "question": "What is BM25?", "category": "static_tech_knowledge", "expected_keywords": ["bm25"], "time_sensitive": false}
+{"id": "static-033", "question": "What is TF-IDF?", "category": "static_tech_knowledge", "expected_keywords": ["tf-idf"], "time_sensitive": false}
+{"id": "static-034", "question": "What is Reciprocal Rank Fusion?", "category": "static_tech_knowledge", "expected_keywords": ["reciprocal"], "time_sensitive": false}
+{"id": "static-035", "question": "What is Cross encoder?", "category": "static_tech_knowledge", "expected_keywords": ["cross"], "time_sensitive": false}
+{"id": "static-036", "question": "What is Reranking?", "category": "static_tech_knowledge", "expected_keywords": ["reranking"], "time_sensitive": false}
+{"id": "static-037", "question": "What is Semantic cache?", "category": "static_tech_knowledge", "expected_keywords": ["semantic"], "time_sensitive": false}
+{"id": "static-038", "question": "What is Content hash?", "category": "static_tech_knowledge", "expected_keywords": ["content"], "time_sensitive": false}
+{"id": "static-039", "question": "What is Merkle tree?", "category": "static_tech_knowledge", "expected_keywords": ["merkle"], "time_sensitive": false}
+{"id": "static-040", "question": "What is Transactional outbox?", "category": "static_tech_knowledge", "expected_keywords": ["transactional"], "time_sensitive": false}
+{"id": "static-041", "question": "What is Event sourcing?", "category": "static_tech_knowledge", "expected_keywords": ["event"], "time_sensitive": false}
+{"id": "static-042", "question": "What is CQRS?", "category": "static_tech_knowledge", "expected_keywords": ["cqrs"], "time_sensitive": false}
+{"id": "static-043", "question": "What is Saga pattern?", "category": "static_tech_knowledge", "expected_keywords": ["saga"], "time_sensitive": false}
+{"id": "static-044", "question": "What is Idempotency?", "category": "static_tech_knowledge", "expected_keywords": ["idempotency"], "time_sensitive": false}
+{"id": "static-045", "question": "What is Rate limiting?", "category": "static_tech_knowledge", "expected_keywords": ["rate"], "time_sensitive": false}
+{"id": "static-046", "question": "What is Token bucket?", "category": "static_tech_knowledge", "expected_keywords": ["token"], "time_sensitive": false}
+{"id": "static-047", "question": "What is Leaky bucket?", "category": "static_tech_knowledge", "expected_keywords": ["leaky"], "time_sensitive": false}
+{"id": "static-048", "question": "What is Singleflight?", "category": "static_tech_knowledge", "expected_keywords": ["singleflight"], "time_sensitive": false}
+{"id": "static-049", "question": "What is SSRF?", "category": "static_tech_knowledge", "expected_keywords": ["ssrf"], "time_sensitive": false}
+{"id": "static-050", "question": "What is Prompt injection?", "category": "static_tech_knowledge", "expected_keywords": ["prompt"], "time_sensitive": false}
+{"id": "static-051", "question": "What is DNS rebinding?", "category": "static_tech_knowledge", "expected_keywords": ["dns"], "time_sensitive": false}
+{"id": "static-052", "question": "What is CORS?", "category": "static_tech_knowledge", "expected_keywords": ["cors"], "time_sensitive": false}
+{"id": "static-053", "question": "What is CSP?", "category": "static_tech_knowledge", "expected_keywords": ["csp"], "time_sensitive": false}
+{"id": "static-054", "question": "What is HSTS?", "category": "static_tech_knowledge", "expected_keywords": ["hsts"], "time_sensitive": false}
+{"id": "static-055", "question": "What is SSO?", "category": "static_tech_knowledge", "expected_keywords": ["sso"], "time_sensitive": false}
+{"id": "static-056", "question": "What is RBAC?", "category": "static_tech_knowledge", "expected_keywords": ["rbac"], "time_sensitive": false}
+{"id": "static-057", "question": "What is ACID?", "category": "static_tech_knowledge", "expected_keywords": ["acid"], "time_sensitive": false}
+{"id": "static-058", "question": "What is MVCC?", "category": "static_tech_knowledge", "expected_keywords": ["mvcc"], "time_sensitive": false}
+{"id": "static-059", "question": "What is WAL?", "category": "static_tech_knowledge", "expected_keywords": ["wal"], "time_sensitive": false}
+{"id": "static-060", "question": "What is Two-phase commit?", "category": "static_tech_knowledge", "expected_keywords": ["two-phase"], "time_sensitive": false}
+{"id": "static-061", "question": "What is Paxos?", "category": "static_tech_knowledge", "expected_keywords": ["paxos"], "time_sensitive": false}
+{"id": "static-062", "question": "What is Rust ownership?", "category": "static_tech_knowledge", "expected_keywords": ["rust"], "time_sensitive": false}
+{"id": "static-063", "question": "What is Rust borrowing?", "category": "static_tech_knowledge", "expected_keywords": ["rust"], "time_sensitive": false}
+{"id": "static-064", "question": "What is Rust lifetimes?", "category": "static_tech_knowledge", "expected_keywords": ["rust"], "time_sensitive": false}
+{"id": "static-065", "question": "What is Rust traits?", "category": "static_tech_knowledge", "expected_keywords": ["rust"], "time_sensitive": false}
+{"id": "static-066", "question": "What is Rust async/await?", "category": "static_tech_knowledge", "expected_keywords": ["rust"], "time_sensitive": false}
+{"id": "static-067", "question": "What is Rust macros?", "category": "static_tech_knowledge", "expected_keywords": ["rust"], "time_sensitive": false}
+{"id": "static-068", "question": "What is Rust unsafe?", "category": "static_tech_knowledge", "expected_keywords": ["rust"], "time_sensitive": false}
+{"id": "static-069", "question": "What is Rust closures?", "category": "static_tech_knowledge", "expected_keywords": ["rust"], "time_sensitive": false}
+{"id": "static-070", "question": "What is Trait objects?", "category": "static_tech_knowledge", "expected_keywords": ["trait"], "time_sensitive": false}
+{"id": "static-071", "question": "What is Generics?", "category": "static_tech_knowledge", "expected_keywords": ["generics"], "time_sensitive": false}
+{"id": "static-072", "question": "What is Monomorphization?", "category": "static_tech_knowledge", "expected_keywords": ["monomorphization"], "time_sensitive": false}
+{"id": "static-073", "question": "What is Vtable dispatch?", "category": "static_tech_knowledge", "expected_keywords": ["vtable"], "time_sensitive": false}
+{"id": "static-074", "question": "What is Memory alignment?", "category": "static_tech_knowledge", "expected_keywords": ["memory"], "time_sensitive": false}
+{"id": "static-075", "question": "What is Cache line?", "category": "static_tech_knowledge", "expected_keywords": ["cache"], "time_sensitive": false}
+{"id": "static-076", "question": "What is SIMD?", "category": "static_tech_knowledge", "expected_keywords": ["simd"], "time_sensitive": false}
+{"id": "static-077", "question": "What is Branch prediction?", "category": "static_tech_knowledge", "expected_keywords": ["branch"], "time_sensitive": false}
+{"id": "static-078", "question": "What is Instruction pipelining?", "category": "static_tech_knowledge", "expected_keywords": ["instruction"], "time_sensitive": false}
+{"id": "static-079", "question": "What is Speculative execution?", "category": "static_tech_knowledge", "expected_keywords": ["speculative"], "time_sensitive": false}
+{"id": "static-080", "question": "What is Out-of-order execution?", "category": "static_tech_knowledge", "expected_keywords": ["out-of-order"], "time_sensitive": false}
+{"id": "static-081", "question": "What is Memory barriers?", "category": "static_tech_knowledge", "expected_keywords": ["memory"], "time_sensitive": false}
+{"id": "static-082", "question": "What is Atomics?", "category": "static_tech_knowledge", "expected_keywords": ["atomics"], "time_sensitive": false}
+{"id": "static-083", "question": "What is Lock-free programming?", "category": "static_tech_knowledge", "expected_keywords": ["lock-free"], "time_sensitive": false}
+{"id": "static-084", "question": "What is Memory ordering?", "category": "static_tech_knowledge", "expected_keywords": ["memory"], "time_sensitive": false}
+{"id": "static-085", "question": "What is False sharing?", "category": "static_tech_knowledge", "expected_keywords": ["false"], "time_sensitive": false}
+{"id": "static-086", "question": "What is NUMA?", "category": "static_tech_knowledge", "expected_keywords": ["numa"], "time_sensitive": false}
+{"id": "static-087", "question": "What is Page cache?", "category": "static_tech_knowledge", "expected_keywords": ["page"], "time_sensitive": false}
+{"id": "static-088", "question": "What is Copy-on-write?", "category": "static_tech_knowledge", "expected_keywords": ["copy-on-write"], "time_sensitive": false}
+{"id": "static-089", "question": "What is Journaling filesystem?", "category": "static_tech_knowledge", "expected_keywords": ["journaling"], "time_sensitive": false}
+{"id": "static-090", "question": "What is FUSE?", "category": "static_tech_knowledge", "expected_keywords": ["fuse"], "time_sensitive": false}
+{"id": "static-091", "question": "What is HTTP caching?", "category": "static_tech_knowledge", "expected_keywords": ["http"], "time_sensitive": false}
+{"id": "static-092", "question": "What is CDN?", "category": "static_tech_knowledge", "expected_keywords": ["cdn"], "time_sensitive": false}
+{"id": "static-093", "question": "What is Load balancing?", "category": "static_tech_knowledge", "expected_keywords": ["load"], "time_sensitive": false}
+{"id": "static-094", "question": "What is Service mesh?", "category": "static_tech_knowledge", "expected_keywords": ["service"], "time_sensitive": false}
+{"id": "static-095", "question": "What is Sidecar proxy?", "category": "static_tech_knowledge", "expected_keywords": ["sidecar"], "time_sensitive": false}
+{"id": "static-096", "question": "What is Observability?", "category": "static_tech_knowledge", "expected_keywords": ["observability"], "time_sensitive": false}
+{"id": "static-097", "question": "What is Distributed tracing?", "category": "static_tech_knowledge", "expected_keywords": ["distributed"], "time_sensitive": false}
+{"id": "static-098", "question": "What is OpenTelemetry?", "category": "static_tech_knowledge", "expected_keywords": ["opentelemetry"], "time_sensitive": false}
+{"id": "static-099", "question": "What is Error budget?", "category": "static_tech_knowledge", "expected_keywords": ["error"], "time_sensitive": false}
+{"id": "docs-000", "question": "Where is the official documentation for the Tokio crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["tokio", "documentation"], "time_sensitive": false}
+{"id": "docs-001", "question": "Where is the official documentation for the Axum crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["axum", "documentation"], "time_sensitive": false}
+{"id": "docs-002", "question": "Where is the official documentation for the Serde crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["serde", "documentation"], "time_sensitive": false}
+{"id": "docs-003", "question": "Where is the official documentation for the Reqwest crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["reqwest", "documentation"], "time_sensitive": false}
+{"id": "docs-004", "question": "Where is the official documentation for the Clap crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["clap", "documentation"], "time_sensitive": false}
+{"id": "docs-005", "question": "Where is the official documentation for the Rusqlite crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["rusqlite", "documentation"], "time_sensitive": false}
+{"id": "docs-006", "question": "Where is the official documentation for the Tantivy crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["tantivy", "documentation"], "time_sensitive": false}
+{"id": "docs-007", "question": "Where is the official documentation for the Tracing crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["tracing", "documentation"], "time_sensitive": false}
+{"id": "docs-008", "question": "Where is the official documentation for the Hyper crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["hyper", "documentation"], "time_sensitive": false}
+{"id": "docs-009", "question": "Where is the official documentation for the Tower crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["tower", "documentation"], "time_sensitive": false}
+{"id": "docs-010", "question": "Where is the official documentation for the Tonic crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["tonic", "documentation"], "time_sensitive": false}
+{"id": "docs-011", "question": "Where is the official documentation for the SQLx crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["sqlx", "documentation"], "time_sensitive": false}
+{"id": "docs-012", "question": "Where is the official documentation for the Uuid crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["uuid", "documentation"], "time_sensitive": false}
+{"id": "docs-013", "question": "Where is the official documentation for the Chrono crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["chrono", "documentation"], "time_sensitive": false}
+{"id": "docs-014", "question": "Where is the official documentation for the Rand crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["rand", "documentation"], "time_sensitive": false}
+{"id": "docs-015", "question": "Where is the official documentation for the Regex crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["regex", "documentation"], "time_sensitive": false}
+{"id": "docs-016", "question": "Where is the official documentation for the WalkDir crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["walkdir", "documentation"], "time_sensitive": false}
+{"id": "docs-017", "question": "Where is the official documentation for the Anyhow crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["anyhow", "documentation"], "time_sensitive": false}
+{"id": "docs-018", "question": "Where is the official documentation for the ThisError crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["thiserror", "documentation"], "time_sensitive": false}
+{"id": "docs-019", "question": "Where is the official documentation for the Futures crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["futures", "documentation"], "time_sensitive": false}
+{"id": "docs-020", "question": "Where is the official documentation for the Bytes crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["bytes", "documentation"], "time_sensitive": false}
+{"id": "docs-021", "question": "Where is the official documentation for the ParkingLot crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["parkinglot", "documentation"], "time_sensitive": false}
+{"id": "docs-022", "question": "Where is the official documentation for the DashMap crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["dashmap", "documentation"], "time_sensitive": false}
+{"id": "docs-023", "question": "Where is the official documentation for the Crossbeam crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["crossbeam", "documentation"], "time_sensitive": false}
+{"id": "docs-024", "question": "Where is the official documentation for the Rayon crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["rayon", "documentation"], "time_sensitive": false}
+{"id": "docs-025", "question": "Where is the official documentation for the Polars crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["polars", "documentation"], "time_sensitive": false}
+{"id": "docs-026", "question": "Where is the official documentation for the Ndarray crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["ndarray", "documentation"], "time_sensitive": false}
+{"id": "docs-027", "question": "Where is the official documentation for the Image crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["image", "documentation"], "time_sensitive": false}
+{"id": "docs-028", "question": "Where is the official documentation for the Scraper crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["scraper", "documentation"], "time_sensitive": false}
+{"id": "docs-029", "question": "Where is the official documentation for the Html5ever crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["html5ever", "documentation"], "time_sensitive": false}
+{"id": "docs-030", "question": "Where is the official documentation for the Quick-XML crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["quick-xml", "documentation"], "time_sensitive": false}
+{"id": "docs-031", "question": "Where is the official documentation for the serde-yaml crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["serde-yaml", "documentation"], "time_sensitive": false}
+{"id": "docs-032", "question": "Where is the official documentation for the json5 crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["json5", "documentation"], "time_sensitive": false}
+{"id": "docs-033", "question": "Where is the official documentation for the toml crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["toml", "documentation"], "time_sensitive": false}
+{"id": "docs-034", "question": "Where is the official documentation for the csv crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["csv", "documentation"], "time_sensitive": false}
+{"id": "docs-035", "question": "Where is the official documentation for the Itertools crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["itertools", "documentation"], "time_sensitive": false}
+{"id": "docs-036", "question": "Where is the official documentation for the once_cell crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["once_cell", "documentation"], "time_sensitive": false}
+{"id": "docs-037", "question": "Where is the official documentation for the lazy_static crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["lazy_static", "documentation"], "time_sensitive": false}
+{"id": "docs-038", "question": "Where is the official documentation for the async-trait crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["async-trait", "documentation"], "time_sensitive": false}
+{"id": "docs-039", "question": "Where is the official documentation for the async-channel crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["async-channel", "documentation"], "time_sensitive": false}
+{"id": "docs-040", "question": "Where is the official documentation for the Smol crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["smol", "documentation"], "time_sensitive": false}
+{"id": "docs-041", "question": "Where is the official documentation for the Actix Web crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["actixweb", "documentation"], "time_sensitive": false}
+{"id": "docs-042", "question": "Where is the official documentation for the Warp crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["warp", "documentation"], "time_sensitive": false}
+{"id": "docs-043", "question": "Where is the official documentation for the Rocket crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["rocket", "documentation"], "time_sensitive": false}
+{"id": "docs-044", "question": "Where is the official documentation for the Salsa crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["salsa", "documentation"], "time_sensitive": false}
+{"id": "docs-045", "question": "Where is the official documentation for the Petgraph crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["petgraph", "documentation"], "time_sensitive": false}
+{"id": "docs-046", "question": "Where is the official documentation for the IndexMap crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["indexmap", "documentation"], "time_sensitive": false}
+{"id": "docs-047", "question": "Where is the official documentation for the AHash crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["ahash", "documentation"], "time_sensitive": false}
+{"id": "docs-048", "question": "Where is the official documentation for the Base64 crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["base64", "documentation"], "time_sensitive": false}
+{"id": "docs-049", "question": "Where is the official documentation for the SHA-2 crate crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["sha-2crate", "documentation"], "time_sensitive": false}
+{"id": "docs-050", "question": "Where is the official documentation for the HMAC crate crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["hmaccrate", "documentation"], "time_sensitive": false}
+{"id": "docs-051", "question": "Where is the official documentation for the AES-GCM crate crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["aes-gcmcrate", "documentation"], "time_sensitive": false}
+{"id": "docs-052", "question": "Where is the official documentation for the Ring crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["ring", "documentation"], "time_sensitive": false}
+{"id": "docs-053", "question": "Where is the official documentation for the Rustls crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["rustls", "documentation"], "time_sensitive": false}
+{"id": "docs-054", "question": "Where is the official documentation for the Native TLS crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["nativetls", "documentation"], "time_sensitive": false}
+{"id": "docs-055", "question": "Where is the official documentation for the Quinn crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["quinn", "documentation"], "time_sensitive": false}
+{"id": "docs-056", "question": "Where is the official documentation for the Yoke crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["yoke", "documentation"], "time_sensitive": false}
+{"id": "docs-057", "question": "Where is the official documentation for the Zerocopy crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["zerocopy", "documentation"], "time_sensitive": false}
+{"id": "docs-058", "question": "Where is the official documentation for the SmallVec crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["smallvec", "documentation"], "time_sensitive": false}
+{"id": "docs-059", "question": "Where is the official documentation for the ArrayVec crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["arrayvec", "documentation"], "time_sensitive": false}
+{"id": "docs-060", "question": "Where is the official documentation for the BitFlags crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["bitflags", "documentation"], "time_sensitive": false}
+{"id": "docs-061", "question": "Where is the official documentation for the num_cpus crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["num_cpus", "documentation"], "time_sensitive": false}
+{"id": "docs-062", "question": "Where is the official documentation for the TempFile crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["tempfile", "documentation"], "time_sensitive": false}
+{"id": "docs-063", "question": "Where is the official documentation for the Memmap2 crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["memmap2", "documentation"], "time_sensitive": false}
+{"id": "docs-064", "question": "Where is the official documentation for the fs_extra crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["fs_extra", "documentation"], "time_sensitive": false}
+{"id": "docs-065", "question": "Where is the official documentation for the Notify crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["notify", "documentation"], "time_sensitive": false}
+{"id": "docs-066", "question": "Where is the official documentation for the Indicatif crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["indicatif", "documentation"], "time_sensitive": false}
+{"id": "docs-067", "question": "Where is the official documentation for the Console crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["console", "documentation"], "time_sensitive": false}
+{"id": "docs-068", "question": "Where is the official documentation for the Dialoguer crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["dialoguer", "documentation"], "time_sensitive": false}
+{"id": "docs-069", "question": "Where is the official documentation for the Crossterm crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["crossterm", "documentation"], "time_sensitive": false}
+{"id": "docs-070", "question": "Where is the official documentation for the Ratatui crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["ratatui", "documentation"], "time_sensitive": false}
+{"id": "docs-071", "question": "Where is the official documentation for the Tui-rs crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["tui-rs", "documentation"], "time_sensitive": false}
+{"id": "docs-072", "question": "Where is the official documentation for the Arboard crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["arboard", "documentation"], "time_sensitive": false}
+{"id": "docs-073", "question": "Where is the official documentation for the Open crate crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["opencrate", "documentation"], "time_sensitive": false}
+{"id": "docs-074", "question": "Where is the official documentation for the Dirs crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["dirs", "documentation"], "time_sensitive": false}
+{"id": "docs-075", "question": "Where is the official documentation for the Home crate crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["homecrate", "documentation"], "time_sensitive": false}
+{"id": "docs-076", "question": "Where is the official documentation for the Which crate crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["whichcrate", "documentation"], "time_sensitive": false}
+{"id": "docs-077", "question": "Where is the official documentation for the Glob crate crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["globcrate", "documentation"], "time_sensitive": false}
+{"id": "docs-078", "question": "Where is the official documentation for the WalkDir variants crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["walkdirvariants", "documentation"], "time_sensitive": false}
+{"id": "docs-079", "question": "Where is the official documentation for the Similar crate crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["similarcrate", "documentation"], "time_sensitive": false}
+{"id": "docs-080", "question": "Where is the official documentation for the Diff crate crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["diffcrate", "documentation"], "time_sensitive": false}
+{"id": "docs-081", "question": "Where is the official documentation for the Insta crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["insta", "documentation"], "time_sensitive": false}
+{"id": "docs-082", "question": "Where is the official documentation for the Proptest crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["proptest", "documentation"], "time_sensitive": false}
+{"id": "docs-083", "question": "Where is the official documentation for the QuickCheck crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["quickcheck", "documentation"], "time_sensitive": false}
+{"id": "docs-084", "question": "Where is the official documentation for the Mockall crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["mockall", "documentation"], "time_sensitive": false}
+{"id": "docs-085", "question": "Where is the official documentation for the Wiremock crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["wiremock", "documentation"], "time_sensitive": false}
+{"id": "docs-086", "question": "Where is the official documentation for the assert_cmd crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["assert_cmd", "documentation"], "time_sensitive": false}
+{"id": "docs-087", "question": "Where is the official documentation for the Predicates crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["predicates", "documentation"], "time_sensitive": false}
+{"id": "docs-088", "question": "Where is the official documentation for the Criterion crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["criterion", "documentation"], "time_sensitive": false}
+{"id": "docs-089", "question": "Where is the official documentation for the Iai crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["iai", "documentation"], "time_sensitive": false}
+{"id": "docs-090", "question": "Where is the official documentation for the Divan crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["divan", "documentation"], "time_sensitive": false}
+{"id": "docs-091", "question": "Where is the official documentation for the pprof-rs crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["pprof-rs", "documentation"], "time_sensitive": false}
+{"id": "docs-092", "question": "Where is the official documentation for the Flamegraph crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["flamegraph", "documentation"], "time_sensitive": false}
+{"id": "docs-093", "question": "Where is the official documentation for the Valgrind crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["valgrind", "documentation"], "time_sensitive": false}
+{"id": "docs-094", "question": "Where is the official documentation for the Perf crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["perf", "documentation"], "time_sensitive": false}
+{"id": "docs-095", "question": "Where is the official documentation for the dhat crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["dhat", "documentation"], "time_sensitive": false}
+{"id": "docs-096", "question": "Where is the official documentation for the Mimalloc crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["mimalloc", "documentation"], "time_sensitive": false}
+{"id": "docs-097", "question": "Where is the official documentation for the Jemalloc crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["jemalloc", "documentation"], "time_sensitive": false}
+{"id": "docs-098", "question": "Where is the official documentation for the TiKV Jemalloc crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["tikvjemalloc", "documentation"], "time_sensitive": false}
+{"id": "docs-099", "question": "Where is the official documentation for the SnMalloc crate and what does it cover?", "category": "tech_documentation", "expected_keywords": ["snmalloc", "documentation"], "time_sensitive": false}
+{"id": "github-000", "question": "What is the latest release of tokio-rs/tokio on GitHub?", "category": "github", "expected_keywords": ["tokio"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-001", "question": "What is the latest release of hyperium/hyper on GitHub?", "category": "github", "expected_keywords": ["hyper"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-002", "question": "What is the latest release of rust-lang/rust on GitHub?", "category": "github", "expected_keywords": ["rust"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-003", "question": "What is the latest release of rust-lang/cargo on GitHub?", "category": "github", "expected_keywords": ["cargo"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-004", "question": "What is the latest release of clap-rs/clap on GitHub?", "category": "github", "expected_keywords": ["clap"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-005", "question": "What is the latest release of serde-rs/serde on GitHub?", "category": "github", "expected_keywords": ["serde"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-006", "question": "What is the latest release of seanmonstar/reqwest on GitHub?", "category": "github", "expected_keywords": ["reqwest"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-007", "question": "What is the latest release of launchbadge/sqlx on GitHub?", "category": "github", "expected_keywords": ["sqlx"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-008", "question": "What is the latest release of quickwit-oss/tantivy on GitHub?", "category": "github", "expected_keywords": ["tantivy"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-009", "question": "What is the latest release of tokio-rs/axum on GitHub?", "category": "github", "expected_keywords": ["axum"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-010", "question": "What is the latest release of actix/actix-web on GitHub?", "category": "github", "expected_keywords": ["actix-web"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-011", "question": "What is the latest release of seanmonstar/warp on GitHub?", "category": "github", "expected_keywords": ["warp"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-012", "question": "What is the latest release of SergioBenitez/Rocket on GitHub?", "category": "github", "expected_keywords": ["rocket"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-013", "question": "What is the latest release of diesel-rs/diesel on GitHub?", "category": "github", "expected_keywords": ["diesel"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-014", "question": "What is the latest release of risingwavelabs/risingwave on GitHub?", "category": "github", "expected_keywords": ["risingwave"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-015", "question": "What is the latest release of databendlabs/openraft on GitHub?", "category": "github", "expected_keywords": ["openraft"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-016", "question": "What is the latest release of tikv/tikv on GitHub?", "category": "github", "expected_keywords": ["tikv"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-017", "question": "What is the latest release of pingcap/tidb on GitHub?", "category": "github", "expected_keywords": ["tidb"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-018", "question": "What is the latest release of cockroachdb/cockroach on GitHub?", "category": "github", "expected_keywords": ["cockroach"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-019", "question": "What is the latest release of torvalds/linux on GitHub?", "category": "github", "expected_keywords": ["linux"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-020", "question": "What is the latest release of clickhouse/clickhouse on GitHub?", "category": "github", "expected_keywords": ["clickhouse"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-021", "question": "What is the latest release of duckdb/duckdb on GitHub?", "category": "github", "expected_keywords": ["duckdb"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-022", "question": "What is the latest release of apache/arrow on GitHub?", "category": "github", "expected_keywords": ["arrow"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-023", "question": "What is the latest release of delta-io/delta on GitHub?", "category": "github", "expected_keywords": ["delta"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-024", "question": "What is the latest release of apache/datafusion on GitHub?", "category": "github", "expected_keywords": ["datafusion"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-025", "question": "What is the latest release of polars-rs/polars on GitHub?", "category": "github", "expected_keywords": ["polars"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-026", "question": "What is the latest release of lancedb/lance on GitHub?", "category": "github", "expected_keywords": ["lance"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-027", "question": "What is the latest release of lancedb/lancedb on GitHub?", "category": "github", "expected_keywords": ["lancedb"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-028", "question": "What is the latest release of qdrant/qdrant on GitHub?", "category": "github", "expected_keywords": ["qdrant"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-029", "question": "What is the latest release of weaviate/weaviate on GitHub?", "category": "github", "expected_keywords": ["weaviate"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-030", "question": "What is the latest release of milvus-io/milvus on GitHub?", "category": "github", "expected_keywords": ["milvus"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-031", "question": "What is the latest release of chroma-core/chroma on GitHub?", "category": "github", "expected_keywords": ["chroma"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-032", "question": "What is the latest release of pgvector/pgvector on GitHub?", "category": "github", "expected_keywords": ["pgvector"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-033", "question": "What is the latest release of supabase/supabase on GitHub?", "category": "github", "expected_keywords": ["supabase"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-034", "question": "What is the latest release of neondatabase/neon on GitHub?", "category": "github", "expected_keywords": ["neon"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-035", "question": "What is the latest release of vitessio/vitess on GitHub?", "category": "github", "expected_keywords": ["vitess"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-036", "question": "What is the latest release of trinodb/trino on GitHub?", "category": "github", "expected_keywords": ["trino"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-037", "question": "What is the latest release of prestodb/presto on GitHub?", "category": "github", "expected_keywords": ["presto"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-038", "question": "What is the latest release of apache/spark on GitHub?", "category": "github", "expected_keywords": ["spark"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-039", "question": "What is the latest release of apache/flink on GitHub?", "category": "github", "expected_keywords": ["flink"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-040", "question": "What is the latest release of apache/kafka on GitHub?", "category": "github", "expected_keywords": ["kafka"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-041", "question": "What is the latest release of redpanda-data/redpanda on GitHub?", "category": "github", "expected_keywords": ["redpanda"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-042", "question": "What is the latest release of nats-io/nats-server on GitHub?", "category": "github", "expected_keywords": ["nats-server"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-043", "question": "What is the latest release of rabbitmq/rabbitmq-server on GitHub?", "category": "github", "expected_keywords": ["rabbitmq-server"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-044", "question": "What is the latest release of zeromq/libzmq on GitHub?", "category": "github", "expected_keywords": ["libzmq"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-045", "question": "What is the latest release of nanomsg/nng on GitHub?", "category": "github", "expected_keywords": ["nng"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-046", "question": "What is the latest release of grpc/grpc on GitHub?", "category": "github", "expected_keywords": ["grpc"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-047", "question": "What is the latest release of envoyproxy/envoy on GitHub?", "category": "github", "expected_keywords": ["envoy"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-048", "question": "What is the latest release of istio/istio on GitHub?", "category": "github", "expected_keywords": ["istio"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-049", "question": "What is the latest release of linkerd/linkerd2 on GitHub?", "category": "github", "expected_keywords": ["linkerd2"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-050", "question": "What is the latest release of hashicorp/consul on GitHub?", "category": "github", "expected_keywords": ["consul"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-051", "question": "What is the latest release of hashicorp/nomad on GitHub?", "category": "github", "expected_keywords": ["nomad"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-052", "question": "What is the latest release of hashicorp/vault on GitHub?", "category": "github", "expected_keywords": ["vault"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-053", "question": "What is the latest release of kubernetes/kubernetes on GitHub?", "category": "github", "expected_keywords": ["kubernetes"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-054", "question": "What is the latest release of containerd/containerd on GitHub?", "category": "github", "expected_keywords": ["containerd"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-055", "question": "What is the latest release of moby/moby on GitHub?", "category": "github", "expected_keywords": ["moby"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-056", "question": "What is the latest release of docker/compose on GitHub?", "category": "github", "expected_keywords": ["compose"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-057", "question": "What is the latest release of helm/helm on GitHub?", "category": "github", "expected_keywords": ["helm"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-058", "question": "What is the latest release of argoproj/argo-cd on GitHub?", "category": "github", "expected_keywords": ["argo-cd"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-059", "question": "What is the latest release of tektoncd/pipeline on GitHub?", "category": "github", "expected_keywords": ["pipeline"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-060", "question": "What is the latest release of fluxcd/flux2 on GitHub?", "category": "github", "expected_keywords": ["flux2"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-061", "question": "What is the latest release of crossplane/crossplane on GitHub?", "category": "github", "expected_keywords": ["crossplane"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-062", "question": "What is the latest release of prometheus/prometheus on GitHub?", "category": "github", "expected_keywords": ["prometheus"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-063", "question": "What is the latest release of grafana/grafana on GitHub?", "category": "github", "expected_keywords": ["grafana"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-064", "question": "What is the latest release of jaegertracing/jaeger on GitHub?", "category": "github", "expected_keywords": ["jaeger"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-065", "question": "What is the latest release of open-telemetry/opentelemetry-rust on GitHub?", "category": "github", "expected_keywords": ["opentelemetry-rust"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-066", "question": "What is the latest release of open-telemetry/opentelemetry-go on GitHub?", "category": "github", "expected_keywords": ["opentelemetry-go"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-067", "question": "What is the latest release of vectordotdev/vector on GitHub?", "category": "github", "expected_keywords": ["vector"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-068", "question": "What is the latest release of fluent/fluentd on GitHub?", "category": "github", "expected_keywords": ["fluentd"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-069", "question": "What is the latest release of rsyslog/rsyslog on GitHub?", "category": "github", "expected_keywords": ["rsyslog"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-070", "question": "What is the latest release of grafana/loki on GitHub?", "category": "github", "expected_keywords": ["loki"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-071", "question": "What is the latest release of elastic/logstash on GitHub?", "category": "github", "expected_keywords": ["logstash"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-072", "question": "What is the latest release of pingcap/ticdc on GitHub?", "category": "github", "expected_keywords": ["ticdc"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-073", "question": "What is the latest release of debezium/debezium on GitHub?", "category": "github", "expected_keywords": ["debezium"], "time_sensitive": true, "profile": "latest"}
+{"id": "github-074", "question": "What is the latest release of confluentinc/ksql on GitHub?", "category": "github", "expected_keywords": ["ksql"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-000", "question": "What is the latest news about AI regulation?", "category": "news_latest", "expected_keywords": ["ai"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-001", "question": "What is the latest news about chip export controls?", "category": "news_latest", "expected_keywords": ["chip"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-002", "question": "What is the latest news about Rust foundation?", "category": "news_latest", "expected_keywords": ["rust"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-003", "question": "What is the latest news about LLM benchmarks?", "category": "news_latest", "expected_keywords": ["llm"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-004", "question": "What is the latest news about developer survey?", "category": "news_latest", "expected_keywords": ["developer"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-005", "question": "What is the latest news about cloud pricing change?", "category": "news_latest", "expected_keywords": ["cloud"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-006", "question": "What is the latest news about browser release?", "category": "news_latest", "expected_keywords": ["browser"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-007", "question": "What is the latest news about OS kernel LTS?", "category": "news_latest", "expected_keywords": ["os"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-008", "question": "What is the latest news about database funding round?", "category": "news_latest", "expected_keywords": ["database"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-009", "question": "What is the latest news about vector DB acquisition?", "category": "news_latest", "expected_keywords": ["vector"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-010", "question": "What is the latest news about security CVE disclosure?", "category": "news_latest", "expected_keywords": ["security"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-011", "question": "What is the latest news about open source license change?", "category": "news_latest", "expected_keywords": ["open"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-012", "question": "What is the latest news about Kubernetes release?", "category": "news_latest", "expected_keywords": ["kubernetes"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-013", "question": "What is the latest news about HTTP standard update?", "category": "news_latest", "expected_keywords": ["http"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-014", "question": "What is the latest news about crypto exchange incident?", "category": "news_latest", "expected_keywords": ["crypto"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-015", "question": "What is the latest news about quantum computing milestone?", "category": "news_latest", "expected_keywords": ["quantum"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-016", "question": "What is the latest news about RISC-V adoption?", "category": "news_latest", "expected_keywords": ["risc-v"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-017", "question": "What is the latest news about ARM server chips?", "category": "news_latest", "expected_keywords": ["arm"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-018", "question": "What is the latest news about data center power?", "category": "news_latest", "expected_keywords": ["data"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-019", "question": "What is the latest news about green computing?", "category": "news_latest", "expected_keywords": ["green"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-020", "question": "What is the latest news about AI assistant enterprise rollout?", "category": "news_latest", "expected_keywords": ["ai"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-021", "question": "What is the latest news about code assistant adoption?", "category": "news_latest", "expected_keywords": ["code"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-022", "question": "What is the latest news about API deprecation notice?", "category": "news_latest", "expected_keywords": ["api"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-023", "question": "What is the latest news about framework EOL announcement?", "category": "news_latest", "expected_keywords": ["framework"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-024", "question": "What is the latest news about supply chain attack?", "category": "news_latest", "expected_keywords": ["supply"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-025", "question": "What is the latest news about container registry outage?", "category": "news_latest", "expected_keywords": ["container"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-026", "question": "What is the latest news about DNS provider incident?", "category": "news_latest", "expected_keywords": ["dns"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-027", "question": "What is the latest news about CDN failure analysis?", "category": "news_latest", "expected_keywords": ["cdn"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-028", "question": "What is the latest news about edge computing expansion?", "category": "news_latest", "expected_keywords": ["edge"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-029", "question": "What is the latest news about 5G deployment?", "category": "news_latest", "expected_keywords": ["5g"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-030", "question": "What is the latest news about satellite internet?", "category": "news_latest", "expected_keywords": ["satellite"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-031", "question": "What is the latest news about battery technology?", "category": "news_latest", "expected_keywords": ["battery"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-032", "question": "What is the latest news about EV charging standard?", "category": "news_latest", "expected_keywords": ["ev"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-033", "question": "What is the latest news about smart home standard?", "category": "news_latest", "expected_keywords": ["smart"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-034", "question": "What is the latest news about robotics deployment?", "category": "news_latest", "expected_keywords": ["robotics"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-035", "question": "What is the latest news about self-driving progress?", "category": "news_latest", "expected_keywords": ["self-driving"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-036", "question": "What is the latest news about medical AI approval?", "category": "news_latest", "expected_keywords": ["medical"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-037", "question": "What is the latest news about protein folding result?", "category": "news_latest", "expected_keywords": ["protein"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-038", "question": "What is the latest news about fusion energy record?", "category": "news_latest", "expected_keywords": ["fusion"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-039", "question": "What is the latest news about space launch schedule?", "category": "news_latest", "expected_keywords": ["space"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-040", "question": "What is the latest news about lunar mission update?", "category": "news_latest", "expected_keywords": ["lunar"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-041", "question": "What is the latest news about mars sample return?", "category": "news_latest", "expected_keywords": ["mars"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-042", "question": "What is the latest news about telescope discovery?", "category": "news_latest", "expected_keywords": ["telescope"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-043", "question": "What is the latest news about exoplanet atmosphere?", "category": "news_latest", "expected_keywords": ["exoplanet"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-044", "question": "What is the latest news about supercomputer ranking?", "category": "news_latest", "expected_keywords": ["supercomputer"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-045", "question": "What is the latest news about HPC interconnect?", "category": "news_latest", "expected_keywords": ["hpc"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-046", "question": "What is the latest news about storage price trend?", "category": "news_latest", "expected_keywords": ["storage"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-047", "question": "What is the latest news about SSD endurance study?", "category": "news_latest", "expected_keywords": ["ssd"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-048", "question": "What is the latest news about memory bandwidth record?", "category": "news_latest", "expected_keywords": ["memory"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-049", "question": "What is the latest news about networking throughput?", "category": "news_latest", "expected_keywords": ["networking"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-050", "question": "What is the latest news about optical interconnect?", "category": "news_latest", "expected_keywords": ["optical"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-051", "question": "What is the latest news about photonic computing?", "category": "news_latest", "expected_keywords": ["photonic"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-052", "question": "What is the latest news about neuromorphic chip?", "category": "news_latest", "expected_keywords": ["neuromorphic"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-053", "question": "What is the latest news about analog AI accelerator?", "category": "news_latest", "expected_keywords": ["analog"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-054", "question": "What is the latest news about compiler optimization win?", "category": "news_latest", "expected_keywords": ["compiler"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-055", "question": "What is the latest news about language runtime update?", "category": "news_latest", "expected_keywords": ["language"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-056", "question": "What is the latest news about garbage collector improvement?", "category": "news_latest", "expected_keywords": ["garbage"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-057", "question": "What is the latest news about JIT startup time?", "category": "news_latest", "expected_keywords": ["jit"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-058", "question": "What is the latest news about wasm runtime perf?", "category": "news_latest", "expected_keywords": ["wasm"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-059", "question": "What is the latest news about emulator accuracy?", "category": "news_latest", "expected_keywords": ["emulator"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-060", "question": "What is the latest news about retro computing revival?", "category": "news_latest", "expected_keywords": ["retro"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-061", "question": "What is the latest news about open hardware laptop?", "category": "news_latest", "expected_keywords": ["open"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-062", "question": "What is the latest news about single board computer?", "category": "news_latest", "expected_keywords": ["single"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-063", "question": "What is the latest news about microcontroller release?", "category": "news_latest", "expected_keywords": ["microcontroller"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-064", "question": "What is the latest news about sensor fusion paper?", "category": "news_latest", "expected_keywords": ["sensor"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-065", "question": "What is the latest news about localization dataset?", "category": "news_latest", "expected_keywords": ["localization"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-066", "question": "What is the latest news about SLAM benchmark?", "category": "news_latest", "expected_keywords": ["slam"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-067", "question": "What is the latest news about simulation engine release?", "category": "news_latest", "expected_keywords": ["simulation"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-068", "question": "What is the latest news about physics engine perf?", "category": "news_latest", "expected_keywords": ["physics"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-069", "question": "What is the latest news about rendering technique?", "category": "news_latest", "expected_keywords": ["rendering"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-070", "question": "What is the latest news about graphics API update?", "category": "news_latest", "expected_keywords": ["graphics"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-071", "question": "What is the latest news about GPU driver release?", "category": "news_latest", "expected_keywords": ["gpu"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-072", "question": "What is the latest news about upscaler model release?", "category": "news_latest", "expected_keywords": ["upscaler"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-073", "question": "What is the latest news about speech model release?", "category": "news_latest", "expected_keywords": ["speech"], "time_sensitive": true, "profile": "latest"}
+{"id": "news-074", "question": "What is the latest news about translation quality gain?", "category": "news_latest", "expected_keywords": ["translation"], "time_sensitive": true, "profile": "latest"}
+{"id": "price-000", "question": "What is the current pricing of the OpenAI GPT-4o API?", "category": "product_api_pricing", "expected_keywords": ["openai", "pricing"], "time_sensitive": true}
+{"id": "price-001", "question": "What is the current pricing of the OpenAI o3 API?", "category": "product_api_pricing", "expected_keywords": ["openai", "pricing"], "time_sensitive": true}
+{"id": "price-002", "question": "What is the current pricing of the Anthropic Claude API?", "category": "product_api_pricing", "expected_keywords": ["anthropic", "pricing"], "time_sensitive": true}
+{"id": "price-003", "question": "What is the current pricing of the Google Gemini API?", "category": "product_api_pricing", "expected_keywords": ["google", "pricing"], "time_sensitive": true}
+{"id": "price-004", "question": "What is the current pricing of the AWS Lambda API?", "category": "product_api_pricing", "expected_keywords": ["aws", "pricing"], "time_sensitive": true}
+{"id": "price-005", "question": "What is the current pricing of the AWS S3 API?", "category": "product_api_pricing", "expected_keywords": ["aws", "pricing"], "time_sensitive": true}
+{"id": "price-006", "question": "What is the current pricing of the AWS EC2 API?", "category": "product_api_pricing", "expected_keywords": ["aws", "pricing"], "time_sensitive": true}
+{"id": "price-007", "question": "What is the current pricing of the GCP Cloud Run API?", "category": "product_api_pricing", "expected_keywords": ["gcp", "pricing"], "time_sensitive": true}
+{"id": "price-008", "question": "What is the current pricing of the GCP BigQuery API?", "category": "product_api_pricing", "expected_keywords": ["gcp", "pricing"], "time_sensitive": true}
+{"id": "price-009", "question": "What is the current pricing of the Azure Functions API?", "category": "product_api_pricing", "expected_keywords": ["azure", "pricing"], "time_sensitive": true}
+{"id": "price-010", "question": "What is the current pricing of the Azure Blob Storage API?", "category": "product_api_pricing", "expected_keywords": ["azure", "pricing"], "time_sensitive": true}
+{"id": "price-011", "question": "What is the current pricing of the Cloudflare Workers API?", "category": "product_api_pricing", "expected_keywords": ["cloudflare", "pricing"], "time_sensitive": true}
+{"id": "price-012", "question": "What is the current pricing of the Cloudflare R2 API?", "category": "product_api_pricing", "expected_keywords": ["cloudflare", "pricing"], "time_sensitive": true}
+{"id": "price-013", "question": "What is the current pricing of the Vercel Serverless Functions API?", "category": "product_api_pricing", "expected_keywords": ["vercel", "pricing"], "time_sensitive": true}
+{"id": "price-014", "question": "What is the current pricing of the Netlify Functions API?", "category": "product_api_pricing", "expected_keywords": ["netlify", "pricing"], "time_sensitive": true}
+{"id": "price-015", "question": "What is the current pricing of the Supabase Database API?", "category": "product_api_pricing", "expected_keywords": ["supabase", "pricing"], "time_sensitive": true}
+{"id": "price-016", "question": "What is the current pricing of the Neon Serverless Postgres API?", "category": "product_api_pricing", "expected_keywords": ["neon", "pricing"], "time_sensitive": true}
+{"id": "price-017", "question": "What is the current pricing of the PlanetScale Vitess API?", "category": "product_api_pricing", "expected_keywords": ["planetscale", "pricing"], "time_sensitive": true}
+{"id": "price-018", "question": "What is the current pricing of the Planetscale Scaling API?", "category": "product_api_pricing", "expected_keywords": ["planetscale", "pricing"], "time_sensitive": true}
+{"id": "price-019", "question": "What is the current pricing of the MongoDB Atlas API?", "category": "product_api_pricing", "expected_keywords": ["mongodb", "pricing"], "time_sensitive": true}
+{"id": "price-020", "question": "What is the current pricing of the Redis Cloud API?", "category": "product_api_pricing", "expected_keywords": ["redis", "pricing"], "time_sensitive": true}
+{"id": "price-021", "question": "What is the current pricing of the Elastic Elasticsearch API?", "category": "product_api_pricing", "expected_keywords": ["elastic", "pricing"], "time_sensitive": true}
+{"id": "price-022", "question": "What is the current pricing of the Algolia Search API?", "category": "product_api_pricing", "expected_keywords": ["algolia", "pricing"], "time_sensitive": true}
+{"id": "price-023", "question": "What is the current pricing of the Typesense Cloud API?", "category": "product_api_pricing", "expected_keywords": ["typesense", "pricing"], "time_sensitive": true}
+{"id": "price-024", "question": "What is the current pricing of the Meilisearch Cloud API?", "category": "product_api_pricing", "expected_keywords": ["meilisearch", "pricing"], "time_sensitive": true}
+{"id": "price-025", "question": "What is the current pricing of the Pinecone Vector DB API?", "category": "product_api_pricing", "expected_keywords": ["pinecone", "pricing"], "time_sensitive": true}
+{"id": "price-026", "question": "What is the current pricing of the Weaviate Cloud API?", "category": "product_api_pricing", "expected_keywords": ["weaviate", "pricing"], "time_sensitive": true}
+{"id": "price-027", "question": "What is the current pricing of the Qdrant Cloud API?", "category": "product_api_pricing", "expected_keywords": ["qdrant", "pricing"], "time_sensitive": true}
+{"id": "price-028", "question": "What is the current pricing of the Zilliz Managed Milvus API?", "category": "product_api_pricing", "expected_keywords": ["zilliz", "pricing"], "time_sensitive": true}
+{"id": "price-029", "question": "What is the current pricing of the DataDog APM API?", "category": "product_api_pricing", "expected_keywords": ["datadog", "pricing"], "time_sensitive": true}
+{"id": "price-030", "question": "What is the current pricing of the NewRelic APM API?", "category": "product_api_pricing", "expected_keywords": ["newrelic", "pricing"], "time_sensitive": true}
+{"id": "price-031", "question": "What is the current pricing of the Honeycomb Events API?", "category": "product_api_pricing", "expected_keywords": ["honeycomb", "pricing"], "time_sensitive": true}
+{"id": "price-032", "question": "What is the current pricing of the Grafana Cloud API?", "category": "product_api_pricing", "expected_keywords": ["grafana", "pricing"], "time_sensitive": true}
+{"id": "price-033", "question": "What is the current pricing of the Sentry Errors API?", "category": "product_api_pricing", "expected_keywords": ["sentry", "pricing"], "time_sensitive": true}
+{"id": "price-034", "question": "What is the current pricing of the PagerDuty Incidents API?", "category": "product_api_pricing", "expected_keywords": ["pagerduty", "pricing"], "time_sensitive": true}
+{"id": "price-035", "question": "What is the current pricing of the Twilio SMS API?", "category": "product_api_pricing", "expected_keywords": ["twilio", "pricing"], "time_sensitive": true}
+{"id": "price-036", "question": "What is the current pricing of the SendGrid Email API?", "category": "product_api_pricing", "expected_keywords": ["sendgrid", "pricing"], "time_sensitive": true}
+{"id": "price-037", "question": "What is the current pricing of the Postmark Email API?", "category": "product_api_pricing", "expected_keywords": ["postmark", "pricing"], "time_sensitive": true}
+{"id": "price-038", "question": "What is the current pricing of the Resend Email API?", "category": "product_api_pricing", "expected_keywords": ["resend", "pricing"], "time_sensitive": true}
+{"id": "price-039", "question": "What is the current pricing of the Stripe Payments API?", "category": "product_api_pricing", "expected_keywords": ["stripe", "pricing"], "time_sensitive": true}
+{"id": "price-040", "question": "What is the current pricing of the Adyen Payments API?", "category": "product_api_pricing", "expected_keywords": ["adyen", "pricing"], "time_sensitive": true}
+{"id": "price-041", "question": "What is the current pricing of the PayPal Checkout API?", "category": "product_api_pricing", "expected_keywords": ["paypal", "pricing"], "time_sensitive": true}
+{"id": "price-042", "question": "What is the current pricing of the Shopify Commerce API?", "category": "product_api_pricing", "expected_keywords": ["shopify", "pricing"], "time_sensitive": true}
+{"id": "price-043", "question": "What is the current pricing of the Auth0 Identity API?", "category": "product_api_pricing", "expected_keywords": ["auth0", "pricing"], "time_sensitive": true}
+{"id": "price-044", "question": "What is the current pricing of the Okta Identity API?", "category": "product_api_pricing", "expected_keywords": ["okta", "pricing"], "time_sensitive": true}
+{"id": "price-045", "question": "What is the current pricing of the Clerk Auth API?", "category": "product_api_pricing", "expected_keywords": ["clerk", "pricing"], "time_sensitive": true}
+{"id": "price-046", "question": "What is the current pricing of the Supabase Auth API?", "category": "product_api_pricing", "expected_keywords": ["supabase", "pricing"], "time_sensitive": true}
+{"id": "price-047", "question": "What is the current pricing of the Firebase Auth API?", "category": "product_api_pricing", "expected_keywords": ["firebase", "pricing"], "time_sensitive": true}
+{"id": "price-048", "question": "What is the current pricing of the Mapbox Maps API?", "category": "product_api_pricing", "expected_keywords": ["mapbox", "pricing"], "time_sensitive": true}
+{"id": "price-049", "question": "What is the current pricing of the Google Maps API API?", "category": "product_api_pricing", "expected_keywords": ["google", "pricing"], "time_sensitive": true}
+{"id": "compare-000", "question": "Compare Tokio and Axum: features, maturity and latest version.", "category": "complex_comparison", "expected_keywords": ["tokio", "axum"], "time_sensitive": false, "profile": "research"}
+{"id": "compare-001", "question": "Compare Tokio and async-std: features, maturity and latest version.", "category": "complex_comparison", "expected_keywords": ["tokio", "async-std"], "time_sensitive": false, "profile": "research"}
+{"id": "compare-002", "question": "Compare Actix Web and Axum: features, maturity and latest version.", "category": "complex_comparison", "expected_keywords": ["actix web", "axum"], "time_sensitive": false, "profile": "research"}
+{"id": "compare-003", "question": "Compare Warp and Axum: features, maturity and latest version.", "category": "complex_comparison", "expected_keywords": ["warp", "axum"], "time_sensitive": false, "profile": "research"}
+{"id": "compare-004", "question": "Compare Rocket and Actix Web: features, maturity and latest version.", "category": "complex_comparison", "expected_keywords": ["rocket", "actix web"], "time_sensitive": false, "profile": "research"}
+{"id": "compare-005", "question": "Compare SQLx and Diesel: features, maturity and latest version.", "category": "complex_comparison", "expected_keywords": ["sqlx", "diesel"], "time_sensitive": false, "profile": "research"}
+{"id": "compare-006", "question": "Compare Rusqlite and SQLx: features, maturity and latest version.", "category": "complex_comparison", "expected_keywords": ["rusqlite", "sqlx"], "time_sensitive": false, "profile": "research"}
+{"id": "compare-007", "question": "Compare Postgres and MySQL: features, maturity and latest version.", "category": "complex_comparison", "expected_keywords": ["postgres", "mysql"], "time_sensitive": false, "profile": "research"}
+{"id": "compare-008", "question": "Compare SQLite and Postgres: features, maturity and latest version.", "category": "complex_comparison", "expected_keywords": ["sqlite", "postgres"], "time_sensitive": false, "profile": "research"}
+{"id": "compare-009", "question": "Compare Redis and Memcached: features, maturity and latest version.", "category": "complex_comparison", "expected_keywords": ["redis", "memcached"], "time_sensitive": false, "profile": "research"}
+{"id": "compare-010", "question": "Compare Kafka and RabbitMQ: features, maturity and latest version.", "category": "complex_comparison", "expected_keywords": ["kafka", "rabbitmq"], "time_sensitive": false, "profile": "research"}
+{"id": "compare-011", "question": "Compare NATS and Kafka: features, maturity and latest version.", "category": "complex_comparison", "expected_keywords": ["nats", "kafka"], "time_sensitive": false, "profile": "research"}
+{"id": "compare-012", "question": "Compare gRPC and REST: features, maturity and latest version.", "category": "complex_comparison", "expected_keywords": ["grpc", "rest"], "time_sensitive": false, "profile": "research"}
+{"id": "compare-013", "question": "Compare GraphQL and REST: features, maturity and latest version.", "category": "complex_comparison", "expected_keywords": ["graphql", "rest"], "time_sensitive": false, "profile": "research"}
+{"id": "compare-014", "question": "Compare Tantivy and Lucene: features, maturity and latest version.", "category": "complex_comparison", "expected_keywords": ["tantivy", "lucene"], "time_sensitive": false, "profile": "research"}
+{"id": "compare-015", "question": "Compare Elasticsearch and OpenSearch: features, maturity and latest version.", "category": "complex_comparison", "expected_keywords": ["elasticsearch", "opensearch"], "time_sensitive": false, "profile": "research"}
+{"id": "compare-016", "question": "Compare Qdrant and Weaviate: features, maturity and latest version.", "category": "complex_comparison", "expected_keywords": ["qdrant", "weaviate"], "time_sensitive": false, "profile": "research"}
+{"id": "compare-017", "question": "Compare Milvus and Qdrant: features, maturity and latest version.", "category": "complex_comparison", "expected_keywords": ["milvus", "qdrant"], "time_sensitive": false, "profile": "research"}
+{"id": "compare-018", "question": "Compare Pinecone and Qdrant: features, maturity and latest version.", "category": "complex_comparison", "expected_keywords": ["pinecone", "qdrant"], "time_sensitive": false, "profile": "research"}
+{"id": "compare-019", "question": "Compare LanceDB and Qdrant: features, maturity and latest version.", "category": "complex_comparison", "expected_keywords": ["lancedb", "qdrant"], "time_sensitive": false, "profile": "research"}
+{"id": "compare-020", "question": "Compare Consul and Etcd: features, maturity and latest version.", "category": "complex_comparison", "expected_keywords": ["consul", "etcd"], "time_sensitive": false, "profile": "research"}
+{"id": "compare-021", "question": "Compare Kubernetes and Nomad: features, maturity and latest version.", "category": "complex_comparison", "expected_keywords": ["kubernetes", "nomad"], "time_sensitive": false, "profile": "research"}
+{"id": "compare-022", "question": "Compare Docker and Podman: features, maturity and latest version.", "category": "complex_comparison", "expected_keywords": ["docker", "podman"], "time_sensitive": false, "profile": "research"}
+{"id": "compare-023", "question": "Compare Terraform and Pulumi: features, maturity and latest version.", "category": "complex_comparison", "expected_keywords": ["terraform", "pulumi"], "time_sensitive": false, "profile": "research"}
+{"id": "compare-024", "question": "Compare Datadog and Grafana: features, maturity and latest version.", "category": "complex_comparison", "expected_keywords": ["datadog", "grafana"], "time_sensitive": false, "profile": "research"}
+{"id": "compare-025", "question": "Compare Sentry and Rollbar: features, maturity and latest version.", "category": "complex_comparison", "expected_keywords": ["sentry", "rollbar"], "time_sensitive": false, "profile": "research"}
+{"id": "compare-026", "question": "Compare S3 and R2: features, maturity and latest version.", "category": "complex_comparison", "expected_keywords": ["s3", "r2"], "time_sensitive": false, "profile": "research"}
+{"id": "compare-027", "question": "Compare BigQuery and Snowflake: features, maturity and latest version.", "category": "complex_comparison", "expected_keywords": ["bigquery", "snowflake"], "time_sensitive": false, "profile": "research"}
+{"id": "compare-028", "question": "Compare ClickHouse and DuckDB: features, maturity and latest version.", "category": "complex_comparison", "expected_keywords": ["clickhouse", "duckdb"], "time_sensitive": false, "profile": "research"}
+{"id": "compare-029", "question": "Compare DuckDB and Polars: features, maturity and latest version.", "category": "complex_comparison", "expected_keywords": ["duckdb", "polars"], "time_sensitive": false, "profile": "research"}
+{"id": "compare-030", "question": "Compare Polars and Pandas: features, maturity and latest version.", "category": "complex_comparison", "expected_keywords": ["polars", "pandas"], "time_sensitive": false, "profile": "research"}
+{"id": "compare-031", "question": "Compare Ray and Dask: features, maturity and latest version.", "category": "complex_comparison", "expected_keywords": ["ray", "dask"], "time_sensitive": false, "profile": "research"}
+{"id": "compare-032", "question": "Compare Spark and Flink: features, maturity and latest version.", "category": "complex_comparison", "expected_keywords": ["spark", "flink"], "time_sensitive": false, "profile": "research"}
+{"id": "compare-033", "question": "Compare Kubernetes and Swarm: features, maturity and latest version.", "category": "complex_comparison", "expected_keywords": ["kubernetes", "swarm"], "time_sensitive": false, "profile": "research"}
+{"id": "compare-034", "question": "Compare Istio and Linkerd: features, maturity and latest version.", "category": "complex_comparison", "expected_keywords": ["istio", "linkerd"], "time_sensitive": false, "profile": "research"}
+{"id": "compare-035", "question": "Compare Envoy and NGINX: features, maturity and latest version.", "category": "complex_comparison", "expected_keywords": ["envoy", "nginx"], "time_sensitive": false, "profile": "research"}
+{"id": "compare-036", "question": "Compare Caddy and NGINX: features, maturity and latest version.", "category": "complex_comparison", "expected_keywords": ["caddy", "nginx"], "time_sensitive": false, "profile": "research"}
+{"id": "compare-037", "question": "Compare Traefik and Caddy: features, maturity and latest version.", "category": "complex_comparison", "expected_keywords": ["traefik", "caddy"], "time_sensitive": false, "profile": "research"}
+{"id": "compare-038", "question": "Compare Cloudflare Workers and Lambda@Edge: features, maturity and latest version.", "category": "complex_comparison", "expected_keywords": ["cloudflare workers", "lambda@edge"], "time_sensitive": false, "profile": "research"}
+{"id": "compare-039", "question": "Compare Vercel and Netlify: features, maturity and latest version.", "category": "complex_comparison", "expected_keywords": ["vercel", "netlify"], "time_sensitive": false, "profile": "research"}
+{"id": "compare-040", "question": "Compare Supabase and Firebase: features, maturity and latest version.", "category": "complex_comparison", "expected_keywords": ["supabase", "firebase"], "time_sensitive": false, "profile": "research"}
+{"id": "compare-041", "question": "Compare Auth0 and Clerk: features, maturity and latest version.", "category": "complex_comparison", "expected_keywords": ["auth0", "clerk"], "time_sensitive": false, "profile": "research"}
+{"id": "compare-042", "question": "Compare Stripe and Adyen: features, maturity and latest version.", "category": "complex_comparison", "expected_keywords": ["stripe", "adyen"], "time_sensitive": false, "profile": "research"}
+{"id": "compare-043", "question": "Compare Rust and Go: features, maturity and latest version.", "category": "complex_comparison", "expected_keywords": ["rust", "go"], "time_sensitive": false, "profile": "research"}
+{"id": "compare-044", "question": "Compare Rust and C++: features, maturity and latest version.", "category": "complex_comparison", "expected_keywords": ["rust", "c++"], "time_sensitive": false, "profile": "research"}
+{"id": "compare-045", "question": "Compare Go and Java: features, maturity and latest version.", "category": "complex_comparison", "expected_keywords": ["go", "java"], "time_sensitive": false, "profile": "research"}
+{"id": "compare-046", "question": "Compare TypeScript and Python: features, maturity and latest version.", "category": "complex_comparison", "expected_keywords": ["typescript", "python"], "time_sensitive": false, "profile": "research"}
+{"id": "compare-047", "question": "Compare Python and Node.js: features, maturity and latest version.", "category": "complex_comparison", "expected_keywords": ["python", "node.js"], "time_sensitive": false, "profile": "research"}
+{"id": "compare-048", "question": "Compare WASM and Native: features, maturity and latest version.", "category": "complex_comparison", "expected_keywords": ["wasm", "native"], "time_sensitive": false, "profile": "research"}
+{"id": "compare-049", "question": "Compare Rust and Zig: features, maturity and latest version.", "category": "complex_comparison", "expected_keywords": ["rust", "zig"], "time_sensitive": false, "profile": "research"}
+{"id": "zh-000", "question": "Rust 和 Go 哪个更适合 Web 后端开发", "category": "mixed_zh_en", "expected_keywords": ["rust", "go"], "time_sensitive": false}
+{"id": "zh-001", "question": "Tokio 异步运行时是什么", "category": "mixed_zh_en", "expected_keywords": ["tokio", "runtime"], "time_sensitive": false}
+{"id": "zh-002", "question": "最新版本的 Rust 是多少", "category": "mixed_zh_en", "expected_keywords": ["rust"], "time_sensitive": false}
+{"id": "zh-003", "question": "SQLite 和 PostgreSQL 的区别", "category": "mixed_zh_en", "expected_keywords": ["sqlite", "postgres"], "time_sensitive": false}
+{"id": "zh-004", "question": "Kubernetes 是怎么调度的", "category": "mixed_zh_en", "expected_keywords": ["kubernetes"], "time_sensitive": false}
+{"id": "zh-005", "question": "BM25 和向量检索如何融合", "category": "mixed_zh_en", "expected_keywords": ["bm25"], "time_sensitive": false}
+{"id": "zh-006", "question": "Tantivy 全文索引怎么用", "category": "mixed_zh_en", "expected_keywords": ["tantivy"], "time_sensitive": false}
+{"id": "zh-007", "question": "LLM 的上下文窗口是什么意思", "category": "mixed_zh_en", "expected_keywords": ["llm"], "time_sensitive": false}
+{"id": "zh-008", "question": "Axum 路由怎么定义", "category": "mixed_zh_en", "expected_keywords": ["axum"], "time_sensitive": false}
+{"id": "zh-009", "question": "向量数据库有哪些选择", "category": "mixed_zh_en", "expected_keywords": ["vector"], "time_sensitive": false}
+{"id": "zh-010", "question": "Rust 所有权机制是什么", "category": "mixed_zh_en", "expected_keywords": ["ownership"], "time_sensitive": false}
+{"id": "zh-011", "question": "怎么排查 DNS 解析失败", "category": "mixed_zh_en", "expected_keywords": ["dns"], "time_sensitive": false}
+{"id": "zh-012", "question": "现在最新的 Claude 模型是什么", "category": "mixed_zh_en", "expected_keywords": ["claude"], "time_sensitive": false}
+{"id": "zh-013", "question": "OpenAI API 的价格是多少", "category": "mixed_zh_en", "expected_keywords": ["openai", "price"], "time_sensitive": false}
+{"id": "zh-014", "question": "Raft 共识算法怎么工作", "category": "mixed_zh_en", "expected_keywords": ["raft"], "time_sensitive": false}
+{"id": "zh-015", "question": "Docker 和 Podman 有什么区别", "category": "mixed_zh_en", "expected_keywords": ["docker", "podman"], "time_sensitive": false}
+{"id": "zh-016", "question": "gRPC 和 REST 该怎么选", "category": "mixed_zh_en", "expected_keywords": ["grpc"], "time_sensitive": false}
+{"id": "zh-017", "question": "SSRF 攻击怎么防御", "category": "mixed_zh_en", "expected_keywords": ["ssrf"], "time_sensitive": false}
+{"id": "zh-018", "question": "Tokio 和 async-std 性能对比", "category": "mixed_zh_en", "expected_keywords": ["tokio"], "time_sensitive": false}
+{"id": "zh-019", "question": "Redis 持久化 RDB 和 AOF 的区别", "category": "mixed_zh_en", "expected_keywords": ["redis"], "time_sensitive": false}
+{"id": "zh-020", "question": "Git rebase 和 merge 的区别", "category": "mixed_zh_en", "expected_keywords": ["git"], "time_sensitive": false}
+{"id": "zh-021", "question": "现在的 LLM 推理成本怎么算", "category": "mixed_zh_en", "expected_keywords": ["inference"], "time_sensitive": false}
+{"id": "zh-022", "question": "Kubernetes Ingress 怎么配置", "category": "mixed_zh_en", "expected_keywords": ["ingress"], "time_sensitive": false}
+{"id": "zh-023", "question": "HTTP/3 和 QUIC 是什么关系", "category": "mixed_zh_en", "expected_keywords": ["quic"], "time_sensitive": false}
+{"id": "zh-024", "question": "分布式追踪怎么实现", "category": "mixed_zh_en", "expected_keywords": ["tracing"], "time_sensitive": false}
+{"id": "zh-025", "question": "Rust 的 async fn 是怎么实现的", "category": "mixed_zh_en", "expected_keywords": ["async"], "time_sensitive": false}
+{"id": "zh-026", "question": "怎么做数据库备份恢复", "category": "mixed_zh_en", "expected_keywords": ["backup"], "time_sensitive": false}
+{"id": "zh-027", "question": "最新的 Node.js 版本", "category": "mixed_zh_en", "expected_keywords": ["node"], "time_sensitive": false}
+{"id": "zh-028", "question": "Cloudflare Workers 免费额度", "category": "mixed_zh_en", "expected_keywords": ["cloudflare"], "time_sensitive": false}
+{"id": "zh-029", "question": "Postgres 的 MVCC 是什么", "category": "mixed_zh_en", "expected_keywords": ["mvcc"], "time_sensitive": false}
+{"id": "zh-030", "question": "共识算法 Paxos 和 Raft 对比", "category": "mixed_zh_en", "expected_keywords": ["raft"], "time_sensitive": false}
+{"id": "zh-031", "question": "怎么做 API 限流", "category": "mixed_zh_en", "expected_keywords": ["rate"], "time_sensitive": false}
+{"id": "zh-032", "question": "Git 大文件管理用什么", "category": "mixed_zh_en", "expected_keywords": ["lfs"], "time_sensitive": false}
+{"id": "zh-033", "question": "KV 缓存和 CDN 缓存的区别", "category": "mixed_zh_en", "expected_keywords": ["cache"], "time_sensitive": false}
+{"id": "zh-034", "question": "Rust 和 Python 互操作怎么写", "category": "mixed_zh_en", "expected_keywords": ["pyo3"], "time_sensitive": false}
+{"id": "zh-035", "question": "矩阵乘法优化有哪些方法", "category": "mixed_zh_en", "expected_keywords": ["simd"], "time_sensitive": false}
+{"id": "zh-036", "question": "现在主流的向量检索算法", "category": "mixed_zh_en", "expected_keywords": ["hnsw"], "time_sensitive": false}
+{"id": "zh-037", "question": "Kafka 的 ISR 是什么", "category": "mixed_zh_en", "expected_keywords": ["kafka"], "time_sensitive": false}
+{"id": "zh-038", "question": "LLM 微调和 RAG 怎么选", "category": "mixed_zh_en", "expected_keywords": ["rag"], "time_sensitive": false}
+{"id": "zh-039", "question": "怎么压测一个 HTTP 服务", "category": "mixed_zh_en", "expected_keywords": ["benchmark"], "time_sensitive": false}
+{"id": "zh-040", "question": "现在的 AI 编程助手有哪些", "category": "mixed_zh_en", "expected_keywords": ["assistant"], "time_sensitive": false}
+{"id": "zh-041", "question": "WebAssembly 能替代 Docker 吗", "category": "mixed_zh_en", "expected_keywords": ["wasm"], "time_sensitive": false}
+{"id": "zh-042", "question": "GraphQL 的 N+1 问题怎么解决", "category": "mixed_zh_en", "expected_keywords": ["graphql"], "time_sensitive": false}
+{"id": "zh-043", "question": "数据库连接池怎么调参", "category": "mixed_zh_en", "expected_keywords": ["pool"], "time_sensitive": false}
+{"id": "zh-044", "question": "OAuth2 的几种授权流程", "category": "mixed_zh_en", "expected_keywords": ["oauth"], "time_sensitive": false}
+{"id": "zh-045", "question": "TLS 证书轮换怎么做", "category": "mixed_zh_en", "expected_keywords": ["tls"], "time_sensitive": false}
+{"id": "zh-046", "question": "消息队列的幂等消费怎么做", "category": "mixed_zh_en", "expected_keywords": ["idempotent"], "time_sensitive": false}
+{"id": "zh-047", "question": "容器镜像怎么瘦身", "category": "mixed_zh_en", "expected_keywords": ["image"], "time_sensitive": false}
+{"id": "zh-048", "question": "服务网格值得引入吗", "category": "mixed_zh_en", "expected_keywords": ["mesh"], "time_sensitive": false}
+{"id": "zh-049", "question": "现在的云数据库哪家便宜", "category": "mixed_zh_en", "expected_keywords": ["cloud"], "time_sensitive": false}

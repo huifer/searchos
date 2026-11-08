@@ -1,0 +1,5 @@
+{"query": "What is tokio?", "profile": "general", "mode": "local_only", "expected_decision": "local_only"}
+{"query": "rust async runtime explanation", "profile": "general", "mode": "local_first", "expected_decision": "local_only"}
+{"query": "What is the latest tokio version?", "profile": "latest", "mode": "local_first", "expected_decision": "external_only"}
+{"query": "compare tokio and axum performance", "profile": "research", "mode": "local_first", "expected_decision": "hybrid"}
+{"query": "tokio pricing", "profile": "latest", "mode": "local_only", "expected_decision": "reject"}

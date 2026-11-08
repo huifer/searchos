@@ -1,0 +1,16 @@
+[package]
+name = "searchos-performance-tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Performance sanity suite (RFC-016 Phase 8 benchmark guard)."
+
+[dependencies]
+tokio = { workspace = true }
+chrono = { workspace = true }
+tempfile = "3"
+searchos-core = { workspace = true }
+searchos-domain = { workspace = true }
+searchos-retrieval = { workspace = true }
+searchos-index-tantivy = { workspace = true }
