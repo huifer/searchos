@@ -1,0 +1,16 @@
+[package]
+name = "searchos-cache"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Multi-layer caches: exact, canonical, document, retrieval, embedding, rerank (RFC-007)."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+searchos-domain = { workspace = true }
+searchos-document = { workspace = true }

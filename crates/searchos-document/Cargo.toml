@@ -1,0 +1,17 @@
+[package]
+name = "searchos-document"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Document lifecycle: hashing, chunking, versioning decisions (RFC-006)."
+
+[dependencies]
+serde = { workspace = true }
+chrono = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+serde_json = { workspace = true }
+searchos-domain = { workspace = true }
+
+[dev-dependencies]

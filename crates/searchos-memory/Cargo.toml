@@ -1,0 +1,13 @@
+[package]
+name = "searchos-memory"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Long-term knowledge namespaces, cross-agent reuse governance (RFC-013)."
+
+[dependencies]
+serde = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+searchos-domain = { workspace = true }

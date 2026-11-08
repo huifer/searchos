@@ -1,0 +1,12 @@
+[package]
+name = "searchos-policy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Search profiles, freshness policy, source policy, quality policy and budget enforcement (RFC-003 3.5, RFC-005 5.5, RFC-009 9.6)."
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+searchos-domain = { workspace = true }
