@@ -1,0 +1,10 @@
+id: ext.brave
+name: Brave Search
+version: 1.0.0
+type: search_provider
+runtime: native
+entry: searchos-provider::brave
+permissions:
+  network:
+    - api.search.brave.com
+healthcheck: true

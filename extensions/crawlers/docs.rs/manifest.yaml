@@ -1,0 +1,24 @@
+id: crawler.docs.rs
+name: Docs.rs Crawler
+version: 1.0.0
+
+type: site_crawler
+
+match:
+  domains:
+    - docs.rs
+
+capabilities:
+  - fetch
+  - extract
+
+runtime:
+  type: native
+  timeout_ms: 15000
+
+permissions:
+  network:
+    - docs.rs
+
+healthcheck:
+  enabled: true

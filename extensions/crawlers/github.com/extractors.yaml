@@ -1,0 +1,9 @@
+fields:
+  - field: release_version
+    selector: "span.css-truncate-target"
+    mode: "text"
+    regex: '^v?(.+)$'
+    regex_group: 1
+  - field: release_notes
+    selector: ".markdown-body"
+    mode: "text"

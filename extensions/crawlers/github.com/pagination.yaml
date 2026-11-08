@@ -1,0 +1,5 @@
+# Release listing pagination (declarative, RFC-010 10.2)
+pagination:
+  type: link_follow
+  next_selector: "a.next_page"
+  max_pages: 10

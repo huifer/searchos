@@ -1,0 +1,10 @@
+id: ext.tavily
+name: Tavily Search
+version: 1.0.0
+type: search_provider
+runtime: native
+entry: searchos-provider::tavily
+permissions:
+  network:
+    - api.tavily.com
+healthcheck: true

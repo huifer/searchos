@@ -1,0 +1,10 @@
+# Default readability-style extraction (RFC-011 11.2 Declarative)
+fields:
+  - field: title
+    selector: title
+  - field: main
+    selector: "article"
+    mode: "text"
+  - field: description
+    selector: "meta[name=description]"
+    mode: "attr:content"

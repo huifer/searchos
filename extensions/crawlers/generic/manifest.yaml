@@ -1,0 +1,23 @@
+id: crawler.generic
+name: Generic Crawler
+version: 1.0.0
+
+type: generic
+
+match:
+  domains: []
+
+capabilities:
+  - fetch
+  - extract
+
+runtime:
+  type: native
+  timeout_ms: 15000
+
+permissions:
+  network:
+    - "*"
+
+healthcheck:
+  enabled: false

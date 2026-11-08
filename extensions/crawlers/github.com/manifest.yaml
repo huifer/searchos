@@ -1,0 +1,25 @@
+id: crawler.github.com
+name: GitHub Crawler
+version: 1.0.0
+
+type: site_crawler
+
+match:
+  domains:
+    - github.com
+
+capabilities:
+  - fetch
+  - extract
+  - pagination
+
+runtime:
+  type: native
+  timeout_ms: 15000
+
+permissions:
+  network:
+    - github.com
+
+healthcheck:
+  enabled: true

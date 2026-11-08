@@ -1,0 +1,7 @@
+fields:
+  - field: crate_name
+    selector: "h1.docpage-title"
+    mode: "text"
+  - field: rustdoc_body
+    selector: ".docblock"
+    mode: "text"

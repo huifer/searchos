@@ -1,0 +1,13 @@
+# GitHub-specific strategy
+strategy:
+  user_agent: "searchos/0.1 (+https://github.com/searchos/searchos)"
+  max_redirects: 5
+  timeout_ms: 15000
+  max_response_bytes: 5242880
+  robots:
+    respect: true
+  rate_limit:
+    per_domain_concurrency: 2
+    delay_ms: 1000
+  freshness:
+    releases_ttl_seconds: 259200   # GitHub Release TTL: 1-3 days (RFC-005 5.5)
