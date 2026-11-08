@@ -1,0 +1,18 @@
+[package]
+name = "searchos-evaluation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Evaluation dataset loading, baseline comparison and non-inferiority reporting (RFC-015)."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+searchos-domain = { workspace = true }
+searchos-cost = { workspace = true }
+searchos-observability = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
