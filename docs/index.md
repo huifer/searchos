@@ -51,3 +51,12 @@ The canonical specification is the **RFC Suite v1.0** under [`docs/rfc/`](rfc/).
 2. Read the [RFC Suite index](rfc/README.md) for governance, scope, and design principles.
 3. Use [RFC-001](rfc/rfc-001-product-architecture.md) for the full product/architecture design.
 4. Use [Architecture](architecture.md), [Extensions](extensions.md), and [Roadmap](roadmap.md) as the engineering reference — *note: these guides are being reconciled to RFC Suite v1.0.*
+
+# Implementation & API
+
+- [API Reference (HTTP gateway)](api/http.md)
+- [CLI Reference](api/cli.md)
+- [Development Guide](development/README.md)
+
+> The RFC suite describes the *spec*; the `crates/` workspace implements it.
+> Docs are synced with every release (Definition of Done item 10).

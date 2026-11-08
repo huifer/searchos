@@ -1,0 +1,9 @@
+# Code owners for RFC-002 boundaries (RFC changes need architecture review).
+* @searchos-maintainers
+
+# RFC suite is spec, review carefully
+/docs/ @searchos-maintainers
+/docs/rfc/ @searchos-maintainers
+
+# Domain model changes need RFC/ADR alignment
+/crates/searchos-domain/ @searchos-maintainers
