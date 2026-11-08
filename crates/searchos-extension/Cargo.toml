@@ -1,0 +1,19 @@
+[package]
+name = "searchos-extension"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Extension manifests, lifecycle, permissions, version snapshots (RFC-011)."
+
+[dependencies]
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
+searchos-crawler = { workspace = true }
+searchos-provider = { workspace = true }
+searchos-domain = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

@@ -1,0 +1,20 @@
+[package]
+name = "searchos-fetch"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "SSRF-guarded HTTP fetch, robots handling, conditional GET, HTML extraction (RFC-010, RFC-014 14.1)."
+
+[dependencies]
+serde = { workspace = true }
+reqwest = { workspace = true }
+tokio = { workspace = true }
+url = { workspace = true }
+scraper = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+regex = { workspace = true }
+searchos-provider = { workspace = true }

@@ -1,0 +1,19 @@
+[package]
+name = "searchos-decision"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Quality-gated local/external search decision engine (RFC-004, RFC-005)."
+
+[dependencies]
+serde = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+searchos-domain = { workspace = true }
+searchos-policy = { workspace = true }
+searchos-query = { workspace = true }
+searchos-retrieval = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
