@@ -1,0 +1,49 @@
+# Example SearchOS configuration
+# 示例 SearchOS 配置
+# This file is provided as a reference. Copy to ~/.searchos/config/config.yaml and edit.
+# 本文件仅供参考。复制为 ~/.searchos/config/config.yaml 后按需修改。
+
+app:
+  name: searchos
+  mode: standalone            # standalone | server | cluster
+  data_dir: ~/.searchos
+
+server:
+  enabled: true
+  host: 127.0.0.1
+  port: 8787
+
+storage:
+  metadata: sqlite            # sqlite | postgres
+  fulltext: tantivy
+  vector: lancedb
+  objects: local              # local | s3
+
+search:
+  local_first: true
+  semantic_dedup: true
+  incremental: true
+  max_external_queries: 3
+
+memory:
+  enabled: true
+  embedding:
+    provider: local           # local | remote
+    model: bge-m3
+
+intelligence:
+  query_expansion: true
+  reranking: true
+  answer_generation: false
+
+providers:
+  tavily:
+    enabled: true
+    priority: 1
+  brave:
+    enabled: true
+    priority: 2
+  # Production API keys should come from environment variables or a
+  # secret store, never plaintext in this file.
+  # 生产环境 API Key 应从环境变量或加密 Secret Store 注入，勿明文保存于此。
+  # TAVILY_API_KEY / BRAVE_API_KEY are read from the environment.

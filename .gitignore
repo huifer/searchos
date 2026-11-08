@@ -1,0 +1,17 @@
+# Build artifacts
+/target
+
+# Local data directory (created at runtime)
+~/.searchos
+
+# Editor / OS
+.idea
+.vscode
+.DS_Store
+
+# Logs
+*.log
+
+# Secrets
+.env
+*.key
