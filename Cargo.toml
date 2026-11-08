@@ -1,0 +1,114 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/searchos-domain",
+    "crates/searchos-core",
+    "crates/searchos-application",
+    "crates/searchos-policy",
+    "crates/searchos-query",
+    "crates/searchos-decision",
+    "crates/searchos-planner",
+    "crates/searchos-cost",
+    "crates/searchos-cache",
+    "crates/searchos-retrieval",
+    "crates/searchos-document",
+    "crates/searchos-memory",
+    "crates/searchos-provider",
+    "crates/searchos-fetch",
+    "crates/searchos-crawler",
+    "crates/searchos-extension",
+    "crates/searchos-storage-sqlite",
+    "crates/searchos-index-tantivy",
+    "crates/searchos-vector-lancedb",
+    "crates/searchos-storage-fs",
+    "crates/searchos-interface-cli",
+    "crates/searchos-interface-http",
+    "crates/searchos-interface-mcp",
+    "crates/searchos-observability",
+    "crates/searchos-evaluation",
+    "tests/integration",
+    "tests/e2e",
+    "tests/performance",
+    "tests/compatibility",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/searchos/searchos"
+
+[workspace.dependencies]
+# Internal crates (single source of truth for intra-workspace deps)
+searchos-domain = { path = "crates/searchos-domain" }
+searchos-policy = { path = "crates/searchos-policy" }
+searchos-query = { path = "crates/searchos-query" }
+searchos-cost = { path = "crates/searchos-cost" }
+searchos-document = { path = "crates/searchos-document" }
+searchos-cache = { path = "crates/searchos-cache" }
+searchos-retrieval = { path = "crates/searchos-retrieval" }
+searchos-memory = { path = "crates/searchos-memory" }
+searchos-decision = { path = "crates/searchos-decision" }
+searchos-planner = { path = "crates/searchos-planner" }
+searchos-provider = { path = "crates/searchos-provider" }
+searchos-fetch = { path = "crates/searchos-fetch" }
+searchos-crawler = { path = "crates/searchos-crawler" }
+searchos-extension = { path = "crates/searchos-extension" }
+searchos-storage-sqlite = { path = "crates/searchos-storage-sqlite" }
+searchos-index-tantivy = { path = "crates/searchos-index-tantivy" }
+searchos-vector-lancedb = { path = "crates/searchos-vector-lancedb" }
+searchos-storage-fs = { path = "crates/searchos-storage-fs" }
+searchos-observability = { path = "crates/searchos-observability" }
+searchos-evaluation = { path = "crates/searchos-evaluation" }
+searchos-application = { path = "crates/searchos-application" }
+searchos-core = { path = "crates/searchos-core" }
+searchos-interface-cli = { path = "crates/searchos-interface-cli" }
+searchos-interface-http = { path = "crates/searchos-interface-http" }
+searchos-interface-mcp = { path = "crates/searchos-interface-mcp" }
+
+# Async runtime & HTTP (RFC Part 22: Runtime = Tokio, Gateway = Axum)
+tokio = { version = "1", features = ["full"] }
+axum = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# CLI (RFC Part 22: CLI = Clap)
+clap = { version = "4", features = ["derive", "env"] }
+
+# Serialization (RFC Part 22: Serde)
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+
+# Errors
+thiserror = "2"
+
+# Time & IDs
+chrono = { version = "0.4", features = ["serde", "clock"] }
+uuid = { version = "1", features = ["v4", "v5"] }
+
+# Hashing (content hash, query fingerprint)
+sha2 = "0.10"
+hex = "0.4"
+
+# Storage (RFC Part 22: SQLite metadata, Tantivy full-text, LanceDB vector)
+rusqlite = { version = "0.41", features = ["bundled"] }
+tantivy = "0.27"
+lancedb = "0.41"
+
+# Retrieval text processing
+scraper = "0.20"
+regex = "1"
+
+# Observability (RFC Part 22: tracing + metrics)
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Async trait objects (RFC-002 2.4: dyn traits with async methods)
+async-trait = "0.1"
+
+# URL handling & SSRF checks
+url = "2"
+
+[profile.release]
+lto = "thin"
+strip = "debuginfo"

@@ -1,0 +1,6 @@
+# Allow the macOS linker's compact-unwind table size notice on the large
+# debug test binaries (lancedb/arrow). It is informational, not a code issue.
+[target.x86_64-apple-darwin]
+rustflags = ["-A", "linker_messages"]
+[target.aarch64-apple-darwin]
+rustflags = ["-A", "linker_messages"]
