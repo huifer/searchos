@@ -1,0 +1,38 @@
+[package]
+name = "searchos-interface-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "searchos CLI: local in-process runtime commands (Part 18)."
+
+[[bin]]
+name = "searchos"
+path = "src/main.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+clap = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+searchos-domain = { workspace = true }
+searchos-policy = { workspace = true }
+searchos-query = { workspace = true }
+searchos-decision = { workspace = true }
+searchos-cost = { workspace = true }
+searchos-cache = { workspace = true }
+searchos-memory = { workspace = true }
+searchos-provider = { workspace = true }
+searchos-application = { workspace = true }
+searchos-core = { workspace = true }
+searchos-storage-sqlite = { workspace = true }
+searchos-index-tantivy = { workspace = true }
+searchos-crawler = { workspace = true }
+searchos-extension = { workspace = true }
+searchos-fetch = { workspace = true }
+searchos-observability = { workspace = true }
+searchos-interface-http = { workspace = true }
+searchos-interface-mcp = { workspace = true }
