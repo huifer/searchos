@@ -827,7 +827,7 @@ impl AnalyticsQueryService for SqliteAnalyticsService {
             "overview" => repo
                 .read_model("overview")?
                 .unwrap_or(serde_json::Value::Null),
-            "search_timeseries" | "knowledge_growth" => {
+            "search_timeseries" => {
                 serde_json::json!({ "items": repo.read_series(model_key, 90)? })
             }
             key => repo.read_model(key)?.unwrap_or(serde_json::Value::Null),

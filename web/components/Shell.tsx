@@ -9,6 +9,7 @@ import {
   DollarSign,
   FileText,
   Search,
+  Share2,
 } from "lucide-react";
 import type { ReactNode } from "react";
 
@@ -23,6 +24,7 @@ const NAV = [
   { href: "/analytics", label: "Analytics", Icon: ChartNoAxesCombined },
   { href: "/cost", label: "Cost", Icon: DollarSign },
   { href: "/knowledge", label: "Knowledge", Icon: Database },
+  { href: "/seo", label: "SEO", Icon: Share2 },
 ];
 
 export function Shell({ children }: { children: ReactNode }) {

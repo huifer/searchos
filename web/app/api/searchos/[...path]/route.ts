@@ -45,13 +45,18 @@ async function handle(req: NextRequest, ctx: Context): Promise<NextResponse> {
     body = await req.text();
   }
 
+  // SSE must not be cut by the proxy timeout (RFC-028 6.2).
+  const isSse = path.join("/").includes("dashboard/events");
+
   try {
     const upstream = await fetch(target, {
       method: req.method,
       headers,
       body,
       cache: "no-store",
-      signal: AbortSignal.timeout(30_000),
+      signal: isSse
+        ? undefined
+        : AbortSignal.timeout(30_000),
     });
     // SSE must stream through the proxy without buffering (RFC-028 6.2).
     const contentType = upstream.headers.get("content-type") ?? "";

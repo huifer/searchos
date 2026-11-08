@@ -48,6 +48,12 @@ Visualization & Analytics Layer.
   `http://localhost:3100`) + `openGraph`/`twitter` metadata in `app/layout.tsx`
   (with `og:locale:alternate zh_CN`); verified served through
   `next start -p <port>`.
+- SEO design lives in `web/lib/seo.ts` (single source of truth: SITE,
+  OG_IMAGES, PAGES, pageMetadata(), metaTagsFor()); per-route
+  `app/<route>/layout.tsx` exports pageMetadata so every page gets its own
+  title/description/OG/Twitter tags, and `app/seo/page.tsx` renders card
+  previews + tag table + asset list from the same constants. OG images carry
+  a `v0.1.0` version chip in the header.
 - Verification: `cd web && npm ci && npm run typecheck && npm run build`;
   `cargo test --workspace`; `SRC_DIR=crates/searchos-interface-http/src bash
   ~/.agents/skills/axum-route-conflict/scripts/scan-routes.sh`; CI has a

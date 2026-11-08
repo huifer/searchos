@@ -35,6 +35,7 @@ Backend: Rust Axum gateway, SQLite migration v3, `AnalyticsQueryService`,
 | `/analytics` | Tabs: Search / Cost / Quality / Knowledge / Providers / Crawlers / Infrastructure |
 | `/cost` | ledger, four cost dimensions, reuse views, reservations, reconciliation |
 | `/knowledge` | documents, memory, profiles, growth/freshness, runtime health |
+| `/seo` | social card previews, emitted meta tags, bilingual OG assets |
 
 ### Data flow
 
@@ -108,7 +109,7 @@ lucide-react + Recharts + TanStack Query + next-themes** 的可视化控制台�
 数据源是 Rust 网关的 `/api/v1/dashboard/*` Analytics Read Model，不直接读
 SQLite 业务表。
 
-六个页面覆盖 Overview、Search、Traces、Analytics、Cost、Knowledge。所有 KPI
+七个页面覆盖 Overview、Search、Traces、Analytics、Cost、Knowledge、SEO。所有 KPI
 带分母、定义与下钻，图表带 Tooltip 与时间范围，加载 / 空 / 错误态齐全；
 支持 Light / Dark、CSV / JSON 导出与 SSE 刷新提示。
 

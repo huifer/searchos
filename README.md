@@ -10,6 +10,14 @@
 </p>
 
 <p align="center">
+  <img src="https://img.shields.io/badge/status-v0.1.0%20implemented-6f7277" alt="status" />
+  <img src="https://img.shields.io/badge/rust-1.75%2B-orange?logo=rust" alt="rust" />
+  <img src="https://img.shields.io/badge/next.js-16-black?logo=nextdotjs" alt="nextjs" />
+  <img src="https://img.shields.io/badge/license-MIT-36f555" alt="license" />
+  <img src="https://img.shields.io/badge/tests-295%20passed-36f555" alt="tests" />
+</p>
+
+<p align="center">
   <a href="#quick-start">Quick Start</a> ·
   <a href="#highlights">Highlights</a> ·
   <a href="#console">Console</a> ·
@@ -58,14 +66,17 @@ SearchOS fixes this with one unifying infrastructure.
 The operator console (`web/`) is a Next.js 16 / React 19 interface over the gateway's
 **Analytics Read Model** — the browser never touches operational tables directly.
 
-![SearchOS Console — System Overview](docs/assets/console-overview.png)
+| System Overview | SEO / Share |
+|---|---|
+| ![Overview](docs/assets/console-overview.png) | ![SEO](docs/assets/console-seo.png) |
 
-Six surfaces: **Overview** (KPI cards with denominators, activity/strategy charts,
+Seven surfaces: **Overview** (KPI cards with denominators, activity/strategy charts,
 export), **Search** workbench, **Traces** (staged decision timeline), **Analytics**
 (search / cost / quality / knowledge / providers / crawlers / infrastructure), **Cost**
-(ledger, reservations, reconciliation) and **Knowledge** (documents, semantic memory,
-runtime health). Light / Dark, square-cornered tactical telemetry, one hazard-red
-accent. See [docs/ui.md](docs/ui.md) and [web/README.md](web/README.md).
+(ledger, reservations, reconciliation), **Knowledge** (documents, semantic memory,
+runtime health) and **SEO** (social card previews + the meta tags this site emits).
+Light / Dark, square-cornered tactical telemetry, one hazard-red accent. See
+[docs/ui.md](docs/ui.md) and [web/README.md](web/README.md).
 
 ## Quick Start
 
@@ -144,6 +155,18 @@ searchos mcp                    # stdio MCP server exposing all 7 RFC-021 tools
 
 See [`docs/architecture.md`](docs/architecture.md) and the canonical design in
 [`docs/rfc/README.md`](docs/rfc/README.md).
+
+## Repository Layout
+
+```text
+crates/                 Rust workspace: core, decision, planner, storage,
+                        retrieval, interfaces (CLI / HTTP / MCP), extensions
+extensions/             site crawlers, provider manifests
+fixtures/               evaluation dataset (500 questions) and test fixtures
+tests/                  integration, e2e, performance, compatibility suites
+web/                    Next.js 16 operator console over the Analytics Read Model
+docs/                   architecture, RFC suite, API/CLI references, ADRs
+```
 
 ## Development
 

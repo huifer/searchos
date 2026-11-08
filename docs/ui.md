@@ -62,6 +62,7 @@ telemetry. `high-end-visual-design` landing-page directives are not applied.
 | `/analytics` | Tabs for Search / Cost / Quality / Knowledge / Providers / Crawlers / Infrastructure from the Dashboard API |
 | `/cost` | ledger, four-dimension cost breakdown, reuse views, reservations, billing reconciliation |
 | `/knowledge` | document explorer, memory search, versioned profiles, Read Model growth/freshness, runtime health |
+| `/seo` | social card previews (X / GitHub), the meta tags this site emits, and the bilingual OG asset set |
 
 ### 4. UI requirements from the source design, implemented
 
@@ -123,7 +124,7 @@ gates in `.github/workflows/ci.yml`.
 （Radix + CVA）+ lucide-react + Recharts + TanStack Query + next-themes 的具体
 主流技术组合。
 
-页面覆盖 Overview、Search、Traces、Analytics、Cost、Knowledge；Analytics 页用
+页面覆盖 Overview、Search、Traces、Analytics、Cost、Knowledge、SEO；Analytics 页用
 Tabs 组织 Search / Cost / Quality / Knowledge / Providers / Crawlers /
 Infrastructure。所有 KPI 带分母与定义 Tooltip，所有图表带 Tooltip、时间范围、
 图例及可访问数据替代，所有页面有加载 / 空 / 错误态。

@@ -5,6 +5,7 @@
 /web/out
 /web/*.tsbuildinfo
 /web/.env*.local
+/web/AGENTS.md
 
 # Local data directory (created at runtime)
 ~/.searchos

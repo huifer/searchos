@@ -10,6 +10,14 @@
 </p>
 
 <p align="center">
+  <img src="https://img.shields.io/badge/状态-v0.1.0%20已实现-6f7277" alt="status" />
+  <img src="https://img.shields.io/badge/rust-1.75%2B-orange?logo=rust" alt="rust" />
+  <img src="https://img.shields.io/badge/next.js-16-black?logo=nextdotjs" alt="nextjs" />
+  <img src="https://img.shields.io/badge/license-MIT-36f555" alt="license" />
+  <img src="https://img.shields.io/badge/tests-295%20passed-36f555" alt="tests" />
+</p>
+
+<p align="center">
   <a href="#快速开始">快速开始</a> ·
   <a href="#核心特性">核心特性</a> ·
   <a href="#可视化控制台">控制台</a> ·
@@ -51,13 +59,15 @@ SearchOS 用一套统一的基础设施解决这些问题。
 操作员控制台（`web/`）是基于网关 **Analytics Read Model** 的 Next.js 16 / React 19 界面——
 浏览器从不直接读取业务表。
 
-![SearchOS 控制台 —— 系统总览](docs/assets/console-overview.png)
+| 系统总览 | SEO / 分享 |
+|---|---|
+| ![Overview](docs/assets/console-overview.png) | ![SEO](docs/assets/console-seo.png) |
 
-六个页面：**Overview**（带分母与定义的 KPI 卡片、活动/策略图表、导出）、**Search** 工作台、
+七个页面：**Overview**（带分母与定义的 KPI 卡片、活动/策略图表、导出）、**Search** 工作台、
 **Traces**（分阶段决策时间线）、**Analytics**（搜索 / 成本 / 质量 / 知识 / Provider / 爬虫 /
-基础设施）、**Cost**（台账、预留、对账）与 **Knowledge**（文档、语义记忆、运行时健康）。
-Light / Dark 主题、直角战术遥测风格、单一 hazard-red 强调色。详见
-[docs/ui.md](docs/ui.md) 与 [web/README.md](web/README.md)。
+基础设施）、**Cost**（台账、预留、对账）、**Knowledge**（文档、语义记忆、运行时健康）与
+**SEO**（社交卡片预览 + 本站输出的 meta 标签）。Light / Dark 主题、直角战术遥测风格、
+单一 hazard-red 强调色。详见 [docs/ui.md](docs/ui.md) 与 [web/README.md](web/README.md)。
 
 ## 快速开始
 
@@ -136,6 +146,18 @@ searchos mcp                    # stdio MCP server，暴露全部 7 个 RFC-021 
 
 详见 [`docs/architecture.md`](docs/architecture.md) 与正式设计文档
 [`docs/rfc/README.md`](docs/rfc/README.md)。
+
+## 仓库结构
+
+```text
+crates/                 Rust workspace：core、decision、planner、storage、
+                        retrieval、interfaces（CLI / HTTP / MCP）、extensions
+extensions/             站点爬虫与 Provider 清单
+fixtures/               评测数据集（500 题）与测试夹具
+tests/                  integration、e2e、performance、compatibility 测试
+web/                    基于 Analytics Read Model 的 Next.js 16 控制台
+docs/                   架构、RFC 套件、API/CLI 参考、ADR
+```
 
 ## 开发与验证
 

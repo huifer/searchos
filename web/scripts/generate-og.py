@@ -263,6 +263,12 @@ def render(w: int, h: int, lang: str = "en") -> Canvas:
 
     # --- header ---
     c.rect(64, 46, 44, 5, fill=ACCENT)
+    chip = "v0.1.0"
+    chip_font = c.font("mono", 12)
+    chip_w = c.tw(chip, chip_font) + 16
+    chip_x = 1136 - c.tw(copy["header_right"], c.font("mono", 13)) - 16 - chip_w
+    c.rect(chip_x, 40, chip_w, 20, outline=LINE_STRONG)
+    c.text(chip_x + 8, 45, chip, chip_font, DIM)
     head = c.font("mono_semibold", 16)
     c.text(64, 64, copy["header_left"], head, FG, tracking=tr["hi"])
     off = c.tw(copy["header_left"], head) + tr["hi"] * len(copy["header_left"])

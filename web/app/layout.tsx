@@ -3,36 +3,47 @@ import { GeistSans } from "geist/font/sans";
 import { GeistMono } from "geist/font/mono";
 import { Shell } from "@/components/Shell";
 import { Providers } from "@/components/providers";
+import { OG_IMAGES, SITE } from "@/lib/seo";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3100"),
-  title: "SearchOS Console",
-  description:
-    "Analytics, decision traces, evidence and cost telemetry for the SearchOS local runtime.",
+  metadataBase: new URL(SITE.url),
+  title: { default: SITE.console, template: `%s · ${SITE.console}` },
+  description: SITE.description,
+  applicationName: SITE.console,
+  keywords: [
+    "SearchOS",
+    "AI search infrastructure",
+    "search memory",
+    "Tavily-compatible API",
+    "Rust",
+    "MCP",
+    "decision engine",
+    "cost-aware routing",
+  ],
+  authors: [{ name: "SearchOS Authors" }],
+  creator: "SearchOS Authors",
   openGraph: {
-    title: "SearchOS Console",
-    description:
-      "Analytics, decision traces, evidence and cost telemetry for the SearchOS local runtime.",
+    title: SITE.console,
+    description: SITE.description,
     type: "website",
-    siteName: "SearchOS",
-    locale: "en_US",
-    alternateLocale: ["zh_CN"],
+    siteName: SITE.name,
+    locale: SITE.locale,
+    alternateLocale: [SITE.alternateLocale],
     images: [
       {
-        url: "/og.png",
-        width: 1200,
-        height: 630,
-        alt: "SearchOS — the search & memory infrastructure for AI agents",
+        url: OG_IMAGES.en.url,
+        width: OG_IMAGES.en.width,
+        height: OG_IMAGES.en.height,
+        alt: OG_IMAGES.en.alt,
       },
     ],
   },
   twitter: {
     card: "summary_large_image",
-    title: "SearchOS Console",
-    description:
-      "Analytics, decision traces, evidence and cost telemetry for the SearchOS local runtime.",
-    images: ["/og.png"],
+    title: SITE.console,
+    description: SITE.description,
+    images: [OG_IMAGES.en.url],
   },
 };
 
