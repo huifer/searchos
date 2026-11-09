@@ -43,6 +43,9 @@ pub struct UrlGuard {
     pub allowed_ports: Vec<u16>,
     /// Allow `http://` (default true; https preferred).
     pub allow_http: bool,
+    /// When false, resolved-IP blocking is disabled (explicit local/dev
+    /// config only); URL syntax and redirect bounds remain enforced.
+    pub ssrf_protection: bool,
     /// Per-domain concurrency limit (RFC-014 14.1).
     pub per_domain_concurrency: Arc<Semaphore>,
 }
@@ -53,12 +56,29 @@ impl Default for UrlGuard {
             max_redirects: 5,
             allowed_ports: vec![80, 443, 8080],
             allow_http: true,
+            ssrf_protection: true,
             per_domain_concurrency: Arc::new(Semaphore::new(4)),
         }
     }
 }
 
 impl UrlGuard {
+    /// Config-driven guard (security + crawler sections are consumed here).
+    pub fn with_config(
+        max_redirects: u32,
+        max_concurrent: u32,
+        ssrf_protection: bool,
+        allowed_ports: Vec<u16>,
+    ) -> Self {
+        Self {
+            max_redirects,
+            allowed_ports,
+            allow_http: true,
+            ssrf_protection,
+            per_domain_concurrency: Arc::new(Semaphore::new(max_concurrent.max(1) as usize)),
+        }
+    }
+
     /// Validates a URL string against all static rules (RFC-014 14.1 list).
     pub fn validate(&self, raw: &str) -> Result<Url, UrlViolation> {
         let url = Url::parse(raw).map_err(|e| UrlViolation::new("INVALID_URL", e.to_string()))?;
@@ -98,12 +118,14 @@ impl UrlGuard {
 
         // If the host is a literal IP, validate it directly; hostname IPs are
         // caught again after DNS resolution via `validate_ip`.
-        if let Ok(ip) = host_l
-            .trim_start_matches('[')
-            .trim_end_matches(']')
-            .parse::<IpAddr>()
-        {
-            self.validate_ip(&ip)?;
+        if self.ssrf_protection {
+            if let Ok(ip) = host_l
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .parse::<IpAddr>()
+            {
+                self.validate_ip(&ip)?;
+            }
         }
 
         Ok(url)
@@ -217,8 +239,10 @@ impl UrlGuard {
         if addrs.is_empty() {
             return Err(UrlViolation::new("DNS_ERROR", "no addresses"));
         }
-        for a in &addrs {
-            self.validate_ip(&a.ip())?;
+        if self.ssrf_protection {
+            for a in &addrs {
+                self.validate_ip(&a.ip())?;
+            }
         }
         Ok(addrs)
     }

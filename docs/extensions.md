@@ -2,9 +2,10 @@
 
 > Extension & Crawler System
 
-SearchOS is **extension-first**. All non-generic capabilities — providers, site-specific
-crawlers, extractors, embeddings, rerankers, memory, and intelligence — enter through a
-unified, fault-isolated Extension System. This keeps the core stable while the number of
+SearchOS has a versioned, fault-isolated **extension registry**. Native providers and
+site crawlers ship compiled into the binary today; manifest discovery, lifecycle,
+permissions, and quarantine are implemented, and declarative/WASM runtimes are
+architecture targets for later phases. This keeps the core stable while the number of
 supported websites grows.
 
 ## Extension Types

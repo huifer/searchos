@@ -339,6 +339,12 @@ impl VectorIndex for LanceVectorIndex {
                 .unwrap();
             let bodies: &StringArray = col("body").and_then(|c| c.as_any().downcast_ref()).unwrap();
             let urls: &StringArray = col("url").and_then(|c| c.as_any().downcast_ref()).unwrap();
+            let workspaces: &StringArray = col("workspace_id")
+                .and_then(|c| c.as_any().downcast_ref())
+                .unwrap();
+            let languages: &StringArray = col("language")
+                .and_then(|c| c.as_any().downcast_ref())
+                .unwrap();
             let fetched: &UInt64Array = col("fetched_at")
                 .and_then(|c| c.as_any().downcast_ref())
                 .unwrap();
@@ -375,13 +381,27 @@ impl VectorIndex for LanceVectorIndex {
                         .unwrap_or_default(),
                     vector_score: Some(vec_score),
                     bm25_score: None,
+                    workspace_id: Some(workspaces.value(i).to_string()),
+                    language: if languages.value(i).is_empty() {
+                        None
+                    } else {
+                        Some(languages.value(i).to_string())
+                    },
                 });
             }
         }
-        // Domain/metadata filtering (client-side, RFC-007 7.5).
+        // Metadata filtering (workspace, domains, freshness), RFC-007 7.5.
         out.retain(|c| {
-            if query.required_domains.is_empty() {
-                return true;
+            if let Some(ws) = &query.workspace_id {
+                let candidate_ws = c.workspace_id.as_deref().unwrap_or("*");
+                if candidate_ws != ws && candidate_ws != "*" {
+                    return false;
+                }
+            }
+            if let Some(after) = query.fetched_after {
+                if !query.include_stale && c.fetched_at < after {
+                    return false;
+                }
             }
             let host = c
                 .url
@@ -392,8 +412,16 @@ impl VectorIndex for LanceVectorIndex {
                 .next()
                 .unwrap_or("")
                 .to_lowercase();
-            query
-                .required_domains
+            if !query.required_domains.is_empty()
+                && !query
+                    .required_domains
+                    .iter()
+                    .any(|d| host == *d || host.ends_with(&format!(".{d}")))
+            {
+                return false;
+            }
+            !query
+                .excluded_domains
                 .iter()
                 .any(|d| host == *d || host.ends_with(&format!(".{d}")))
         });

@@ -1,9 +1,21 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import dynamic from "next/dynamic";
 import { Database, HardDrive, Info, Server } from "lucide-react";
 
-import { BreakdownBars, DistributionDonut, TimeSeriesChart } from "@/components/analytics-charts";
+const TimeSeriesChart = dynamic(
+  () => import("@/components/analytics-charts").then((m) => m.TimeSeriesChart),
+  { ssr: false, loading: () => <ShadcnSkeleton className="h-[220px] w-full" /> },
+);
+const DistributionDonut = dynamic(
+  () => import("@/components/analytics-charts").then((m) => m.DistributionDonut),
+  { ssr: false, loading: () => <ShadcnSkeleton className="h-[200px] w-full" /> },
+);
+const BreakdownBars = dynamic(
+  () => import("@/components/analytics-charts").then((m) => m.BreakdownBars),
+  { ssr: false, loading: () => <ShadcnSkeleton className="h-[220px] w-full" /> },
+);
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
@@ -11,6 +23,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Empty, ErrorNotice, Panel, SectionIntro, Skeleton } from "@/components/ui";
+import { Skeleton as ShadcnSkeleton } from "@/components/ui/skeleton";
 import {
   useCostBreakdown,
   useCrawlers,

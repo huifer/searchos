@@ -210,6 +210,8 @@ mod tests {
             trace_id: None,
             shared,
             pricing_model_version: "1".into(),
+            status: Default::default(),
+            error_code: None,
         }
     }
 

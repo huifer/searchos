@@ -58,5 +58,19 @@ Visualization & Analytics Layer.
   `cargo test --workspace`; `SRC_DIR=crates/searchos-interface-http/src bash
   ~/.agents/skills/axum-route-conflict/scripts/scan-routes.sh`; CI has a
   `console` job in `.github/workflows/ci.yml`.
+- Interaction guarantees (browser-verified via Chrome DevTools MCP): Radix
+  Select time/interval filters refetch with `from/to/interval` params; every
+  page's forms/buttons/tabs work (Search submit + Raw JSON tab, Traces row
+  click -> 13 stage rows + Metadata tab, Analytics 7 tabs, Cost reconcile form
+  flips `total_actual` without touching estimates, Knowledge doc find +
+  Profiles/Health tabs); theme toggle flips `<html>` class; gateway-off shows
+  inline `role=alert` with Retry and TanStack Query auto-recovers on restart.
+- Gateway got a background outbox worker (`serve()` spawns a 1.5s tick on
+  `process_outbox`) plus an init drain, so `POST /extract` documents become
+  searchable without manual CLI steps.
+- Retrieval is workspace-scoped: `LocalKnowledgePort::retrieve` takes the
+  requester workspace, and tantivy matches `[requester OR global *]` only.
+- `TantivyIndex::num_docs()` is the authoritative count;
+  `index_consistency` uses it so restarts no longer report false drift.
 
 **Related:** [[searchos-project]], [[searchos-verification]], [[searchos-decision-red-lines]], docs/ui.md

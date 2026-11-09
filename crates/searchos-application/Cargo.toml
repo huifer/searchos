@@ -10,6 +10,8 @@ description = "Application use cases: search, fetch, memory, cost orchestration 
 searchos-storage-sqlite = { workspace = true }
 searchos-storage-fs = { workspace = true }
 searchos-fetch = { workspace = true }
+searchos-crawler = { workspace = true }
+url = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 async-trait = { workspace = true }

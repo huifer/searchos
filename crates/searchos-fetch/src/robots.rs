@@ -1,7 +1,8 @@
 //! robots.txt parsing and access decisions (RFC-010 10.5).
 
 use std::collections::HashMap;
-use std::sync::RwLock;
+use std::sync::{Mutex, RwLock};
+use std::time::{Duration, Instant};
 
 /// robots.txt verdict.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -10,9 +11,9 @@ pub enum RobotsDecision {
     Disallowed {
         rule: String,
     },
-    /// robots.txt unavailable or unreachable — treat as allowed (RFC 9309
-    /// says unreachable disallows all; MVP treats transient failures as
-    /// allowed but logs; a 4xx robots is "no robots" = allowed).
+    /// robots.txt unavailable or unreachable. RFC 9309 treats this as
+    /// disallow-all; the fetch pipeline applies that default unless the
+    /// operator explicitly opts into a permissive policy.
     Unknown,
 }
 
@@ -23,6 +24,8 @@ pub struct RobotsFile {
     groups: HashMap<String, (Vec<String>, Vec<String>)>,
     /// `*` group fallback.
     star: Option<(Vec<String>, Vec<String>)>,
+    /// user-agent → Crawl-delay seconds.
+    crawl_delays: HashMap<String, u64>,
 }
 
 impl RobotsFile {
@@ -30,7 +33,9 @@ impl RobotsFile {
     /// Disallow, Allow; supports `*` wildcard at rule end).
     pub fn parse(content: &str) -> Self {
         let mut groups: HashMap<String, (Vec<String>, Vec<String>)> = HashMap::new();
+        let mut crawl_delays: HashMap<String, u64> = HashMap::new();
         let mut current_agents: Vec<String> = Vec::new();
+        let mut last_was_user_agent = false;
         for raw in content.lines() {
             let line = raw.split('#').next().unwrap_or("").trim();
             let Some((key, value)) = line.split_once(':') else {
@@ -40,26 +45,56 @@ impl RobotsFile {
             let value = value.trim().to_string();
             match key.as_str() {
                 "user-agent" => {
+                    if !last_was_user_agent {
+                        current_agents.clear();
+                    }
                     let ua = value.to_lowercase();
                     if !current_agents.contains(&ua) {
                         current_agents.push(ua);
                     }
+                    last_was_user_agent = true;
                 }
                 "disallow" => {
                     for ua in &current_agents {
                         groups.entry(ua.clone()).or_default().0.push(value.clone());
                     }
+                    last_was_user_agent = false;
                 }
                 "allow" => {
                     for ua in &current_agents {
                         groups.entry(ua.clone()).or_default().1.push(value.clone());
                     }
+                    last_was_user_agent = false;
+                }
+                "crawl-delay" => {
+                    if let Ok(seconds) = value.parse::<u64>() {
+                        for ua in &current_agents {
+                            crawl_delays.insert(ua.clone(), seconds);
+                        }
+                    }
+                    last_was_user_agent = false;
                 }
                 _ => {}
             }
         }
         let star = groups.remove("*");
-        Self { groups, star }
+        let star_delay = crawl_delays.remove("*");
+        if let Some(delay) = star_delay {
+            crawl_delays.insert("*".into(), delay);
+        }
+        Self {
+            groups,
+            star,
+            crawl_delays,
+        }
+    }
+
+    /// Crawl-delay for `agent`, with the `*` group as fallback.
+    pub fn crawl_delay(&self, agent: &str) -> Option<u64> {
+        self.crawl_delays
+            .get(&agent.to_lowercase())
+            .or_else(|| self.crawl_delays.get("*"))
+            .copied()
     }
 
     /// Whether `path` is allowed for user-agent `agent` (longest-match rule).
@@ -143,6 +178,7 @@ fn path_matches(pattern: &str, path: &str) -> bool {
 #[derive(Debug, Default)]
 pub struct RobotsChecker {
     cache: RwLock<HashMap<String, Option<RobotsFile>>>,
+    last_access: Mutex<HashMap<String, Instant>>,
 }
 
 impl RobotsChecker {
@@ -165,11 +201,56 @@ impl RobotsChecker {
     pub fn install(&self, host: &str, content: Option<&str>) {
         let parsed = content.map(RobotsFile::parse);
         self.cache.write().unwrap().insert(host.to_string(), parsed);
+        self.last_access.lock().unwrap().remove(host);
     }
 
     /// Whether robots for a host were fetched at least once.
     pub fn known(&self, host: &str) -> bool {
         self.cache.read().unwrap().contains_key(host)
+    }
+
+    /// Crawl-delay configured for this host and user agent.
+    pub fn crawl_delay(&self, host: &str, agent: &str) -> Option<Duration> {
+        self.cache
+            .read()
+            .unwrap()
+            .get(host)
+            .and_then(|entry| entry.as_ref())
+            .and_then(|file| file.crawl_delay(agent))
+            .map(Duration::from_secs)
+    }
+
+    /// Honours Crawl-delay before the next fetch to a host. The wait is
+    /// computed under a short lock and released before awaiting.
+    pub async fn wait_for_crawl_delay(&self, host: &str, agent: &str) {
+        self.wait_for_crawl_delay_capped(host, agent, u64::MAX)
+            .await
+    }
+
+    /// Honours the declared delay, bounded by an operator safety cap.
+    pub async fn wait_for_crawl_delay_capped(&self, host: &str, agent: &str, cap_seconds: u64) {
+        let Some(delay) = self
+            .crawl_delay(host, agent)
+            .map(|d| d.min(Duration::from_secs(cap_seconds)))
+        else {
+            return;
+        };
+        let wait = {
+            let last = self.last_access.lock().unwrap();
+            last.get(host).and_then(|previous| {
+                let elapsed = previous.elapsed();
+                (elapsed < delay).then_some(delay - elapsed)
+            })
+        };
+        if let Some(wait) = wait {
+            searchos_observability::MetricsRegistry::global()
+                .set_gauge("fetch.crawl_delay_waited_seconds", wait.as_secs().max(1));
+            tokio::time::sleep(wait).await;
+        }
+        self.last_access
+            .lock()
+            .unwrap()
+            .insert(host.to_string(), Instant::now());
     }
 }
 
@@ -222,6 +303,31 @@ mod tests {
     fn empty_disallow_means_allow_all() {
         let r = RobotsFile::parse("User-agent: *\nDisallow:\n");
         assert_eq!(r.allowed("x", "/anything"), RobotsDecision::Allowed);
+    }
+
+    #[test]
+    fn crawl_delay_is_parsed_per_agent() {
+        let r = RobotsFile::parse(ROBOTS);
+        assert_eq!(r.crawl_delay("searchos"), Some(1));
+        assert_eq!(r.crawl_delay("anybot"), None);
+        let star = RobotsFile::parse("User-agent: *\nCrawl-delay: 2\n");
+        assert_eq!(star.crawl_delay("anything"), Some(2));
+    }
+
+    #[tokio::test]
+    async fn crawl_delay_is_honoured() {
+        let c = RobotsChecker::new();
+        c.install(
+            "slow.example",
+            Some("User-agent: searchos\nCrawl-delay: 1\n"),
+        );
+        let started = Instant::now();
+        c.wait_for_crawl_delay("slow.example", "searchos").await;
+        c.wait_for_crawl_delay("slow.example", "searchos").await;
+        assert!(
+            started.elapsed() >= Duration::from_millis(900),
+            "second access waited for the declared crawl-delay"
+        );
     }
 
     #[test]

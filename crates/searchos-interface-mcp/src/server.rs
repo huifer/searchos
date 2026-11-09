@@ -27,6 +27,7 @@ pub fn tools() -> Vec<Value> {
                     "workspace_id": { "type": "string" },
                     "max_external_queries": { "type": "integer", "minimum": 0 },
                     "max_total_cost": { "type": "number", "minimum": 0 },
+                    "max_results": { "type": "integer", "minimum": 1, "maximum": 100 },
                     "request_id": { "type": "string", "description": "Client idempotency key; replaying it does not re-run or re-bill an external search." }
                 },
                 "required": ["query"]
@@ -58,6 +59,39 @@ pub fn tools() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "ingest_text",
+            "description": "Import pasted text into the local knowledge store (RFC-029). Returns 201-style ingestion metadata; the document becomes searchable after the outbox drain.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "content": { "type": "string" },
+                    "source_key": { "type": "string" },
+                    "title": { "type": "string" },
+                    "content_type": { "type": "string" },
+                    "language": { "type": "string" },
+                    "workspace_id": { "type": "string" }
+                },
+                "required": ["content"]
+            }
+        }),
+        json!({
+            "name": "ingest_file",
+            "description": "Import in-memory file content with a filename label (RFC-029). The filename never touches the server filesystem.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "file_name": { "type": "string" },
+                    "content": { "type": "string" },
+                    "source_key": { "type": "string" },
+                    "title": { "type": "string" },
+                    "content_type": { "type": "string" },
+                    "language": { "type": "string" },
+                    "workspace_id": { "type": "string" }
+                },
+                "required": ["file_name", "content"]
+            }
+        }),
+        json!({
             "name": "memory_search",
             "description": "Search persisted search memory with namespace isolation.",
             "inputSchema": {
@@ -74,7 +108,7 @@ pub fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "document_search",
-            "description": "Search persisted local documents by URL text (no external calls).",
+            "description": "Search persisted local documents by URL or title text with a bounded SQL lookup (no external calls).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -115,6 +149,8 @@ pub const TOOLS: &[&str] = &[
     "search",
     "fetch",
     "extract",
+    "ingest_text",
+    "ingest_file",
     "memory_search",
     "document_search",
     "cost_summary",
@@ -130,21 +166,42 @@ pub async fn handle_message(runtime: Arc<SearchOsRuntime>, msg: &Value) -> Optio
     let params = msg.get("params").cloned().unwrap_or(Value::Null);
 
     let result: Result<Value, Value> = match method {
-        "initialize" => Ok(json!({
-            "protocolVersion": "2024-11-05",
-            "capabilities": { "tools": {} },
-            "serverInfo": { "name": "searchos", "version": searchos_core::VERSION }
-        })),
+        "initialize" => {
+            let protocol = params
+                .get("protocolVersion")
+                .and_then(|v| v.as_str())
+                .filter(|v| !v.trim().is_empty())
+                .unwrap_or("2024-11-05");
+            Ok(json!({
+                "protocolVersion": protocol,
+                "capabilities": { "tools": {} },
+                "serverInfo": { "name": "searchos", "version": searchos_core::VERSION }
+            }))
+        }
         "tools/list" => Ok(json!({ "tools": tools() })),
         "tools/call" => call_tool(runtime, &params).await,
         "notifications/initialized" | "notifications/cancelled" => return None,
         "ping" => Ok(json!({})),
-        other => Err(json!({ "code": -32601, "message": format!("unknown method {other}") })),
+        other => Err(rpc_error(
+            -32601,
+            "INTERNAL_ERROR",
+            format!("unknown method {other}"),
+        )),
     };
 
     Some(match result {
         Ok(r) => json!({ "jsonrpc": "2.0", "id": id, "result": r }),
         Err(e) => json!({ "jsonrpc": "2.0", "id": id, "error": e }),
+    })
+}
+
+/// JSON-RPC error with a shared uppercase transport code in `data.code`
+/// (Part 30 INV-30-19).
+fn rpc_error(code: i64, error_code: &str, message: impl ToString) -> Value {
+    json!({
+        "code": code,
+        "message": message.to_string(),
+        "data": { "code": error_code }
     })
 }
 
@@ -159,7 +216,7 @@ async fn call_tool(runtime: Arc<SearchOsRuntime>, params: &Value) -> Result<Valu
                 .unwrap_or("")
                 .to_string();
             if query.trim().is_empty() {
-                return Err(json!({ "code": -32602, "message": "query required" }));
+                return Err(rpc_error(-32602, "VALIDATION_FAILED", "query required"));
             }
             let profile = args
                 .get("profile")
@@ -167,11 +224,9 @@ async fn call_tool(runtime: Arc<SearchOsRuntime>, params: &Value) -> Result<Valu
                 .map(ProfileId::new)
                 .unwrap_or_else(ProfileId::general);
             let mode = match args.get("mode").and_then(|m| m.as_str()) {
-                Some("local_only") => SearchMode::LocalOnly,
-                Some("external_first") => SearchMode::ExternalFirst,
-                Some("external_only") => SearchMode::ExternalOnly,
-                Some("hybrid") => SearchMode::Hybrid,
-                _ => SearchMode::LocalFirst,
+                None => SearchMode::LocalFirst,
+                Some(value) => SearchMode::parse(value)
+                    .map_err(|message| rpc_error(-32602, "VALIDATION_FAILED", message))?,
             };
             let ws = args
                 .get("workspace_id")
@@ -179,7 +234,7 @@ async fn call_tool(runtime: Arc<SearchOsRuntime>, params: &Value) -> Result<Valu
                 .map(WorkspaceId::new)
                 .unwrap_or_else(|| WorkspaceId::new("default"));
             let mut req = SearchRequest::new(query, profile, mode, ws)
-                .map_err(|e| json!({ "code": -32602, "message": e.to_string() }))?;
+                .map_err(|e| rpc_error(-32602, "VALIDATION_FAILED", e.to_string()))?;
             if let Some(n) = args.get("max_external_queries").and_then(|n| n.as_u64()) {
                 req.budget.max_external_queries = n as u32;
             }
@@ -189,12 +244,19 @@ async fn call_tool(runtime: Arc<SearchOsRuntime>, params: &Value) -> Result<Valu
             if let Some(rid) = args.get("request_id").and_then(|r| r.as_str()) {
                 req = req.with_request_id(rid);
             }
-            let resp = runtime
+            if let Some(max) = args.get("max_results").and_then(|m| m.as_u64()) {
+                req = req.with_max_results(max as u32);
+            }
+            let mut resp = runtime
                 .application
                 .search_service
                 .search(req)
                 .await
-                .map_err(|e| json!({ "code": -32603, "message": e.to_string() }))?;
+                .map_err(|e| rpc_error(-32603, e.class().code, e.to_string()))?;
+            if let Some(max) = args.get("max_results").and_then(|m| m.as_u64()) {
+                resp.results
+                    .truncate(searchos_domain::request::clamp_max_results(max as u32) as usize);
+            }
             serde_json::to_value(resp)
                 .map_err(|e| json!({ "code": -32603, "message": e.to_string() }))?
         }
@@ -206,14 +268,14 @@ async fn call_tool(runtime: Arc<SearchOsRuntime>, params: &Value) -> Result<Valu
                 .unwrap_or("")
                 .to_string();
             if url.trim().is_empty() {
-                return Err(json!({ "code": -32602, "message": "url required" }));
+                return Err(rpc_error(-32602, "VALIDATION_FAILED", "url required"));
             }
             let content = runtime
                 .application
                 .fetch_service
                 .fetch_preview(&url)
                 .await
-                .map_err(|e| json!({ "code": -32603, "message": e.to_string() }))?;
+                .map_err(|e| rpc_error(-32603, e.class().code, e.to_string()))?;
             json!({ "url": url, "title": content.title, "content": content.text })
         }
         "document_search" => {
@@ -221,18 +283,17 @@ async fn call_tool(runtime: Arc<SearchOsRuntime>, params: &Value) -> Result<Valu
                 .get("query")
                 .and_then(|q| q.as_str())
                 .unwrap_or("")
-                .to_lowercase();
-            let limit = args.get("limit").and_then(|l| l.as_u64()).unwrap_or(20) as usize;
+                .to_string();
+            let limit = args.get("limit").and_then(|l| l.as_u64()).unwrap_or(20) as u32;
             let repo = searchos_storage_sqlite::repos::DocumentRepo::new(&runtime.sqlite);
+            let workspace = args
+                .get("workspace_id")
+                .and_then(|w| w.as_str())
+                .unwrap_or("default");
             let docs = repo
-                .list(500)
-                .map_err(|e| json!({ "code": -32603, "message": e.to_string() }))?;
-            let matches: Vec<_> = docs
-                .into_iter()
-                .filter(|d| d.canonical_url.to_lowercase().contains(&query))
-                .take(limit.min(100))
-                .collect();
-            json!({ "documents": serde_json::to_value(matches).unwrap_or_default() })
+                .search(&query, limit, Some(workspace))
+                .map_err(|e| rpc_error(-32603, e.class().code, e.to_string()))?;
+            json!({ "documents": serde_json::to_value(docs).unwrap_or_default() })
         }
         "extract" => {
             let url = args
@@ -241,7 +302,7 @@ async fn call_tool(runtime: Arc<SearchOsRuntime>, params: &Value) -> Result<Valu
                 .unwrap_or("")
                 .to_string();
             if url.trim().is_empty() {
-                return Err(json!({ "code": -32602, "message": "url required" }));
+                return Err(rpc_error(-32602, "VALIDATION_FAILED", "url required"));
             }
             let ws = args
                 .get("workspace_id")
@@ -258,7 +319,7 @@ async fn call_tool(runtime: Arc<SearchOsRuntime>, params: &Value) -> Result<Valu
                     .fetch_service
                     .fetch_and_persist(&url, &ws)
                     .await
-                    .map_err(|e| json!({ "code": -32603, "message": e.to_string() }))?;
+                    .map_err(|e| rpc_error(-32603, e.class().code, e.to_string()))?;
                 serde_json::to_value(doc).unwrap_or(Value::Null)
             } else {
                 let content = runtime
@@ -266,9 +327,89 @@ async fn call_tool(runtime: Arc<SearchOsRuntime>, params: &Value) -> Result<Valu
                     .fetch_service
                     .fetch_preview(&url)
                     .await
-                    .map_err(|e| json!({ "code": -32603, "message": e.to_string() }))?;
+                    .map_err(|e| rpc_error(-32603, e.class().code, e.to_string()))?;
                 json!({ "url": url, "title": content.title, "content": content.text })
             }
+        }
+        "ingest_text" => {
+            let content = args
+                .get("content")
+                .and_then(|c| c.as_str())
+                .unwrap_or("")
+                .to_string();
+            if content.trim().is_empty() {
+                return Err(rpc_error(-32602, "EMPTY_CONTENT", "content required"));
+            }
+            let ws = args
+                .get("workspace_id")
+                .and_then(|w| w.as_str())
+                .map(WorkspaceId::new)
+                .unwrap_or_else(|| WorkspaceId::new("default"));
+            let mut req = searchos_application::ingest_service::IngestRequest::new(ws);
+            req.source_key = args
+                .get("source_key")
+                .and_then(|s| s.as_str())
+                .map(String::from);
+            req.title = args.get("title").and_then(|s| s.as_str()).map(String::from);
+            req.content_type = args
+                .get("content_type")
+                .and_then(|s| s.as_str())
+                .map(String::from);
+            req.language = args
+                .get("language")
+                .and_then(|s| s.as_str())
+                .map(String::from);
+            let doc = runtime
+                .application
+                .ingest_service
+                .ingest_text(req, &content)
+                .await
+                .map_err(|e| rpc_error(-32603, e.class().code, e.to_string()))?;
+            serde_json::to_value(doc).unwrap_or(Value::Null)
+        }
+        "ingest_file" => {
+            let content = args
+                .get("content")
+                .and_then(|c| c.as_str())
+                .unwrap_or("")
+                .to_string();
+            let file_name = args
+                .get("file_name")
+                .and_then(|f| f.as_str())
+                .unwrap_or("")
+                .to_string();
+            if content.trim().is_empty() {
+                return Err(rpc_error(-32602, "EMPTY_CONTENT", "content required"));
+            }
+            if file_name.trim().is_empty() {
+                return Err(rpc_error(-32602, "VALIDATION_FAILED", "file_name required"));
+            }
+            let ws = args
+                .get("workspace_id")
+                .and_then(|w| w.as_str())
+                .map(WorkspaceId::new)
+                .unwrap_or_else(|| WorkspaceId::new("default"));
+            let mut req = searchos_application::ingest_service::IngestRequest::new(ws);
+            req.source_key = args
+                .get("source_key")
+                .and_then(|s| s.as_str())
+                .map(String::from);
+            req.title = args.get("title").and_then(|s| s.as_str()).map(String::from);
+            req.content_type = args
+                .get("content_type")
+                .and_then(|s| s.as_str())
+                .map(String::from);
+            req.language = args
+                .get("language")
+                .and_then(|s| s.as_str())
+                .map(String::from);
+            let doc = runtime
+                .application
+                .ingest_service
+                .ingest_upload(req, content.as_bytes(), Some(&file_name))
+                .await
+                .map_err(|e| rpc_error(-32603, e.class().code, e.to_string()))?;
+            serde_json::to_value(doc).unwrap_or(Value::Null)
         }
         "memory_search" => {
             let query = args
@@ -297,7 +438,7 @@ async fn call_tool(runtime: Arc<SearchOsRuntime>, params: &Value) -> Result<Valu
                 .memory_service
                 .search(&query, &reader, top_k)
                 .await
-                .map_err(|e| json!({ "code": -32603, "message": e.to_string() }))?;
+                .map_err(|e| rpc_error(-32603, e.class().code, e.to_string()))?;
             json!({ "results": hits })
         }
         "cost_summary" => {
@@ -306,7 +447,7 @@ async fn call_tool(runtime: Arc<SearchOsRuntime>, params: &Value) -> Result<Valu
                 .cost_service
                 .summary(&Default::default())
                 .await
-                .map_err(|e| json!({ "code": -32603, "message": e.to_string() }))?;
+                .map_err(|e| rpc_error(-32603, e.class().code, e.to_string()))?;
             json!({ "summary": summary, "is_estimate": true })
         }
         "trace_inspect" | "search_trace" => {
@@ -316,13 +457,17 @@ async fn call_tool(runtime: Arc<SearchOsRuntime>, params: &Value) -> Result<Valu
                 .unwrap_or("")
                 .to_string();
             let repo = searchos_storage_sqlite::repos::DecisionRepo::new(&runtime.sqlite);
-            let trace = repo.get_trace(&trace_id).ok().flatten().ok_or_else(
-                || json!({ "code": -32602, "message": format!("trace {trace_id} not found") }),
-            )?;
+            let trace = repo.get_trace(&trace_id).ok().flatten().ok_or_else(|| {
+                rpc_error(-32602, "NOT_FOUND", format!("trace {trace_id} not found"))
+            })?;
             serde_json::to_value(trace).unwrap_or(Value::Null)
         }
         other => {
-            return Err(json!({ "code": -32601, "message": format!("unknown tool {other}") }));
+            return Err(rpc_error(
+                -32601,
+                "INTERNAL_ERROR",
+                format!("unknown tool {other}"),
+            ));
         }
     };
 
@@ -346,7 +491,11 @@ pub async fn run_stdio(runtime: Arc<SearchOsRuntime>) -> Result<(), String> {
         let msg: Value = match serde_json::from_str(line) {
             Ok(v) => v,
             Err(e) => {
-                let err = json!({ "jsonrpc": "2.0", "id": null, "error": { "code": -32700, "message": format!("parse error: {e}") } });
+                let err = json!({
+                    "jsonrpc": "2.0",
+                    "id": null,
+                    "error": rpc_error(-32700, "INTERNAL_ERROR", format!("parse error: {e}")),
+                });
                 write_line(&mut stdout, &err).await?;
                 continue;
             }
@@ -402,8 +551,54 @@ mod tests {
             names,
             TOOLS.iter().map(|s| s.to_string()).collect::<Vec<_>>()
         );
+        // RFC-021 names seven tools; `search_trace` is the single
+        // documented compatibility alias, and RFC-029 adds two ingestion
+        // tools (follow-up amendment to RFC-021).
+        assert_eq!(names.len(), 10, "tool catalogue drifted: {names:?}");
+        assert_eq!(
+            names
+                .iter()
+                .filter(|n| n.as_str() != "search_trace"
+                    && n.as_str() != "ingest_text"
+                    && n.as_str() != "ingest_file")
+                .count(),
+            7,
+            "RFC-021 tool count drifted"
+        );
         // 必须暴露明确的参数 Schema
         assert!(list["result"]["tools"][0]["inputSchema"]["required"][0] == "query");
+    }
+
+    #[tokio::test]
+    async fn ingest_text_tool_works() {
+        let (rt, _d) = runtime().await;
+        let resp = handle_message(
+            rt.clone(),
+            &json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"ingest_text","arguments":{"content":"quokka habitat mcp","source_key":"mcp/quokka"}}}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(resp["result"]["isError"], false);
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        let value: Value = serde_json::from_str(text).unwrap();
+        assert!(value["document_id"].as_str().is_some());
+        rt.process_outbox(10).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn ingest_file_tool_works() {
+        let (rt, _d) = runtime().await;
+        let resp = handle_message(
+            rt.clone(),
+            &json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"ingest_file","arguments":{"file_name":"notes.txt","content":"mcp file body","source_key":"mcp/file"}}}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(resp["result"]["isError"], false);
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        let value: Value = serde_json::from_str(text).unwrap();
+        assert!(value["document_id"].as_str().is_some());
+        rt.process_outbox(10).await.unwrap();
     }
 
     #[tokio::test]
@@ -470,6 +665,160 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("local_only"));
+    }
+
+    #[tokio::test]
+    async fn initialize_echoes_client_protocol_version() {
+        let (rt, _d) = runtime().await;
+        let init = handle_message(
+            rt,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": { "protocolVersion": "2025-06-18" }
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(init["result"]["protocolVersion"], "2025-06-18");
+    }
+
+    #[tokio::test]
+    async fn search_tool_rejects_unknown_mode_instead_of_downgrading() {
+        let (rt, _d) = runtime().await;
+        // A case/alias typo must never silently become an external-capable
+        // mode: local_only is the only mode that forbids ALL external calls.
+        for bogus in ["LOCAL_ONLY", "localOnly", "local-only "] {
+            let resp = handle_message(
+                rt.clone(),
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 8,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "search",
+                        "arguments": { "query": "q", "mode": bogus }
+                    }
+                }),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                resp["error"]["code"], -32602,
+                "mode {bogus:?} must be rejected: {resp}"
+            );
+        }
+        // The documented kebab-case alias still works everywhere.
+        let ok = handle_message(
+            rt,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 9,
+                "method": "tools/call",
+                "params": {
+                    "name": "search",
+                    "arguments": { "query": "q", "mode": "local-only" }
+                }
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(ok["result"]["isError"], false);
+    }
+
+    #[tokio::test]
+    async fn document_search_uses_bounded_sql_lookup() {
+        let (rt, _d) = runtime().await;
+        let mut req =
+            searchos_application::ingest_service::IngestRequest::new(WorkspaceId::new("default"));
+        req.source_key = Some("notes/doc-search".into());
+        req.title = Some("Doc Search Handbook".into());
+        rt.application
+            .ingest_service
+            .ingest_text(req, "local document body")
+            .await
+            .unwrap();
+        let _ = rt.process_outbox(50).await;
+
+        let resp = handle_message(
+            rt,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 11,
+                "method": "tools/call",
+                "params": {
+                    "name": "document_search",
+                    "arguments": { "query": "handbook", "limit": 5 }
+                }
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(resp["result"]["isError"], false);
+        let payload: Value =
+            serde_json::from_str(resp["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert!(
+            payload["documents"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|d| d["canonical_url"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("searchos-local://default/notes/doc-search")),
+            "title match via SQL lookup: {payload}"
+        );
+    }
+
+    #[tokio::test]
+    async fn search_tool_honours_max_results() {
+        let (rt, _d) = runtime().await;
+        // Seed two local documents so the cap is observable.
+        let mut req =
+            searchos_application::ingest_service::IngestRequest::new(WorkspaceId::new("default"));
+        req.source_key = Some("notes/max-one".into());
+        rt.application
+            .ingest_service
+            .ingest_text(req, "maximum results doc one tokio")
+            .await
+            .unwrap();
+        let mut req =
+            searchos_application::ingest_service::IngestRequest::new(WorkspaceId::new("default"));
+        req.source_key = Some("notes/max-two".into());
+        rt.application
+            .ingest_service
+            .ingest_text(req, "maximum results doc two tokio")
+            .await
+            .unwrap();
+        let _ = rt.process_outbox(50).await;
+
+        let resp = handle_message(
+            rt,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 10,
+                "method": "tools/call",
+                "params": {
+                    "name": "search",
+                    "arguments": {
+                        "query": "maximum results tokio",
+                        "mode": "local_only",
+                        "max_results": 1
+                    }
+                }
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(resp["result"]["isError"], false);
+        let payload: Value =
+            serde_json::from_str(resp["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            payload["results"].as_array().unwrap().len(),
+            1,
+            "max_results must trim the response: {payload}"
+        );
     }
 
     #[tokio::test]

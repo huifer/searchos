@@ -1,7 +1,9 @@
 //! Repositories over the Part-17 schema.
 
 use rusqlite::{params, Connection, OptionalExtension};
-use searchos_domain::cost::{CostEvent, CostOperation, CostQuery, CostSummary, Money};
+use searchos_domain::cost::{
+    CostAttemptStatus, CostEvent, CostOperation, CostQuery, CostSummary, Money,
+};
 use searchos_domain::decision::DecisionTrace;
 use searchos_domain::document::{Document, DocumentVersion};
 use searchos_domain::ids::{DocumentId, DocumentVersionId, SourceId, WorkspaceId};
@@ -208,18 +210,35 @@ impl<'a> DecisionRepo<'a> {
 
     /// Recent traces for the console (`GET /traces`, RFC-015 15.1).
     pub fn list_traces(&self, limit: u32) -> Result<Vec<DecisionTrace>, SearchOsError> {
+        self.list_traces_scoped(limit, None)
+    }
+
+    /// Recent traces restricted at the SQL level to one workspace (plus the
+    /// shared `*` namespace), INV-30-10.
+    pub fn list_traces_scoped(
+        &self,
+        limit: u32,
+        workspace: Option<&str>,
+    ) -> Result<Vec<DecisionTrace>, SearchOsError> {
         let ids: Vec<String> = self.store.with_conn(|c| {
             let mut stmt = c
-                .prepare("SELECT id FROM decision_traces ORDER BY decision_at DESC LIMIT ?1")
+                .prepare(
+                    "SELECT dt.id FROM decision_traces dt
+                     LEFT JOIN search_tasks st ON st.id = dt.task_id
+                     WHERE (?1 IS NULL OR COALESCE(st.workspace_id, 'default') = ?1 OR st.workspace_id = '*')
+                     ORDER BY dt.decision_at DESC LIMIT ?2",
+                )
                 .map_err(e)?;
             let rows = stmt
-                .query_map([limit.clamp(1, 100)], |r| r.get::<_, String>(0))
+                .query_map(params![workspace, limit.clamp(1, 100)], |r| {
+                    r.get::<_, String>(0)
+                })
                 .map_err(e)?;
             rows.collect::<Result<Vec<_>, _>>().map_err(e)
         })?;
         let mut out = Vec::with_capacity(ids.len());
         for id in ids {
-            if let Some(trace) = self.get_trace(&id)? {
+            if let Some(trace) = self.get_trace_scoped(&id, workspace)? {
                 out.push(trace);
             }
         }
@@ -228,12 +247,24 @@ impl<'a> DecisionRepo<'a> {
 
     /// Fetches a trace (GET /decisions/:trace_id).
     pub fn get_trace(&self, trace_id: &str) -> Result<Option<DecisionTrace>, SearchOsError> {
+        self.get_trace_scoped(trace_id, None)
+    }
+
+    /// Fetches a trace with a workspace predicate in the query itself.
+    pub fn get_trace_scoped(
+        &self,
+        trace_id: &str,
+        workspace: Option<&str>,
+    ) -> Result<Option<DecisionTrace>, SearchOsError> {
         self.store.with_conn(|c| {
             let row = c
                 .query_row(
-                    "SELECT id, task_id, intents_json, profile_version, local_candidates, accepted_candidates, freshness_status, coverage_status, source_status, selected_path, rejection_reasons_json, estimated_cost_micros, estimated_currency, actual_cost_micros, decision_at, stages_json, final_strategy, final_outcome
-                     FROM decision_traces WHERE id = ?1",
-                    params![trace_id],
+                    "SELECT dt.id, dt.task_id, dt.intents_json, dt.profile_version, dt.local_candidates, dt.accepted_candidates, dt.freshness_status, dt.coverage_status, dt.source_status, dt.selected_path, dt.rejection_reasons_json, dt.estimated_cost_micros, dt.estimated_currency, dt.actual_cost_micros, dt.decision_at, dt.stages_json, dt.final_strategy, dt.final_outcome
+                     FROM decision_traces dt
+                     LEFT JOIN search_tasks st ON st.id = dt.task_id
+                     WHERE dt.id = ?1
+                       AND (?2 IS NULL OR COALESCE(st.workspace_id, 'default') = ?2 OR st.workspace_id = '*')",
+                    params![trace_id, workspace],
                     |r| {
                         Ok((
                             r.get::<_, String>(0)?,
@@ -340,6 +371,7 @@ impl<'a> DocumentRepo<'a> {
         version: &DocumentVersion,
         chunks: &[searchos_domain::document::DocumentChunk],
         index_payloads: &[IndexedDocument],
+        workspace_id: &searchos_domain::ids::WorkspaceId,
     ) -> Result<searchos_document::VersionDiff, SearchOsError> {
         // Pre-compute diff outside the transaction (needs current version).
         let current_hash: Option<String> =
@@ -361,19 +393,20 @@ impl<'a> DocumentRepo<'a> {
         self.store.with_conn(|c| {
             let tx = c.unchecked_transaction().map_err(e)?;
 
-            // Source.
+            // Source. RFC-029: local ingest keeps source_type/domain honest.
+            let source_domain = source_domain(&document.canonical_url, &document.source_type);
             tx.execute(
                 "INSERT OR IGNORE INTO sources (id, canonical_url, domain, source_type, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?5)",
-                params![document.source_id.as_str(), document.canonical_url, domain_of(&document.canonical_url), "web", now()],
+                params![document.source_id.as_str(), document.canonical_url, source_domain, document.source_type.as_str(), now()],
             )
             .map_err(e)?;
 
             // Document row.
             tx.execute(
-                "INSERT INTO documents (id, source_id, canonical_url, current_version_id, language, content_type, status, created_at, updated_at, workspace_id)
-                 VALUES (?1,?2,?3,NULL,?4,?5,?6,?7,?7,?8)
-                 ON CONFLICT(id) DO UPDATE SET updated_at = ?7",
-                params![document.id.as_str(), document.source_id.as_str(), document.canonical_url, document.language, document.content_type, "normalized", now(), ""],
+                "INSERT INTO documents (id, source_id, canonical_url, current_version_id, language, content_type, status, created_at, updated_at, workspace_id, source_type, title)
+                 VALUES (?1,?2,?3,NULL,?4,?5,?6,?7,?7,?8,?9,?10)
+                 ON CONFLICT(id) DO UPDATE SET updated_at = ?7, source_type = ?9, title = ?10, workspace_id = ?8",
+                params![document.id.as_str(), document.source_id.as_str(), document.canonical_url, document.language, document.content_type, "normalized", now(), workspace_id.as_str(), document.source_type.as_str(), document.title],
             )
             .map_err(e)?;
 
@@ -447,7 +480,7 @@ impl<'a> DocumentRepo<'a> {
     pub fn get(&self, id: &DocumentId) -> Result<Option<Document>, SearchOsError> {
         self.store.with_conn(|c| {
             c.query_row(
-                "SELECT id, source_id, canonical_url, current_version_id, language, content_type, status, created_at, updated_at FROM documents WHERE id = ?1",
+                "SELECT id, source_id, canonical_url, current_version_id, language, content_type, status, created_at, updated_at, source_type, title, workspace_id FROM documents WHERE id = ?1",
                 params![id.as_str()],
                 |r| {
                     Ok(Document {
@@ -457,6 +490,9 @@ impl<'a> DocumentRepo<'a> {
                         current_version_id: r.get::<_, Option<String>>(3)?.map(DocumentVersionId::new),
                         language: r.get(4)?,
                         content_type: r.get::<_, Option<String>>(5)?.unwrap_or_else(|| "text/html".into()),
+                        source_type: r.get::<_, Option<String>>(9)?.unwrap_or_else(|| "web".into()),
+                        title: r.get(10)?,
+                        workspace_id: r.get::<_, Option<String>>(11)?.unwrap_or_else(|| "default".into()),
                         created_at: parse_time(&r.get::<_, String>(7)?),
                         updated_at: parse_time(&r.get::<_, String>(8)?),
                     })
@@ -520,12 +556,95 @@ impl<'a> DocumentRepo<'a> {
 
     /// Lists documents (for `document list`).
     pub fn list(&self, limit: u32) -> Result<Vec<Document>, SearchOsError> {
+        self.list_filtered(limit, None, None)
+    }
+
+    /// Lists documents filtered by source type and/or workspace (RFC-029 6.2).
+    /// `source_type` accepts `"web"` or a local kind (`"local_text"` /
+    /// `"local_file"` / `"local_directory"`).
+    pub fn list_filtered(
+        &self,
+        limit: u32,
+        source_type: Option<&str>,
+        workspace: Option<&str>,
+    ) -> Result<Vec<Document>, SearchOsError> {
         self.store.with_conn(|c| {
+            let local_filter = source_type
+                .map(|s| s.eq_ignore_ascii_case("local"))
+                .unwrap_or(false);
+            let effective_source = if local_filter { None } else { source_type };
+            let sql = match (effective_source, workspace) {
+                (Some(_), Some(_)) => "SELECT id, source_id, canonical_url, current_version_id, language, content_type, status, created_at, updated_at, source_type, title, workspace_id FROM documents WHERE source_type = ?1 AND workspace_id = ?2 ORDER BY updated_at DESC LIMIT ?3",
+                (Some(_), None) => "SELECT id, source_id, canonical_url, current_version_id, language, content_type, status, created_at, updated_at, source_type, title, workspace_id FROM documents WHERE source_type = ?1 ORDER BY updated_at DESC LIMIT ?2",
+                (None, Some(_)) => "SELECT id, source_id, canonical_url, current_version_id, language, content_type, status, created_at, updated_at, source_type, title, workspace_id FROM documents WHERE workspace_id = ?1 ORDER BY updated_at DESC LIMIT ?2",
+                (None, None) => "SELECT id, source_id, canonical_url, current_version_id, language, content_type, status, created_at, updated_at, source_type, title, workspace_id FROM documents ORDER BY updated_at DESC LIMIT ?1",
+            };
+            let map_row = |r: &rusqlite::Row| -> rusqlite::Result<Document> {
+                Ok(Document {
+                    id: DocumentId::new(r.get::<_, String>(0)?),
+                    source_id: SourceId::new(r.get::<_, String>(1)?),
+                    canonical_url: r.get(2)?,
+                    current_version_id: r.get::<_, Option<String>>(3)?.map(DocumentVersionId::new),
+                    language: r.get(4)?,
+                    content_type: r.get::<_, Option<String>>(5)?.unwrap_or_else(|| "text/html".into()),
+                    source_type: r.get::<_, Option<String>>(9)?.unwrap_or_else(|| "web".into()),
+                    title: r.get(10)?,
+                    workspace_id: r.get::<_, Option<String>>(11)?.unwrap_or_else(|| "default".into()),
+                    created_at: parse_time(&r.get::<_, String>(7)?),
+                    updated_at: parse_time(&r.get::<_, String>(8)?),
+                })
+            };
+            let mut stmt = c.prepare(sql).map_err(e)?;
+            let rows = match (effective_source, workspace) {
+                (Some(st), Some(ws)) => stmt.query_map(params![st, ws, limit], map_row).map_err(e)?,
+                (Some(st), None) => stmt.query_map(params![st, limit], map_row).map_err(e)?,
+                (None, Some(ws)) => stmt.query_map(params![ws, limit], map_row).map_err(e)?,
+                (None, None) => stmt.query_map(params![limit], map_row).map_err(e)?,
+            };
+            let mut docs = rows.collect::<Result<Vec<_>, _>>().map_err(e)?;
+            if local_filter {
+                docs.retain(|d| d.source_type.starts_with("local_"));
+            }
+            Ok(docs)
+        })
+    }
+
+    /// Searches live documents by URL or title text.
+    ///
+    /// Escapes SQL LIKE wildcards in the caller query and never loads more
+    /// than the requested page, so this is safe for large stores. Deleted
+    /// documents are excluded.
+    pub fn search(
+        &self,
+        query: &str,
+        limit: u32,
+        workspace: Option<&str>,
+    ) -> Result<Vec<Document>, SearchOsError> {
+        let trimmed = query.trim();
+        let pattern = format!(
+            "%{}%",
+            trimmed
+                .to_lowercase()
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_")
+        );
+        let limit = limit.clamp(1, 100);
+        let docs = self.store.with_conn(|c| {
             let mut stmt = c
-                .prepare("SELECT id, source_id, canonical_url, current_version_id, language, content_type, status, created_at, updated_at FROM documents ORDER BY updated_at DESC LIMIT ?1")
+                .prepare(
+                    "SELECT id, source_id, canonical_url, current_version_id, language, content_type, status, created_at, updated_at, source_type, title, workspace_id
+                     FROM documents
+                     WHERE status != 'deleted'
+                       AND (?3 IS NULL OR workspace_id = ?3 OR workspace_id = '*')
+                       AND (lower(coalesce(canonical_url, '')) LIKE ?1 ESCAPE '\\'
+                            OR lower(coalesce(title, '')) LIKE ?1 ESCAPE '\\')
+                     ORDER BY updated_at DESC
+                     LIMIT ?2",
+                )
                 .map_err(e)?;
             let rows = stmt
-                .query_map(params![limit], |r| {
+                .query_map(params![pattern, limit, workspace], |r| {
                     Ok(Document {
                         id: DocumentId::new(r.get::<_, String>(0)?),
                         source_id: SourceId::new(r.get::<_, String>(1)?),
@@ -533,8 +652,43 @@ impl<'a> DocumentRepo<'a> {
                         current_version_id: r.get::<_, Option<String>>(3)?.map(DocumentVersionId::new),
                         language: r.get(4)?,
                         content_type: r.get::<_, Option<String>>(5)?.unwrap_or_else(|| "text/html".into()),
+                        source_type: r.get::<_, Option<String>>(9)?.unwrap_or_else(|| "web".into()),
+                        title: r.get(10)?,
+                        workspace_id: r.get::<_, Option<String>>(11)?.unwrap_or_else(|| "default".into()),
                         created_at: parse_time(&r.get::<_, String>(7)?),
                         updated_at: parse_time(&r.get::<_, String>(8)?),
+                    })
+                })
+                .map_err(e)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(e)
+        })?;
+        Ok(docs)
+    }
+
+    /// Returns the chunk rows belonging to one version, in chunk order.
+    pub fn list_chunks(
+        &self,
+        version_id: &searchos_domain::ids::DocumentVersionId,
+    ) -> Result<Vec<searchos_domain::document::DocumentChunk>, SearchOsError> {
+        self.store.with_conn(|c| {
+            let mut stmt = c
+                .prepare(
+                    "SELECT id, version_id, document_id, chunk_hash, content_ref, token_count, chunk_index, created_at
+                     FROM document_chunks WHERE version_id = ?1 ORDER BY chunk_index ASC",
+                )
+                .map_err(e)?;
+            let rows = stmt
+                .query_map(params![version_id.as_str()], |r| {
+                    Ok(searchos_domain::document::DocumentChunk {
+                        id: searchos_domain::ids::ChunkId::new(r.get::<_, String>(0)?),
+                        version_id: DocumentVersionId::new(r.get::<_, String>(1)?),
+                        document_id: DocumentId::new(r.get::<_, String>(2)?),
+                        chunk_hash: r.get(3)?,
+                        content_ref: r.get(4)?,
+                        text: String::new(),
+                        token_count: r.get(5)?,
+                        chunk_index: r.get(6)?,
+                        created_at: parse_time(&r.get::<_, String>(7)?),
                     })
                 })
                 .map_err(e)?;
@@ -553,10 +707,19 @@ impl<'a> DocumentRepo<'a> {
                 let rows = stmt.query_map(params![id.as_str()], |r| r.get::<_, String>(0)).map_err(e)?;
                 rows.collect::<Result<Vec<_>, _>>().map_err(e)?
             };
+            let document_id = id.as_str().to_string();
             for cid in &chunk_ids {
+                // The identifier space is explicit: `entity_id` is a chunk id,
+                // not a document id. The outbox consumer must delete by chunk.
+                let payload = serde_json::json!({
+                    "identifier_space": "chunk_id",
+                    "chunk_ids": [cid],
+                    "document_id": document_id,
+                })
+                .to_string();
                 tx.execute(
-                    "INSERT INTO index_outbox (id, entity_type, entity_id, operation, status, created_at) VALUES (?1,'document_chunk',?2,'delete','pending',?3)",
-                    params![searchos_domain::new_id("obx"), cid, now()],
+                    "INSERT INTO index_outbox (id, entity_type, entity_id, operation, status, payload, created_at) VALUES (?1,'document_chunk',?2,'delete','pending',?3,?4)",
+                    params![searchos_domain::new_id("obx"), cid, payload, now()],
                 )
                 .map_err(e)?;
             }
@@ -582,8 +745,8 @@ impl<'a> CostRepo<'a> {
     pub fn append(&self, ev: &CostEvent) -> Result<(), SearchOsError> {
         self.store.with_conn(|c| {
             c.execute(
-                "INSERT INTO cost_events (id, task_id, workspace_id, agent_id, operation, provider_id, input_units, output_units, estimated_cost_micros, actual_cost_micros, currency, duration_ms, occurred_at, trace_id, shared, pricing_model_version)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
+                "INSERT INTO cost_events (id, task_id, workspace_id, agent_id, operation, provider_id, input_units, output_units, estimated_cost_micros, actual_cost_micros, currency, duration_ms, occurred_at, trace_id, shared, pricing_model_version, status, error_code)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)",
                 params![
                     ev.id.as_str(),
                     ev.task_id.as_str(),
@@ -601,6 +764,8 @@ impl<'a> CostRepo<'a> {
                     ev.trace_id.as_ref().map(|t| t.as_str()),
                     ev.shared as i64,
                     ev.pricing_model_version,
+                    ev.status.as_str(),
+                    ev.error_code,
                 ],
             )
             .map(|_| ())
@@ -612,7 +777,7 @@ impl<'a> CostRepo<'a> {
     pub fn query(&self, q: &CostQuery) -> Result<Vec<CostEvent>, SearchOsError> {
         let mut rows = self.store.with_conn(|c| {
             let mut stmt = c
-                .prepare("SELECT id, task_id, workspace_id, agent_id, operation, provider_id, input_units, output_units, estimated_cost_micros, actual_cost_micros, currency, duration_ms, occurred_at, trace_id, shared, pricing_model_version FROM cost_events ORDER BY occurred_at ASC")
+                .prepare("SELECT id, task_id, workspace_id, agent_id, operation, provider_id, input_units, output_units, estimated_cost_micros, actual_cost_micros, currency, duration_ms, occurred_at, trace_id, shared, pricing_model_version, status, error_code FROM cost_events ORDER BY occurred_at ASC")
                 .map_err(e)?;
             let rows = stmt
                 .query_map([], |r| {
@@ -633,6 +798,8 @@ impl<'a> CostRepo<'a> {
                         r.get::<_, Option<String>>(13)?,
                         r.get::<_, i64>(14)?,
                         r.get::<_, String>(15)?,
+                        r.get::<_, String>(16)?,
+                        r.get::<_, Option<String>>(17)?,
                     ))
                 })
                 .map_err(e)?;
@@ -664,6 +831,8 @@ impl<'a> CostRepo<'a> {
                 trace_id: r.13.map(searchos_domain::ids::TraceId::new),
                 shared: r.14 != 0,
                 pricing_model_version: r.15,
+                status: CostAttemptStatus::parse(&r.16),
+                error_code: r.17,
             })
             .collect();
         let refs: Vec<&CostEvent> = events.iter().collect();
@@ -792,6 +961,163 @@ impl<'a> ProviderRepo<'a> {
                 .map_err(e)?;
             let rows = stmt
                 .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+                .map_err(e)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(e)
+        })
+    }
+}
+
+/// Ingest job persistence (RFC-029 7): batch / directory import tracking.
+pub struct IngestJobRepo<'a> {
+    store: &'a SqliteStore,
+}
+
+/// One ingest job row.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct IngestJobRow {
+    pub id: String,
+    pub workspace_id: String,
+    pub source_type: String,
+    pub state: String,
+    pub total_items: i64,
+    pub ok_items: i64,
+    pub failed_items: i64,
+    pub error_detail: Option<String>,
+    pub created_at: String,
+    pub finished_at: Option<String>,
+}
+
+/// One batch item outcome.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct IngestJobItemRow {
+    pub id: String,
+    pub job_id: String,
+    pub source_key: String,
+    pub state: String,
+    pub document_id: Option<String>,
+    pub error_detail: Option<String>,
+}
+
+impl<'a> IngestJobRepo<'a> {
+    pub fn new(store: &'a SqliteStore) -> Self {
+        Self { store }
+    }
+
+    /// Creates a job in `pending`.
+    pub fn create(
+        &self,
+        id: &str,
+        workspace_id: &str,
+        source_type: &str,
+        total_items: i64,
+    ) -> Result<(), SearchOsError> {
+        self.store.with_conn(|c| {
+            c.execute(
+                "INSERT INTO ingest_jobs (id, workspace_id, source_type, state, total_items, ok_items, failed_items, created_at)
+                 VALUES (?1,?2,?3,'pending',?4,0,0,?5)",
+                params![id, workspace_id, source_type, total_items, now()],
+            )
+            .map(|_| ())
+            .map_err(e)
+        })
+    }
+
+    /// Marks a job `running`.
+    pub fn mark_running(&self, id: &str) -> Result<(), SearchOsError> {
+        self.store.with_conn(|c| {
+            c.execute(
+                "UPDATE ingest_jobs SET state='running' WHERE id=?1",
+                params![id],
+            )
+            .map(|_| ())
+            .map_err(e)
+        })
+    }
+
+    /// Closes a job with per-item counters.
+    pub fn finish(
+        &self,
+        id: &str,
+        state: &str,
+        ok_items: i64,
+        failed_items: i64,
+        error_detail: Option<&str>,
+    ) -> Result<(), SearchOsError> {
+        self.store.with_conn(|c| {
+            c.execute(
+                "UPDATE ingest_jobs SET state=?2, ok_items=?3, failed_items=?4, error_detail=?5, finished_at=?6 WHERE id=?1",
+                params![id, state, ok_items, failed_items, error_detail, now()],
+            )
+            .map(|_| ())
+            .map_err(e)
+        })
+    }
+
+    /// Fetches one job.
+    pub fn get(&self, id: &str) -> Result<Option<IngestJobRow>, SearchOsError> {
+        self.store.with_conn(|c| {
+            c.query_row(
+                "SELECT id, workspace_id, source_type, state, total_items, ok_items, failed_items, error_detail, created_at, finished_at
+                 FROM ingest_jobs WHERE id=?1",
+                params![id],
+                |r| {
+                    Ok(IngestJobRow {
+                        id: r.get(0)?,
+                        workspace_id: r.get(1)?,
+                        source_type: r.get(2)?,
+                        state: r.get(3)?,
+                        total_items: r.get(4)?,
+                        ok_items: r.get(5)?,
+                        failed_items: r.get(6)?,
+                        error_detail: r.get(7)?,
+                        created_at: r.get(8)?,
+                        finished_at: r.get(9)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(e)
+        })
+    }
+
+    /// Records one item outcome.
+    pub fn insert_item(
+        &self,
+        id: &str,
+        job_id: &str,
+        source_key: &str,
+        state: &str,
+        document_id: Option<&str>,
+        error_detail: Option<&str>,
+    ) -> Result<(), SearchOsError> {
+        self.store.with_conn(|c| {
+            c.execute(
+                "INSERT INTO ingest_job_items (id, job_id, source_key, state, document_id, error_detail)
+                 VALUES (?1,?2,?3,?4,?5,?6)",
+                params![id, job_id, source_key, state, document_id, error_detail],
+            )
+            .map(|_| ())
+            .map_err(e)
+        })
+    }
+
+    /// Lists the items of a job.
+    pub fn list_items(&self, job_id: &str) -> Result<Vec<IngestJobItemRow>, SearchOsError> {
+        self.store.with_conn(|c| {
+            let mut stmt = c
+                .prepare("SELECT id, job_id, source_key, state, document_id, error_detail FROM ingest_job_items WHERE job_id=?1 ORDER BY rowid")
+                .map_err(e)?;
+            let rows = stmt
+                .query_map(params![job_id], |r| {
+                    Ok(IngestJobItemRow {
+                        id: r.get(0)?,
+                        job_id: r.get(1)?,
+                        source_key: r.get(2)?,
+                        state: r.get(3)?,
+                        document_id: r.get(4)?,
+                        error_detail: r.get(5)?,
+                    })
+                })
                 .map_err(e)?;
             rows.collect::<Result<Vec<_>, _>>().map_err(e)
         })
@@ -1093,6 +1419,16 @@ fn domain_of(url: &str) -> String {
         .to_string()
 }
 
+/// Domain recorded for a source row (RFC-029 5.2): local ingest is not a
+/// network host, so it gets the fixed domain `local`.
+fn source_domain(canonical_url: &str, source_type: &str) -> String {
+    if source_type != "web" || canonical_url.starts_with("searchos-local://") {
+        "local".to_string()
+    } else {
+        domain_of(canonical_url)
+    }
+}
+
 fn sharing_str(s: searchos_domain::memory::SharingPolicy) -> &'static str {
     match s {
         searchos_domain::memory::SharingPolicy::Private => "private",
@@ -1201,6 +1537,9 @@ mod tests {
             current_version_id: None,
             content_type: "text/html".into(),
             language: Some("en".into()),
+            source_type: "web".into(),
+            title: None,
+            workspace_id: "default".into(),
             created_at: now,
             updated_at: now,
         }
@@ -1260,13 +1599,50 @@ mod tests {
     }
 
     #[test]
+    fn list_chunks_returns_rows_in_order() {
+        let s = store();
+        let repo = DocumentRepo::new(&s);
+        let doc = document("https://example.com/chunks");
+        let (v1, chunks, payloads) = version(&doc, "alpha beta gamma delta");
+        let ws = searchos_domain::ids::WorkspaceId::new("ws");
+        repo.save_versioned(&doc, &v1, &chunks, &payloads, &ws)
+            .unwrap();
+        let rows = repo.list_chunks(&v1.id).unwrap();
+        assert_eq!(rows.len(), chunks.len());
+        assert_eq!(rows[0].id.as_str(), chunks[0].id.as_str());
+        assert_eq!(rows[0].chunk_index, 0);
+    }
+
+    #[test]
+    fn search_matches_title_and_excludes_deleted() {
+        let s = store();
+        let repo = DocumentRepo::new(&s);
+        let mut doc = document("https://example.com/searchable");
+        doc.title = Some("Alpha Handbook".into());
+        let (v1, chunks, payloads) = version(&doc, "alpha content");
+        let ws = searchos_domain::ids::WorkspaceId::new("ws");
+        repo.save_versioned(&doc, &v1, &chunks, &payloads, &ws)
+            .unwrap();
+        let hits = repo.search("alpha", 10, None).unwrap();
+        assert_eq!(hits.len(), 1);
+        // The workspace predicate is in SQL, not just the token layer.
+        assert!(repo.search("alpha", 10, Some("other")).unwrap().is_empty());
+        assert!(!repo.search("alpha", 10, Some("ws")).unwrap().is_empty());
+        // LIKE wildcards in the caller query are escaped, not treated as SQL.
+        assert!(repo.search("%", 10, None).unwrap().is_empty());
+        repo.delete(&doc.id).unwrap();
+        assert!(repo.search("alpha", 10, None).unwrap().is_empty());
+    }
+
+    #[test]
     fn versioning_unchanged_then_new() {
         let s = store();
         let repo = DocumentRepo::new(&s);
         let doc = document("https://example.com/a");
         let (v1, chunks1, payloads1) = version(&doc, "first content body");
+        let ws = searchos_domain::ids::WorkspaceId::new("ws");
         let diff1 = repo
-            .save_versioned(&doc, &v1, &chunks1, &payloads1)
+            .save_versioned(&doc, &v1, &chunks1, &payloads1, &ws)
             .unwrap();
         assert_eq!(diff1, searchos_document::VersionDiff::NewVersion);
         // Refresh in-memory pointer from the DB (as the application layer does).
@@ -1275,7 +1651,7 @@ mod tests {
         // Same content again → Unchanged, no new version, no outbox rows.
         let (v1b, _, _) = version(&doc, "first content body");
         let diff2 = repo
-            .save_versioned(&doc, &v1b, &chunks1, &payloads1)
+            .save_versioned(&doc, &v1b, &chunks1, &payloads1, &ws)
             .unwrap();
         assert_eq!(diff2, searchos_document::VersionDiff::Unchanged);
         let outbox = OutboxRepo::new(&s);
@@ -1286,7 +1662,7 @@ mod tests {
         // Changed content → NewVersion + more outbox rows.
         let (v2, chunks2, payloads2) = version(&doc, "changed content body!");
         let diff3 = repo
-            .save_versioned(&doc, &v2, &chunks2, &payloads2)
+            .save_versioned(&doc, &v2, &chunks2, &payloads2, &ws)
             .unwrap();
         assert_eq!(diff3, searchos_document::VersionDiff::NewVersion);
         let fetched = repo.get(&doc.id).unwrap().unwrap();
@@ -1304,7 +1680,9 @@ mod tests {
         let doc = document("https://example.com/b");
         let repo = DocumentRepo::new(&s);
         let (v, chunks, payloads) = version(&doc, "content for outbox");
-        repo.save_versioned(&doc, &v, &chunks, &payloads).unwrap();
+        let ws = searchos_domain::ids::WorkspaceId::new("ws");
+        repo.save_versioned(&doc, &v, &chunks, &payloads, &ws)
+            .unwrap();
         let outbox = OutboxRepo::new(&s);
         let rows = outbox.pending(100).unwrap();
         assert!(!rows.is_empty());
@@ -1326,11 +1704,11 @@ mod tests {
         // Success path on a remaining row (or a fresh one from a new save).
         let target = rows2.first().cloned().unwrap_or_else(|| {
             let (v3, c3, p3) = version(&doc, "second content for success");
-            repo.save_versioned(&doc, &v3, &c3, &p3).unwrap();
+            repo.save_versioned(&doc, &v3, &c3, &p3, &ws).unwrap();
             let mut doc2 = repo.get(&doc.id).unwrap().unwrap();
             let (v4, c4, p4) = version(&doc2, "third content for success");
             doc2.current_version_id = Some(v3.id.clone());
-            repo.save_versioned(&doc2, &v4, &c4, &p4).unwrap();
+            repo.save_versioned(&doc2, &v4, &c4, &p4, &ws).unwrap();
             outbox.pending(100).unwrap().remove(0)
         });
         outbox.mark_processed(&target.id).unwrap();
@@ -1376,6 +1754,8 @@ mod tests {
             trace_id: Some(trace),
             shared: false,
             pricing_model_version: "1".into(),
+            status: Default::default(),
+            error_code: None,
         };
         cost.append(&ev).unwrap();
         let summary = cost
@@ -1407,6 +1787,9 @@ mod tests {
             source_policy_version: "1".into(),
             language: "en".into(),
             workspace_scope: "ws".into(),
+            mode: "local_only".into(),
+            freshness_requirement: "recent".into(),
+            key_version: "v2".into(),
         };
         repo.put(&key, r#"{"q":"x"}"#, "1.0.0", "1", 600).unwrap();
         assert!(repo.get(&key, "1").unwrap().is_some());
@@ -1495,7 +1878,9 @@ mod tests {
         let repo = DocumentRepo::new(&s);
         let doc = document("https://example.com/c");
         let (v, chunks, payloads) = version(&doc, "to be deleted");
-        repo.save_versioned(&doc, &v, &chunks, &payloads).unwrap();
+        let ws = searchos_domain::ids::WorkspaceId::new("ws");
+        repo.save_versioned(&doc, &v, &chunks, &payloads, &ws)
+            .unwrap();
         repo.delete(&doc.id).unwrap();
         let outbox = OutboxRepo::new(&s);
         let rows = outbox.pending(100).unwrap();
@@ -1534,6 +1919,8 @@ pub struct IdempotencyRecord {
     pub task_id: String,
     pub status: String,
     pub response_json: Option<String>,
+    pub claim_owner_task_id: Option<String>,
+    pub claimed_at: Option<String>,
 }
 
 /// Idempotency ledger: a repeated `request_id` must not re-run an external
@@ -1555,11 +1942,12 @@ impl<'a> IdempotencyRepo<'a> {
         workspace_id: &str,
     ) -> Result<bool, SearchOsError> {
         self.store.with_conn(|c| {
+            let at = now();
             let n = c
                 .execute(
-                    "INSERT OR IGNORE INTO request_idempotency (request_id, task_id, workspace_id, status, created_at)
-                     VALUES (?1, ?2, ?3, 'running', ?4)",
-                    params![request_id, task_id, workspace_id, now()],
+                    "INSERT OR IGNORE INTO request_idempotency (request_id, task_id, workspace_id, status, claim_owner_task_id, claimed_at, created_at)
+                     VALUES (?1, ?2, ?3, 'running', ?2, ?4, ?4)",
+                    params![request_id, task_id, workspace_id, at],
                 )
                 .map_err(e)?;
             Ok(n == 1)
@@ -1570,7 +1958,7 @@ impl<'a> IdempotencyRepo<'a> {
     pub fn get(&self, request_id: &str) -> Result<Option<IdempotencyRecord>, SearchOsError> {
         self.store.with_conn(|c| {
             c.query_row(
-                "SELECT request_id, task_id, status, response_json FROM request_idempotency WHERE request_id = ?1",
+                "SELECT request_id, task_id, status, response_json, claim_owner_task_id, claimed_at FROM request_idempotency WHERE request_id = ?1",
                 params![request_id],
                 |r| {
                     Ok(IdempotencyRecord {
@@ -1578,6 +1966,8 @@ impl<'a> IdempotencyRepo<'a> {
                         task_id: r.get(1)?,
                         status: r.get(2)?,
                         response_json: r.get(3)?,
+                        claim_owner_task_id: r.get(4)?,
+                        claimed_at: r.get(5)?,
                     })
                 },
             )
@@ -1594,6 +1984,19 @@ impl<'a> IdempotencyRepo<'a> {
                 params![request_id, payload_json, now()],
             )
             .map(|_| ())
+            .map_err(e)
+        })
+    }
+
+    /// Current durable claim status (`running | completed | failed`).
+    pub fn status(&self, request_id: &str) -> Result<Option<String>, SearchOsError> {
+        self.store.with_conn(|c| {
+            c.query_row(
+                "SELECT status FROM request_idempotency WHERE request_id = ?1",
+                params![request_id],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()
             .map_err(e)
         })
     }
@@ -1627,6 +2030,7 @@ pub struct BudgetReservationRow {
     pub status: String,
     pub created_at: String,
     pub settled_at: Option<String>,
+    pub released_at: Option<String>,
 }
 
 /// Budget reservation ledger (estimated cost is reserved before execution).
@@ -1662,7 +2066,7 @@ impl<'a> BudgetRepo<'a> {
     pub fn settle(&self, task_id: &str, spent_micros: i64) -> Result<(), SearchOsError> {
         self.store.with_conn(|c| {
             c.execute(
-                "UPDATE budget_reservations SET spent_cost_micros = ?2, status = 'settled', settled_at = ?3 WHERE task_id = ?1 AND status = 'reserved'",
+                "UPDATE budget_reservations SET spent_cost_micros = ?2, status = 'settled', settled_at = ?3, released_at = ?3 WHERE task_id = ?1 AND status = 'reserved'",
                 params![task_id, spent_micros, now()],
             )
             .map(|_| ())
@@ -1673,7 +2077,7 @@ impl<'a> BudgetRepo<'a> {
     pub fn mark_exceeded(&self, task_id: &str) -> Result<(), SearchOsError> {
         self.store.with_conn(|c| {
             c.execute(
-                "UPDATE budget_reservations SET status = 'exceeded', settled_at = ?2 WHERE task_id = ?1 AND status = 'reserved'",
+                "UPDATE budget_reservations SET status = 'exceeded', settled_at = ?2, released_at = ?2 WHERE task_id = ?1 AND status = 'reserved'",
                 params![task_id, now()],
             )
             .map(|_| ())
@@ -1681,16 +2085,40 @@ impl<'a> BudgetRepo<'a> {
         })
     }
 
+    /// Releases a reservation without treating it as a bill.
+    pub fn release(&self, task_id: &str, spent_micros: i64) -> Result<(), SearchOsError> {
+        self.store.with_conn(|c| {
+            c.execute(
+                "UPDATE budget_reservations SET spent_cost_micros = ?2, status = 'released', released_at = ?3 WHERE task_id = ?1 AND status = 'reserved'",
+                params![task_id, spent_micros, now()],
+            )
+            .map(|_| ())
+            .map_err(e)
+        })
+    }
+
     pub fn list(&self, limit: u32) -> Result<Vec<BudgetReservationRow>, SearchOsError> {
+        self.list_scoped(limit, None)
+    }
+
+    /// Reservations with a workspace predicate pushed into SQL (INV-30-10).
+    pub fn list_scoped(
+        &self,
+        limit: u32,
+        workspace: Option<&str>,
+    ) -> Result<Vec<BudgetReservationRow>, SearchOsError> {
         self.store.with_conn(|c| {
             let mut stmt = c
                 .prepare(
-                    "SELECT id, task_id, trace_id, estimated_cost_micros, spent_cost_micros, currency, status, created_at, settled_at
-                     FROM budget_reservations ORDER BY created_at DESC LIMIT ?1",
+                    "SELECT br.id, br.task_id, br.trace_id, br.estimated_cost_micros, br.spent_cost_micros, br.currency, br.status, br.created_at, br.settled_at, br.released_at
+                     FROM budget_reservations br
+                     LEFT JOIN search_tasks st ON st.id = br.task_id
+                     WHERE (?1 IS NULL OR COALESCE(st.workspace_id, 'default') = ?1 OR st.workspace_id = '*')
+                     ORDER BY br.created_at DESC LIMIT ?2",
                 )
                 .map_err(e)?;
             let rows = stmt
-                .query_map([limit], |r| {
+                .query_map(params![workspace, limit], |r| {
                     Ok(BudgetReservationRow {
                         id: r.get(0)?,
                         task_id: r.get(1)?,
@@ -1701,6 +2129,7 @@ impl<'a> BudgetRepo<'a> {
                         status: r.get(6)?,
                         created_at: r.get(7)?,
                         settled_at: r.get(8)?,
+                        released_at: r.get(9)?,
                     })
                 })
                 .map_err(e)?;

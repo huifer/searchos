@@ -34,3 +34,7 @@ single, reversible-with-effort commitment.
 | ADR-024 | Cost-Aware Execution Planner |
 | ADR-025 | Evaluation-Driven Quality |
 | ADR-026 | Open Core Distribution |
+| ADR-027 | User-Selectable Remote Full-Text Backends |
+| ADR-029 | Multi-Key Rotation for Upstream Providers |
+| ADR-028 | Local Data Ingestion |
+| ADR-030 | Execution Correctness Baseline (Part 30) |

@@ -18,7 +18,7 @@ pub mod generic;
 
 pub use canonical_semantic::{CanonicalQueryCache, SemanticCache, SemanticCompatibility};
 pub use document::{DocumentCache, FetchCacheEntry};
-pub use exact::{CacheHit, CacheLookup, ExactQueryCache};
+pub use exact::{CacheHit, CacheLookup, ExactQueryCache, DEFAULT_MAX_CACHE_ENTRIES};
 pub use generic::{EmbeddingCache, RerankCache, RetrievalCache};
 
 use chrono::{DateTime, Utc};

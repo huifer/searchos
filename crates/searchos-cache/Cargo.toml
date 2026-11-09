@@ -14,3 +14,4 @@ sha2 = { workspace = true }
 hex = { workspace = true }
 searchos-domain = { workspace = true }
 searchos-document = { workspace = true }
+searchos-observability = { workspace = true }

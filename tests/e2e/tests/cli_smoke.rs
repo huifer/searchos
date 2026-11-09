@@ -140,6 +140,118 @@ fn search_local_only_records_trace_and_cost() {
     assert_eq!(cost["is_estimate"], true);
 }
 
+/// RFC-029 AC7: an oversized --file upload is rejected with no partial document.
+#[test]
+fn ingest_file_oversize_rejected_without_partial_document() {
+    let dir = tempfile::tempdir().unwrap();
+    let bin = binary();
+    let big = dir.path().join("big.txt");
+    std::fs::write(&big, "this content is too large").unwrap();
+    let config = dir.path().join("config.yaml");
+    std::fs::write(
+        &config,
+        "ingest:\n  max_bytes_per_document: 10\n  max_bytes_per_batch: 100\n",
+    )
+    .unwrap();
+    let out = cmd(
+        &bin,
+        &dir.path().to_path_buf(),
+        &[
+            "--config",
+            config.to_str().unwrap(),
+            "--format",
+            "json",
+            "ingest",
+            "--file",
+            big.to_str().unwrap(),
+            "--source-key",
+            "notes/big",
+        ],
+    );
+    assert!(!out.status.success(), "oversize ingest must fail");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("CONTENT_TOO_LARGE"), "{stderr}");
+    let out = cmd(
+        &bin,
+        &dir.path().to_path_buf(),
+        &[
+            "--config",
+            config.to_str().unwrap(),
+            "--format",
+            "json",
+            "document",
+            "list",
+        ],
+    );
+    assert!(out.status.success());
+    let listed = assert_json(&String::from_utf8_lossy(&out.stdout));
+    assert!(
+        listed.as_array().unwrap().is_empty(),
+        "no partial document may persist"
+    );
+}
+
+/// Refresh keeps the document's owning workspace (P0-2). The loopback
+/// server is unreachable through the SSRF guard (localhost is blocked by
+/// design), so this e2e test seeds a document in a non-default workspace via
+/// local ingest and asserts the refresh command contract. The full
+/// fetch-and-refresh workspace seam is covered in the integration suite,
+/// where the guard can be bypassed without a public DNS name.
+#[test]
+fn document_refresh_preserves_workspace() {
+    let dir = tempfile::tempdir().unwrap();
+    let bin = binary();
+    let out = cmd(
+        &bin,
+        &dir.path().to_path_buf(),
+        &[
+            "--format",
+            "json",
+            "ingest",
+            "--text",
+            "workspace refresh fixture",
+            "--workspace",
+            "ws_refresh",
+            "--source-key",
+            "notes/refresh",
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "ingest failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let doc = assert_json(&String::from_utf8_lossy(&out.stdout));
+    let doc_id = doc["document_id"].as_str().unwrap().to_string();
+
+    let out = cmd(
+        &bin,
+        &dir.path().to_path_buf(),
+        &[
+            "--format",
+            "json",
+            "document",
+            "list",
+            "--workspace",
+            "ws_refresh",
+        ],
+    );
+    let listed = assert_json(&String::from_utf8_lossy(&out.stdout));
+    assert!(
+        listed.as_array().unwrap().iter().any(|d| d["id"] == doc_id),
+        "seeded document stayed in its owning workspace"
+    );
+
+    let out = cmd(
+        &bin,
+        &dir.path().to_path_buf(),
+        &["--format", "json", "document", "refresh", "doc_missing"],
+    );
+    assert!(!out.status.success(), "missing document must fail");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("error"), "stderr: {stderr}");
+}
+
 #[test]
 fn output_formats_and_exit_codes() {
     let dir = tempfile::tempdir().unwrap();

@@ -9,6 +9,7 @@ use searchos_domain::provider::ProviderCapabilities;
 use serde::{Deserialize, Serialize};
 
 use crate::error::ProviderError;
+use crate::keyring::KeyStatus;
 
 /// Parameters for one web search (SearchOS internal IR, RFC-012 12.7: Tavily
 /// DTOs must not penetrate the core).
@@ -76,6 +77,13 @@ pub trait SearchProvider: Send + Sync {
     /// Health check (RFC-014 14.4).
     async fn health_check(&self) -> Result<bool, ProviderError> {
         Ok(true)
+    }
+
+    /// Per-key rotation status for multi-key providers (RFC-009 9.7).
+    /// `None` = single-key adapter (no rotation). Keys are masked.
+    fn key_status(&self) -> Option<Vec<KeyStatus>> {
+        let _ = self;
+        None
     }
 }
 

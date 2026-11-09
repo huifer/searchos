@@ -522,23 +522,190 @@ CREATE INDEX IF NOT EXISTS idx_analytics_read_models_key
     ON analytics_read_models(model_key, bucket_start);
 "#,
     },
+    // v4 - RFC-029 Local Data Ingestion.
+    // Documents gain provenance (web vs local) and a human title; batch /
+    // directory ingest jobs become observable and resumable.
+    Migration {
+        version: 4,
+        name: "local_ingestion",
+        sql: r#"
+-- RFC-029 5.2: origin of the content and a human-readable title.
+ALTER TABLE documents ADD COLUMN source_type TEXT NOT NULL DEFAULT 'web';
+ALTER TABLE documents ADD COLUMN title TEXT;
+
+-- RFC-029 7: batch / directory ingest jobs.
+CREATE TABLE IF NOT EXISTS ingest_jobs (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    source_type TEXT NOT NULL,
+    state TEXT NOT NULL,
+    total_items INTEGER NOT NULL DEFAULT 0,
+    ok_items INTEGER NOT NULL DEFAULT 0,
+    failed_items INTEGER NOT NULL DEFAULT 0,
+    error_detail TEXT,
+    created_at TEXT NOT NULL,
+    finished_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_ingest_jobs_ws ON ingest_jobs(workspace_id, created_at);
+
+CREATE TABLE IF NOT EXISTS ingest_job_items (
+    id TEXT PRIMARY KEY,
+    job_id TEXT NOT NULL,
+    source_key TEXT NOT NULL,
+    state TEXT NOT NULL,
+    document_id TEXT,
+    error_detail TEXT,
+    FOREIGN KEY(job_id) REFERENCES ingest_jobs(id)
+);
+CREATE INDEX IF NOT EXISTS idx_ingest_items_job ON ingest_job_items(job_id);
+"#,
+    },
+    // v5 - Part 30 execution-correctness recovery data.
+    // Released v2/v4 SQL remains immutable above; the runner below makes
+    // their ADD COLUMN statements idempotent at execution time.
+    Migration {
+        version: 5,
+        name: "execution_correctness_recovery",
+        sql: r#"
+ALTER TABLE request_idempotency ADD COLUMN claim_owner_task_id TEXT;
+ALTER TABLE request_idempotency ADD COLUMN claimed_at TEXT;
+
+ALTER TABLE cost_events ADD COLUMN status TEXT NOT NULL DEFAULT 'succeeded';
+ALTER TABLE cost_events ADD COLUMN error_code TEXT;
+ALTER TABLE budget_reservations ADD COLUMN released_at TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_documents_workspace ON documents(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_chunks_document ON document_chunks(document_id);
+"#,
+    },
 ];
 
-/// Applies pending migrations to a connection. Released migrations are
-/// immutable; schema changes append new steps.
+/// Applies pending migrations to a connection. Each version is atomic: SQL
+/// and `user_version` commit together, and a failed version rolls back to the
+/// previous usable schema (Part 30 INV-30-09).
 pub fn migrate(conn: &Connection) -> Result<i64, rusqlite::Error> {
+    migrate_with_failure(conn, None)
+}
+
+/// Test hook: fail after the Nth `ALTER TABLE` of one migration version.
+/// The injected failure is inside the same transaction, so the test proves
+/// rollback rather than merely reporting an error.
+#[cfg(test)]
+fn migrate_with_failure(
+    conn: &Connection,
+    fail_after_alter: Option<(i64, usize)>,
+) -> Result<i64, rusqlite::Error> {
+    apply_migrations(conn, fail_after_alter)
+}
+
+#[cfg(not(test))]
+fn migrate_with_failure(
+    conn: &Connection,
+    _fail_after_alter: Option<(i64, usize)>,
+) -> Result<i64, rusqlite::Error> {
+    apply_migrations(conn, None)
+}
+
+fn apply_migrations(
+    conn: &Connection,
+    fail_after_alter: Option<(i64, usize)>,
+) -> Result<i64, rusqlite::Error> {
     let current: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    let mut applied = 0i64;
     for m in MIGRATIONS {
-        if m.version > current {
-            conn.execute_batch(m.sql)?;
+        if m.version <= current {
+            continue;
+        }
+        conn.execute_batch("BEGIN IMMEDIATE;")?;
+        let result = (|| -> Result<(), rusqlite::Error> {
+            apply_sql_idempotent(
+                conn,
+                m.sql,
+                fail_after_alter
+                    .filter(|(version, _)| *version == m.version)
+                    .map(|(_, n)| n),
+            )?;
             conn.execute_batch(&format!("PRAGMA user_version = {};", m.version))?;
-            applied += 1;
+            Ok(())
+        })();
+        match result {
+            Ok(()) => conn.execute_batch("COMMIT;")?,
+            Err(e) => {
+                let _ = conn.execute_batch("ROLLBACK;");
+                return Err(e);
+            }
         }
     }
-    let final_version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    let _ = applied;
-    Ok(final_version)
+    conn.query_row("PRAGMA user_version", [], |r| r.get(0))
+}
+
+/// Executes one migration statement-by-statement, skipping `ADD COLUMN`
+/// statements whose column already exists. This keeps released v2/v4 SQL
+/// immutable while making a retry after a rolled-back migration safe.
+fn apply_sql_idempotent(
+    conn: &Connection,
+    sql: &str,
+    fail_after_alter: Option<usize>,
+) -> Result<(), rusqlite::Error> {
+    let mut alters = 0usize;
+    for raw in sql.split(';') {
+        let cleaned = raw
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("--"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let statement = cleaned.trim();
+        if statement.is_empty() {
+            continue;
+        }
+        let is_add_column = add_column_target(statement).is_some();
+        if let Some((table, column)) = add_column_target(statement) {
+            if column_exists(conn, table, column)? {
+                continue;
+            }
+        }
+        conn.execute_batch(&format!("{statement};"))?;
+        if is_add_column {
+            alters += 1;
+            if fail_after_alter == Some(alters) {
+                return Err(injected_migration_failure(conn));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn injected_migration_failure(conn: &Connection) -> rusqlite::Error {
+    conn.execute_batch("SELECT * FROM __searchos_injected_migration_failure__;")
+        .unwrap_err()
+}
+
+fn add_column_target(statement: &str) -> Option<(&str, &str)> {
+    let tokens: Vec<&str> = statement.split_whitespace().collect();
+    if tokens.len() < 6
+        || !tokens[0].eq_ignore_ascii_case("ALTER")
+        || !tokens[1].eq_ignore_ascii_case("TABLE")
+        || !tokens[3].eq_ignore_ascii_case("ADD")
+        || !tokens[4].eq_ignore_ascii_case("COLUMN")
+    {
+        return None;
+    }
+    Some((
+        tokens[2].trim_matches(|c| c == '"' || c == '`' || c == '[' || c == ']'),
+        tokens[5].trim_matches(|c| c == '"' || c == '`' || c == '[' || c == ']'),
+    ))
+}
+
+fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool, rusqlite::Error> {
+    // Identifiers come only from the static migration SQL above.
+    let sql = format!("PRAGMA table_info({table})");
+    let mut stmt = conn.prepare(&sql)?;
+    let names = stmt.query_map([], |row| row.get::<_, String>(1))?;
+    for name in names {
+        if name?.eq_ignore_ascii_case(column) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 #[cfg(test)]
@@ -605,6 +772,39 @@ mod tests {
                 .unwrap();
             assert_eq!(count, 1, "table {t} missing");
         }
+    }
+
+    /// Part 30 §30.11: injecting a failure at the second v2 ALTER must leave
+    /// v1 usable and user_version unchanged; a retry must then succeed.
+    #[test]
+    fn failed_migration_leaves_previous_version_usable() {
+        let conn = Connection::open_in_memory().unwrap();
+        let err = migrate_with_failure(&conn, Some((2, 1))).unwrap_err();
+        assert!(!err.to_string().is_empty());
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 1, "failed v2 rolled back to v1");
+        conn.execute(
+            "INSERT INTO workspaces (id,name,config_version,created_at,updated_at) VALUES ('ws','w',1,'t','t')",
+            [],
+        )
+        .unwrap();
+        assert!(!column_exists(&conn, "decision_traces", "stages_json").unwrap());
+        let expected = MIGRATIONS.last().unwrap().version;
+        assert_eq!(migrate(&conn).unwrap(), expected, "retry is idempotent");
+        assert_eq!(migrate(&conn).unwrap(), expected, "second retry is a no-op");
+    }
+
+    #[test]
+    fn migration_is_idempotent_on_retry() {
+        let conn = Connection::open_in_memory().unwrap();
+        let expected = MIGRATIONS.last().unwrap().version;
+        assert_eq!(migrate(&conn).unwrap(), expected);
+        // Simulate a stale user_version with columns already present; the
+        // immutable released ALTER statements must be skipped, not duplicated.
+        conn.execute_batch("PRAGMA user_version = 4;").unwrap();
+        assert_eq!(migrate(&conn).unwrap(), expected);
     }
 
     #[test]

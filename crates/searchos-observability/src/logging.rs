@@ -1,5 +1,7 @@
 //! tracing subscriber setup (RFC-015 15.1 spans).
 
+use std::io::IsTerminal;
+
 use tracing_subscriber::EnvFilter;
 
 /// Initializes the global tracing subscriber once. RUST_LOG controls the
@@ -11,6 +13,8 @@ pub fn init(json: bool) {
             .with_env_filter(filter)
             .with_target(false)
             .json()
+            .with_ansi(false)
+            .with_writer(std::io::stderr)
             .try_init();
     } else {
         init_with_default("info");
@@ -23,6 +27,8 @@ pub fn init_with_default(default: &str) {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_target(false)
+        .with_ansi(std::io::stderr().is_terminal())
+        .with_writer(std::io::stderr)
         .try_init();
 }
 

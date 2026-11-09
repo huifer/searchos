@@ -33,6 +33,7 @@ searchos-observability = { workspace = true }
 searchos-storage-fs = { workspace = true }
 searchos-storage-sqlite = { workspace = true }
 searchos-index-tantivy = { workspace = true }
+searchos-index-remote = { workspace = true }
 searchos-vector-lancedb = { workspace = true }
 searchos-extension = { workspace = true }
 searchos-crawler = { workspace = true }

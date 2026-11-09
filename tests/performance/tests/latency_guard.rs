@@ -7,33 +7,33 @@
 use std::sync::Arc;
 
 use searchos_core::SearchOsConfig;
+use searchos_core::SearchOsRuntime;
 use searchos_domain::ids::{ChunkId, DocumentId, DocumentVersionId};
 use searchos_domain::retrieval::{IndexedDocument, RetrievalQuery};
-use searchos_index_tantivy::TantivyIndex;
-use searchos_retrieval::SearchIndex;
 
 /// Builds a corpus of `n` chunks of ~500 chars each.
-async fn build_corpus(idx: &TantivyIndex, n: usize) {
+async fn build_corpus(rt: &SearchOsRuntime, n: usize) {
     for i in 0..n {
         let body = format!(
             "chunk {i}: rust tokio async runtime work stealing scheduler {}",
             "filler text about networking and storage. ".repeat(20)
         );
-        idx.index(IndexedDocument {
-            chunk_id: ChunkId::new(format!("c{i}")),
-            document_id: DocumentId::new(format!("d{}", i / 4)),
-            version_id: DocumentVersionId::new(format!("v{}", i / 4)),
-            title: Some(format!("Document {i}")),
-            body,
-            url: format!("https://example.com/doc/{i}"),
-            language: Some("en".into()),
-            workspace_id: "*".into(),
-            fetched_at: chrono::Utc::now(),
-        })
-        .await
-        .unwrap();
+        rt.fulltext
+            .index(IndexedDocument {
+                chunk_id: ChunkId::new(format!("c{i}")),
+                document_id: DocumentId::new(format!("d{}", i / 4)),
+                version_id: DocumentVersionId::new(format!("v{}", i / 4)),
+                title: Some(format!("Document {i}")),
+                body,
+                url: format!("https://example.com/doc/{i}"),
+                language: Some("en".into()),
+                workspace_id: "*".into(),
+                fetched_at: chrono::Utc::now(),
+            })
+            .await
+            .unwrap();
     }
-    idx.commit().await.unwrap();
+    rt.fulltext.commit().await.unwrap();
 }
 
 #[tokio::test]
@@ -42,16 +42,16 @@ async fn local_search_latency_bounded_on_2k_corpus() {
     let mut cfg = SearchOsConfig::default();
     cfg.app.data_dir = dir.path().to_path_buf();
     let rt = searchos_core::SearchOsRuntime::init(cfg).await.unwrap();
-    build_corpus(&rt.tantivy, 2000).await;
+    build_corpus(&rt, 2000).await;
 
     // Warmup.
     let q = RetrievalQuery::new("tokio async runtime", 10);
-    let _ = rt.tantivy.search(&q).await.unwrap();
+    let _ = rt.fulltext.search(&q).await.unwrap();
 
     let mut samples = Vec::new();
     for _ in 0..50 {
         let t = std::time::Instant::now();
-        let hits = rt.tantivy.search(&q).await.unwrap();
+        let hits = rt.fulltext.search(&q).await.unwrap();
         samples.push(t.elapsed().as_millis() as u64);
         assert!(!hits.is_empty());
     }
@@ -69,7 +69,7 @@ async fn ingest_throughput_minimal_bound() {
     cfg.app.data_dir = dir.path().to_path_buf();
     let rt = searchos_core::SearchOsRuntime::init(cfg).await.unwrap();
     let t = std::time::Instant::now();
-    build_corpus(&rt.tantivy, 500).await;
+    build_corpus(&rt, 500).await;
     let elapsed = t.elapsed();
     // 500 chunks should commit in well under 10s on CI hardware.
     assert!(

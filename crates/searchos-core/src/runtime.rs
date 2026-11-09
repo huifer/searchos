@@ -1,35 +1,59 @@
 //! Runtime assembly (RFC-002 core crate responsibilities).
 
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use searchos_application::analytics::{AnalyticsEvent, AnalyticsQuery, AnalyticsQueryService};
 use searchos_application::fetch_service::{DocumentPort, FetchServiceImpl};
+use searchos_application::search_service::{BudgetGuard, BudgetSettler, IdempotencyClaim};
 use searchos_application::singleflight::SingleflightCoordinator;
 use searchos_application::{CostUseCase, MemoryFacade, MemoryUseCase, SearchOsApplication};
-use searchos_cache::ExactQueryCache;
+use searchos_cache::{
+    CanonicalQueryCache, EmbeddingCache, ExactQueryCache, RerankCache, RetrievalCache,
+    SemanticCache, DEFAULT_MAX_CACHE_ENTRIES,
+};
+use searchos_cost::CostModelConfig;
 
 use searchos_decision::trace::TraceCollector;
 use searchos_domain::cost::{CostEvent, CostQuery, CostSummary};
 use searchos_domain::memory::MemoryEntry;
 use searchos_domain::SearchOsError;
-use searchos_fetch::{RobotsChecker, UrlGuard};
+use searchos_fetch::{FetchLimits, RobotsChecker, UrlGuard};
+use searchos_provider::embedding::{cosine_similarity, EmbeddingProvider, HashingEmbedder};
 use searchos_provider::registry::{ProviderRegistry, RegisteredProvider};
-use searchos_provider::{BraveProvider, TavilyProvider};
-use searchos_retrieval::SearchIndex;
+use searchos_provider::{BraveProvider, KeyPool, RotatingProvider, TavilyProvider};
+use searchos_retrieval::{HybridRetriever, RrfConfig, SearchIndex, VectorIndex};
 use searchos_storage_fs::LocalObjectStore;
 use searchos_storage_sqlite::repos;
 use searchos_storage_sqlite::store::SqliteStore;
 
-use crate::config::SearchOsConfig;
+use crate::config::{SearchOsConfig, CONSUMED_CONFIG_FIELDS, DEPRECATED_CONFIG_FIELDS};
 
 /// The assembled runtime.
 pub struct SearchOsRuntime {
     pub config: SearchOsConfig,
     pub application: Arc<SearchOsApplication>,
     pub sqlite: Arc<SqliteStore>,
-    pub tantivy: Arc<searchos_index_tantivy::TantivyIndex>,
+    /// Active full-text index (ADR-027). `tantivy` by default, or a remote
+    /// backend chosen via `storage.fulltext`. All writes/searches flow
+    /// through this trait object; SQLite stays the metadata source of
+    /// truth and remote indexes stay rebuildable (ADR-022).
+    pub fulltext: Arc<dyn SearchIndex>,
+    /// Concrete local index when the embedded backend is active; kept for
+    /// CLI/diagnostics that read tantivy-specific counters.
+    pub tantivy: Option<Arc<searchos_index_tantivy::TantivyIndex>>,
     pub lancedb: Arc<searchos_vector_lancedb::LanceVectorIndex>,
+    /// Dense vector port used by hybrid retrieval and outbox upserts.
+    pub vector: Arc<dyn VectorIndex>,
+    pub hybrid: Arc<HybridRetriever>,
+    pub embedder: Arc<dyn EmbeddingProvider>,
+    pub canonical_cache: Arc<CanonicalQueryCache>,
+    pub semantic_cache: Arc<SemanticCache>,
+    pub retrieval_cache: Arc<RetrievalCache>,
+    pub embedding_cache: Arc<EmbeddingCache>,
+    pub rerank_cache: Arc<RerankCache>,
     pub objects: Arc<LocalObjectStore>,
     pub provider_registry: Arc<ProviderRegistry>,
     pub extensions: Arc<searchos_extension::ExtensionRegistry>,
@@ -37,6 +61,22 @@ pub struct SearchOsRuntime {
     pub guard: Arc<UrlGuard>,
     pub robots: Arc<RobotsChecker>,
     pub exact_cache: Arc<ExactQueryCache>,
+    /// Singleflight coordinator, kept for cache/index invalidation.
+    pub singleflight: Arc<SingleflightCoordinator>,
+    /// Config fields consumed by the runtime, for `config validate` parity.
+    pub config_consumption: BTreeMap<String, String>,
+    pub metrics_enabled: bool,
+    pub trace_retention_days: u32,
+    pub semantic_dedup: bool,
+    pub incremental: bool,
+}
+
+impl SearchOsRuntime {
+    /// Name of the active full-text backend (`tantivy` / `elasticsearch` /
+    /// `meilisearch` / `postgres` / `mysql`), for diagnostics.
+    pub fn fulltext_backend(&self) -> &'static str {
+        searchos_index_remote::BackendKind::from_config(&self.config.storage.fulltext).config_name()
+    }
 }
 
 impl SearchOsRuntime {
@@ -65,8 +105,50 @@ impl SearchOsRuntime {
             SqliteStore::open(db_path).map_err(|e| SearchOsError::Storage(e.to_string()))?,
         );
 
-        // Indexes (rebuildable).
-        let tantivy = Arc::new(searchos_index_tantivy::TantivyIndex::open(tantivy_path)?);
+        // Full-text index (ADR-027): embedded Tantivy by default, or a
+        // user-selected remote backend. The remote adapter implements the
+        // same `SearchIndex` port, so the outbox worker, local knowledge
+        // port and rebuild path stay backend-agnostic.
+        let kind = searchos_index_remote::BackendKind::from_config(&config.storage.fulltext);
+        let concrete_tantivy = if kind == searchos_index_remote::BackendKind::Tantivy {
+            Some(Arc::new(searchos_index_tantivy::TantivyIndex::open(
+                tantivy_path,
+            )?))
+        } else {
+            None
+        };
+        let fulltext: Arc<dyn SearchIndex> = match kind {
+            searchos_index_remote::BackendKind::Tantivy => {
+                Arc::clone(concrete_tantivy.as_ref().expect("checked above"))
+                    as Arc<dyn SearchIndex>
+            }
+            searchos_index_remote::BackendKind::Elasticsearch => Arc::new(
+                searchos_index_remote::ElasticsearchIndex::open(
+                    config.storage.remote.elasticsearch.to_adapter_config(),
+                )
+                .await?,
+            ),
+            searchos_index_remote::BackendKind::Meilisearch => Arc::new(
+                searchos_index_remote::MeilisearchIndex::open(
+                    config.storage.remote.meilisearch.to_adapter_config(),
+                )
+                .await?,
+            ),
+            searchos_index_remote::BackendKind::PostgresFts => Arc::new(
+                searchos_index_remote::PostgresFtsIndex::open(
+                    config.storage.remote.postgres.to_adapter_config(),
+                )
+                .await?,
+            ),
+            searchos_index_remote::BackendKind::MySqlFts => Arc::new(
+                searchos_index_remote::MySqlFtsIndex::open(
+                    config.storage.remote.mysql.to_adapter_config(),
+                )
+                .await?,
+            ),
+        };
+
+        // Vector index (rebuildable).
         let lancedb = Arc::new(
             searchos_vector_lancedb::LanceVectorIndex::open(lancedb_path, "embeddings").await?,
         );
@@ -74,9 +156,130 @@ impl SearchOsRuntime {
         // Content store.
         let objects = Arc::new(LocalObjectStore::new(objects_path));
 
-        // Fetch safety.
-        let guard = Arc::new(UrlGuard::default());
+        // Observability / config consumption. Every validated knob is read
+        // here or explicitly deprecated; `config validate` reports the same
+        // schema (Part 30 INV-30-16).
+        let metrics = searchos_observability::MetricsRegistry::global();
+        searchos_observability::logging::init_with_default(&config.observability.log_level);
+        let cost_config = CostModelConfig::default_config();
+        for error in cost_config.validate_prices() {
+            tracing::warn!(%error, "invalid configured price");
+            metrics.inc_counter("cost.pricing.parse_error_total");
+        }
+        let mut config_consumption: BTreeMap<String, String> = BTreeMap::new();
+        for field in CONSUMED_CONFIG_FIELDS {
+            config_consumption.insert((*field).to_string(), "runtime".into());
+        }
+        for field in DEPRECATED_CONFIG_FIELDS {
+            config_consumption.insert((*field).to_string(), "deprecated".into());
+        }
+        config_consumption.insert("app.name".into(), config.app.name.clone());
+        config_consumption.insert("app.mode".into(), config.app.mode.clone());
+        config_consumption.insert(
+            "crawler.default_timeout_ms".into(),
+            config.crawler.default_timeout_ms.to_string(),
+        );
+        config_consumption.insert(
+            "crawler.max_concurrent".into(),
+            config.crawler.max_concurrent.to_string(),
+        );
+        config_consumption.insert(
+            "crawler.respect_robots".into(),
+            config.crawler.respect_robots.to_string(),
+        );
+        config_consumption.insert(
+            "crawler.robots_unknown_allow".into(),
+            config.crawler.robots_unknown_allow.to_string(),
+        );
+        config_consumption.insert(
+            "crawler.crawl_delay_cap_seconds".into(),
+            config.crawler.crawl_delay_cap_seconds.to_string(),
+        );
+        config_consumption.insert(
+            "security.ssrf_protection".into(),
+            config.security.ssrf_protection.to_string(),
+        );
+        config_consumption.insert(
+            "security.max_response_bytes".into(),
+            config.security.max_response_bytes.to_string(),
+        );
+        config_consumption.insert(
+            "security.max_redirects".into(),
+            config.security.max_redirects.to_string(),
+        );
+        config_consumption.insert(
+            "observability.log_level".into(),
+            config.observability.log_level.clone(),
+        );
+        config_consumption.insert(
+            "observability.metrics_enabled".into(),
+            config.observability.metrics_enabled.to_string(),
+        );
+        config_consumption.insert(
+            "observability.trace_retention_days".into(),
+            config.observability.trace_retention_days.to_string(),
+        );
+        config_consumption.insert(
+            "search.semantic_dedup".into(),
+            config.search.semantic_dedup.to_string(),
+        );
+        config_consumption.insert(
+            "search.incremental".into(),
+            config.search.incremental.to_string(),
+        );
+        config_consumption.insert(
+            "indexes.rebuild_on_start".into(),
+            config.indexes.rebuild_on_start.to_string(),
+        );
+        config_consumption.insert(
+            "indexes.verify_on_start".into(),
+            config.indexes.verify_on_start.to_string(),
+        );
+        config_consumption.insert(
+            "extensions.allow_native".into(),
+            config.extensions.allow_native.to_string(),
+        );
+        config_consumption.insert(
+            "extensions.wasm_enabled".into(),
+            config.extensions.wasm_enabled.to_string(),
+        );
+        config_consumption.insert(
+            "memory.embedding.provider".into(),
+            config.memory.embedding.provider.clone(),
+        );
+        config_consumption.insert(
+            "memory.embedding.model".into(),
+            config.memory.embedding.model.clone(),
+        );
+        metrics.set_gauge(
+            "config.unconsumed_field_total",
+            SearchOsConfig::unconsumed_fields().len() as u64,
+        );
+        metrics.set_gauge(
+            "storage.schema.version",
+            searchos_storage_sqlite::migrations::MIGRATIONS
+                .last()
+                .unwrap()
+                .version as u64,
+        );
+
+        // Fetch safety + resource limits from config (Part 24 §24.1).
+        let guard = Arc::new(UrlGuard::with_config(
+            config.security.max_redirects,
+            config.crawler.max_concurrent,
+            config.security.ssrf_protection,
+            vec![80, 443, 8080],
+        ));
         let robots = Arc::new(RobotsChecker::new());
+        let fetch_limits = FetchLimits {
+            timeout: Duration::from_millis(config.crawler.default_timeout_ms),
+            max_response_bytes: config.security.max_response_bytes as usize,
+            max_redirects: config.security.max_redirects,
+            max_concurrent: config.crawler.max_concurrent,
+            respect_robots: config.crawler.respect_robots,
+            unknown_robots_disallow: !config.crawler.robots_unknown_allow,
+            crawl_delay_cap_seconds: config.crawler.crawl_delay_cap_seconds,
+        };
 
         // Document port over sqlite repos.
         let doc_port = Arc::new(SqliteDocumentPort {
@@ -85,26 +288,54 @@ impl SearchOsRuntime {
         });
 
         // Providers (native extensions compiled in; RFC-011 11.2).
+        // Multi-key rotation (RFC-009 9.7): when more than one key is
+        // configured the adapter is wrapped in a RotatingProvider that
+        // round-robins / fails over across keys. The SAME adapter instance
+        // is registered in the router and used for execution, so rotation
+        // state is shared.
         let registry = Arc::new(ProviderRegistry::new());
-        let tavily_key = config.tavily_api_key();
-        if config.providers.tavily.enabled {
-            if let Some(k) = &tavily_key {
-                registry.register(RegisteredProvider::from_search(
-                    Arc::new(TavilyProvider::new(k.clone())),
-                    5_000,
-                    "USD",
-                ));
-            }
+        let mut search_providers: Vec<Arc<dyn searchos_provider::SearchProvider>> = Vec::new();
+        let tavily_keys = config.tavily_api_keys();
+        if config.providers.tavily.enabled && !tavily_keys.is_empty() {
+            let adapter: Arc<dyn searchos_provider::SearchProvider> = if tavily_keys.len() > 1 {
+                Arc::new(RotatingProvider::new(
+                    "tavily",
+                    searchos_provider::SearchProvider::capabilities(&TavilyProvider::new(
+                        tavily_keys[0].clone(),
+                    )),
+                    KeyPool::new(tavily_keys.clone(), config.rotation_policy("tavily")),
+                    |k| Arc::new(TavilyProvider::new(k.to_string())),
+                ))
+            } else {
+                Arc::new(TavilyProvider::new(tavily_keys[0].clone()))
+            };
+            registry.register(RegisteredProvider::from_search(
+                Arc::clone(&adapter),
+                5_000,
+                "USD",
+            ));
+            search_providers.push(adapter);
         }
-        let brave_key = config.brave_api_key();
-        if config.providers.brave.enabled {
-            if let Some(k) = &brave_key {
-                registry.register(RegisteredProvider::from_search(
-                    Arc::new(BraveProvider::new(k.clone())),
-                    3_000,
-                    "USD",
-                ));
-            }
+        let brave_keys = config.brave_api_keys();
+        if config.providers.brave.enabled && !brave_keys.is_empty() {
+            let adapter: Arc<dyn searchos_provider::SearchProvider> = if brave_keys.len() > 1 {
+                Arc::new(RotatingProvider::new(
+                    "brave",
+                    searchos_provider::SearchProvider::capabilities(&BraveProvider::new(
+                        brave_keys[0].clone(),
+                    )),
+                    KeyPool::new(brave_keys.clone(), config.rotation_policy("brave")),
+                    |k| Arc::new(BraveProvider::new(k.to_string())),
+                ))
+            } else {
+                Arc::new(BraveProvider::new(brave_keys[0].clone()))
+            };
+            registry.register(RegisteredProvider::from_search(
+                Arc::clone(&adapter),
+                3_000,
+                "USD",
+            ));
+            search_providers.push(adapter);
         }
         {
             let provider_repo = repos::ProviderRepo::new(&sqlite);
@@ -123,34 +354,86 @@ impl SearchOsRuntime {
                         } else {
                             "down"
                         },
-                        "env:TAVILY_API_KEY,BRAVE_API_KEY", // secret reference, not the key
+                        "env:TAVILY_API_KEYS,BRAVE_API_KEYS", // secret reference, not the key
                     );
                 }
             }
         }
 
-        // Registries.
+        // Registries. Discovery failures are isolated, logged and counted;
+        // a bad manifest never disables later extensions/crawlers (G-04).
         let extensions = Arc::new(searchos_extension::ExtensionRegistry::new());
-        let _ = extensions.discover(&config.app.data_dir.join("extensions"));
+        let extension_report = extensions
+            .discover_with_policy(
+                &config.extensions_path(),
+                config.extensions.allow_native,
+                config.extensions.wasm_enabled,
+            )
+            .unwrap_or_else(|e| {
+                tracing::warn!(%e, "extension discovery failed");
+                metrics.inc_counter("extensions.load_failed_total");
+                searchos_extension::DiscoveryReport::default()
+            });
+        for error in &extension_report.errors {
+            tracing::warn!(%error, "extension manifest quarantined");
+            metrics.inc_counter("extensions.load_failed_total");
+        }
         let crawlers = Arc::new(searchos_crawler::CrawlerRegistry::new());
-        let _ = crawlers.discover(&config.crawlers_path());
+        let crawler_report = crawlers
+            .discover(&config.crawlers_path())
+            .unwrap_or_else(|e| {
+                tracing::warn!(%e, "crawler discovery failed");
+                metrics.inc_counter("extensions.load_failed_total");
+                searchos_crawler::DiscoveryReport::default()
+            });
+        for error in &crawler_report.errors {
+            tracing::warn!(%error, "crawler manifest quarantined");
+            metrics.inc_counter("extensions.load_failed_total");
+        }
+        metrics.set_gauge(
+            "extensions.quarantined",
+            (extension_report.quarantined.len() + crawler_report.quarantined.len()) as u64,
+        );
 
-        // Search assembly.
-        let exact_cache = Arc::new(ExactQueryCache::new(config.search.cache_ttl_seconds));
+        // Multi-layer caches + hybrid BM25/vector retrieval (RFC-007, G-02).
+        let cache_ttl = config.search.cache_ttl_seconds;
+        let exact_cache = Arc::new(ExactQueryCache::with_max_entries(
+            cache_ttl,
+            DEFAULT_MAX_CACHE_ENTRIES,
+        ));
+        let canonical_cache = Arc::new(CanonicalQueryCache::new(cache_ttl));
+        let semantic_cache = Arc::new(SemanticCache::new(cache_ttl));
+        let retrieval_cache = Arc::new(RetrievalCache::new(cache_ttl));
+        let embedding_cache = Arc::new(EmbeddingCache::default());
+        let rerank_cache = Arc::new(RerankCache::new(cache_ttl));
+        let embedder: Arc<dyn EmbeddingProvider> = Arc::new(HashingEmbedder::new(256));
+        let vector: Arc<dyn VectorIndex> = lancedb.clone();
+        let hybrid = Arc::new(HybridRetriever::new(
+            Arc::clone(&fulltext),
+            Some(Arc::clone(&vector)),
+            RrfConfig::default(),
+        ));
+
+        let singleflight = Arc::new(SingleflightCoordinator::new());
         let deps = Arc::new(searchos_application::search_service::SearchDependencies {
             profiles: searchos_policy::ProfileRegistry::builtin(),
             quality: searchos_policy::QualityPolicy::default(),
             freshness: searchos_policy::FreshnessPolicy::default_policy(),
             source: searchos_policy::SourcePolicy::default_policy(),
-            cost_config: searchos_cost::CostModelConfig::default_config(),
-            bm25: tantivy.clone(),
+            cost_config: cost_config.clone(),
+            bm25: Arc::clone(&fulltext),
+            vector: Some(Arc::clone(&vector)),
+            hybrid: Some(Arc::clone(&hybrid)),
+            embedder: Arc::clone(&embedder),
+            canonical_cache: Arc::clone(&canonical_cache),
+            semantic_cache: Arc::clone(&semantic_cache),
+            retrieval_cache: Arc::clone(&retrieval_cache),
+            embedding_cache: Arc::clone(&embedding_cache),
+            rerank_cache: Arc::clone(&rerank_cache),
             router: registry.clone(),
-            search_providers: vec![
-                Arc::new(TavilyProvider::new(tavily_key.unwrap_or_default())),
-                Arc::new(BraveProvider::new(brave_key.unwrap_or_default())),
-            ],
+            search_providers,
             local_port: Arc::new(TantivyLocalPort {
-                index: tantivy.clone(),
+                index: Arc::clone(&fulltext),
             }),
             traces: Arc::new(SqliteTraceCollector {
                 store: Arc::clone(&sqlite),
@@ -161,20 +444,61 @@ impl SearchOsRuntime {
             task_recorder: Arc::new(SqliteTaskRecorder {
                 store: Arc::clone(&sqlite),
             }),
-            singleflight: Arc::new(SingleflightCoordinator::new()),
+            singleflight: Arc::clone(&singleflight),
             cache: exact_cache.clone(),
+            semantic_dedup: config.search.semantic_dedup,
+            incremental: config.search.incremental,
+            query_expansion: config.intelligence.query_expansion,
+            reranking: config.intelligence.reranking,
             allow_external: config.tavily_api_key().is_some() || config.brave_api_key().is_some(),
         });
 
         let search_service: Arc<dyn searchos_application::search_service::SearchService> =
             Arc::new(searchos_application::search_service::SearchServiceImpl::new(deps));
-        let fetch_service: Arc<dyn searchos_application::fetch_service::FetchService> = Arc::new(
-            FetchServiceImpl::with_guard(guard.clone(), robots.clone(), objects.clone(), doc_port),
+        let fetch_service: Arc<dyn searchos_application::fetch_service::FetchService> =
+            Arc::new(FetchServiceImpl::with_runtime(
+                guard.clone(),
+                robots.clone(),
+                objects.clone(),
+                doc_port.clone(),
+                Some(Arc::clone(&crawlers)),
+                fetch_limits.clone(),
+            ));
+
+        // RFC-029: local data import. Same DocumentPort as fetch, plus batch
+        // job tracking over sqlite.
+        let ingest_jobs: Arc<dyn searchos_application::ingest_service::IngestJobPort> =
+            Arc::new(SqliteIngestJobPort {
+                store: Arc::clone(&sqlite),
+            });
+        let ingest_service: Arc<dyn searchos_application::ingest_service::IngestService> = Arc::new(
+            searchos_application::ingest_service::IngestServiceImpl::new(
+                objects.clone(),
+                doc_port.clone(),
+            )
+            .with_limits(
+                config.ingest.max_bytes_per_document,
+                config.ingest.max_bytes_per_batch,
+            )
+            .with_job_port(ingest_jobs),
         );
 
-        // Memory service backed by sqlite.
+        // Memory service backed by sqlite, using the configured embedding
+        // provider/model label and a local deterministic embedder (G-05).
+        let memory_embedding_provider = config.memory.embedding.provider.clone();
+        let memory_embedding_model = config.memory.embedding.model.clone();
+        if memory_embedding_provider != "local" {
+            tracing::warn!(
+                provider = %memory_embedding_provider,
+                "remote memory embeddings not wired; using local hashing embedder"
+            );
+        }
         let memory_sqlite = Arc::new(SqliteMemoryStore {
             store: Arc::clone(&sqlite),
+            embedder: Arc::clone(&embedder),
+            embedding_provider: memory_embedding_provider,
+            embedding_model: memory_embedding_model,
+            enabled: config.memory.enabled,
         });
         let memory_service: Arc<dyn searchos_memory::MemoryService> = memory_sqlite;
         let memory_facade = MemoryFacade::new(Arc::clone(&memory_service));
@@ -188,24 +512,36 @@ impl SearchOsRuntime {
             store: Arc::clone(&sqlite),
             baseline_per_query_micros: config.budgets.baseline_per_query_micros,
         });
-        // Best-effort initial Read Model build. Failure must not prevent the
-        // runtime from starting (RFC-026 2.3).
-        let _ = analytics_service.refresh().await;
+        if config.observability.metrics_enabled {
+            // Best-effort initial Read Model build. Failure must not prevent
+            // the runtime from starting (RFC-026 2.3).
+            let _ = analytics_service.refresh().await;
+        }
 
         let application = Arc::new(SearchOsApplication {
             search_service,
             fetch_service,
+            ingest_service,
             memory_service: memory_service_facade,
             cost_service,
             analytics_service,
         });
 
-        Ok(Arc::new(Self {
+        let runtime = Arc::new(Self {
             config: config.clone(),
             application,
             sqlite,
-            tantivy,
+            fulltext,
+            tantivy: concrete_tantivy,
             lancedb,
+            vector,
+            hybrid,
+            embedder,
+            canonical_cache,
+            semantic_cache,
+            retrieval_cache,
+            embedding_cache,
+            rerank_cache,
             objects,
             provider_registry: registry,
             extensions,
@@ -213,7 +549,47 @@ impl SearchOsRuntime {
             guard,
             robots,
             exact_cache,
-        }))
+            singleflight,
+            config_consumption,
+            metrics_enabled: config.observability.metrics_enabled,
+            trace_retention_days: config.observability.trace_retention_days,
+            semantic_dedup: config.search.semantic_dedup,
+            incremental: config.search.incremental,
+        });
+
+        // Explicit config-driven index maintenance. Remediation never runs
+        // implicitly unless these knobs are set (Part 30 §30.16).
+        if config.indexes.rebuild_on_start {
+            if let Err(e) = runtime.rebuild_index().await {
+                tracing::warn!(%e, "rebuild_on_start failed");
+            }
+        }
+        if config.indexes.verify_on_start {
+            match runtime.index_consistency().await {
+                Ok((index, sqlite)) if index != sqlite => {
+                    tracing::warn!(index, sqlite, "index consistency drift on startup")
+                }
+                Err(e) => tracing::warn!(%e, "index verification failed"),
+                _ => {}
+            }
+        }
+
+        // RFC-018 18.4 recovery: drain pending outbox events so documents
+        // fetched by a previous CLI run are searchable in this process.
+        // Best-effort; failures are retried by the gateway worker or next run.
+        let _ = runtime.process_outbox(200).await;
+
+        Ok(runtime)
+    }
+
+    /// Drops every query/retrieval cache after an index mutation.
+    async fn invalidate_caches(&self) {
+        self.singleflight.clear().await;
+        self.exact_cache.clear();
+        self.semantic_cache.clear();
+        self.canonical_cache.clear();
+        self.retrieval_cache.bump_index_version();
+        self.rerank_cache.clear();
     }
 
     /// Trace collector accessor (integration harness / diagnostics).
@@ -240,94 +616,146 @@ impl SearchOsRuntime {
     /// Local knowledge port accessor.
     pub fn local_port(&self) -> Arc<dyn searchos_decision::LocalKnowledgePort> {
         Arc::new(TantivyLocalPort {
-            index: Arc::clone(&self.tantivy),
+            index: Arc::clone(&self.fulltext),
         })
     }
 
-    /// Index consistency: tantivy chunk count vs sqlite chunk count
+    /// Index consistency: full-text index chunk count vs sqlite chunk count
     /// (RFC-007 7.8; drift → rebuild guidance).
     pub async fn index_consistency(&self) -> Result<(u64, u64), SearchOsError> {
-        let tantivy_count = searchos_retrieval::SearchIndex::count(self.tantivy.as_ref()).await?;
+        // For the embedded backend the searcher count is authoritative
+        // (survives restarts, RFC-018 18.4); remote backends report their
+        // server-side count through the same port.
+        let index_count = match &self.tantivy {
+            Some(t) => t.num_docs(),
+            None => self.fulltext.count().await?,
+        };
         let sqlite_chunks: i64 = self.sqlite.with_conn(|c| {
             c.query_row("SELECT count(*) FROM document_chunks", [], |r| r.get(0))
                 .map_err(|e| SearchOsError::Storage(e.to_string()))
         })?;
-        Ok((tantivy_count, sqlite_chunks as u64))
+        Ok((index_count, sqlite_chunks as u64))
     }
 
     /// Rebuilds the tantivy index from authoritative document data
     /// (ADR-022): SQLite chunk rows are the metadata; chunk *content* is
     /// reconstructed from the content-addressed object store and re-chunked
     /// deterministically (chunking is deterministic ⇒ identical hashes).
+    #[allow(clippy::type_complexity)]
     pub async fn rebuild_index(&self) -> Result<u64, SearchOsError> {
-        // (version_id, document_id, url, title, raw_content_ref) per version.
-        let versions: Vec<(String, String, String, Option<String>, String)> = self
-            .sqlite
-            .with_conn(|c| {
-                let mut stmt = c
-                    .prepare(
-                        "SELECT DISTINCT dv.id, dv.document_id, d.canonical_url, sr.title, dv.raw_content_ref
+        // One JOIN query for every live version + chunk (INV-30-21: no O(V)
+        // per-version SQL round-trips). SQLite remains the metadata source of
+        // truth; content is reconstructed from the object store.
+        #[derive(Debug)]
+        struct RebuildRow {
+            version_id: String,
+            document_id: String,
+            url: String,
+            title: Option<String>,
+            language: Option<String>,
+            workspace_id: String,
+            fetched_at: String,
+            chunk_id: String,
+            chunk_hash: String,
+            content_ref: String,
+            chunk_index: i64,
+        }
+        let rows: Vec<RebuildRow> = self.sqlite.with_conn(|c| {
+            let mut stmt = c
+                .prepare(
+                    "SELECT dv.id, dv.document_id, d.canonical_url, d.title, d.language,
+                                d.workspace_id, dv.fetched_at,
+                                dc.id, dc.chunk_hash, dc.content_ref, dc.chunk_index
                          FROM document_versions dv
                          JOIN documents d ON d.id = dv.document_id
-                         LEFT JOIN search_results sr ON sr.url = d.canonical_url
-                         WHERE d.status != 'deleted'",
-                    )
-                    .map_err(|e| SearchOsError::Storage(e.to_string()))?;
-                let rows = stmt
-                    .query_map([], |r| {
-                        Ok((
-                            r.get::<_, String>(0)?,
-                            r.get::<_, String>(1)?,
-                            r.get::<_, String>(2)?,
-                            r.get::<_, Option<String>>(3)?,
-                            r.get::<_, String>(4)?,
-                        ))
+                         JOIN document_chunks dc ON dc.version_id = dv.id
+                         WHERE d.status != 'deleted'
+                         ORDER BY dv.id, dc.chunk_index ASC",
+                )
+                .map_err(|e| SearchOsError::Storage(e.to_string()))?;
+            let rows = stmt
+                .query_map([], |r| {
+                    Ok(RebuildRow {
+                        version_id: r.get(0)?,
+                        document_id: r.get(1)?,
+                        url: r.get(2)?,
+                        title: r.get(3)?,
+                        language: r.get(4)?,
+                        workspace_id: r.get::<_, Option<String>>(5)?.unwrap_or_else(|| "*".into()),
+                        fetched_at: r.get(6)?,
+                        chunk_id: r.get(7)?,
+                        chunk_hash: r.get(8)?,
+                        content_ref: r.get(9)?,
+                        chunk_index: r.get(10)?,
                     })
-                    .map_err(|e| SearchOsError::Storage(e.to_string()))?;
-                rows.collect::<Result<Vec<_>, _>>()
-                    .map_err(|e| SearchOsError::Storage(e.to_string()))
-            })?;
+                })
+                .map_err(|e| SearchOsError::Storage(e.to_string()))?;
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(|e| SearchOsError::Storage(e.to_string()))
+        })?;
+
+        let mut order: Vec<String> = Vec::new();
+        let mut versions: HashMap<
+            String,
+            (
+                String,
+                String,
+                Option<String>,
+                Option<String>,
+                String,
+                String,
+            ),
+        > = HashMap::new();
+        let mut chunks_by_version: HashMap<String, Vec<(String, String, i64)>> = HashMap::new();
+        let mut content_ref_by_version: HashMap<String, String> = HashMap::new();
+        for row in rows {
+            if !versions.contains_key(&row.version_id) {
+                order.push(row.version_id.clone());
+                versions.insert(
+                    row.version_id.clone(),
+                    (
+                        row.document_id,
+                        row.url,
+                        row.title,
+                        row.language,
+                        row.workspace_id,
+                        row.fetched_at,
+                    ),
+                );
+            }
+            chunks_by_version
+                .entry(row.version_id.clone())
+                .or_default()
+                .push((row.chunk_id, row.chunk_hash, row.chunk_index));
+            content_ref_by_version
+                .entry(row.version_id)
+                .or_insert(row.content_ref);
+        }
 
         let mut docs: Vec<searchos_domain::retrieval::IndexedDocument> = Vec::new();
-        let now = chrono::Utc::now();
-        for (version_id, document_id, url, title, _raw_ref) in versions {
-            // Chunk metadata rows (stored ids + hashes).
-            let stored: Vec<(String, String, i64)> = self
-                .sqlite
-                .with_conn(|c| {
-                    let mut stmt = c
-                        .prepare("SELECT id, chunk_hash, chunk_index FROM document_chunks WHERE version_id = ?1 ORDER BY chunk_index ASC")
-                        .map_err(|e| SearchOsError::Storage(e.to_string()))?;
-                    let rows = stmt
-                        .query_map([&version_id], |r| {
-                            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?))
-                        })
-                        .map_err(|e| SearchOsError::Storage(e.to_string()))?;
-                    rows.collect::<Result<Vec<_>, _>>()
-                        .map_err(|e| SearchOsError::Storage(e.to_string()))
-                })?;
+        for version_id in order {
+            let (document_id, url, title, language, workspace_id, fetched_at) = versions
+                .get(&version_id)
+                .cloned()
+                .ok_or_else(|| SearchOsError::Internal("rebuild version grouping lost".into()))?;
+            let fetched_at = chrono::DateTime::parse_from_rfc3339(&fetched_at)
+                .map(|t| t.with_timezone(&chrono::Utc))
+                .unwrap_or_else(|_| chrono::Utc::now());
+            let stored = chunks_by_version
+                .get(&version_id)
+                .cloned()
+                .unwrap_or_default();
             if stored.is_empty() {
                 continue;
             }
-            // Chunk text lives in the content-addressed store under the
-            // version's raw ref (chunks store the same doc-level ref).
-            let chunk_ref: Option<String> = self
-                .sqlite
-                .with_conn(|c| {
-                    Ok(c.query_row(
-                        "SELECT content_ref FROM document_chunks WHERE version_id = ?1 LIMIT 1",
-                        [&version_id],
-                        |r| r.get::<_, String>(0),
-                    )
-                    .ok())
-                })
-                .unwrap_or(None);
-            let blob: Option<Vec<u8>> = match &chunk_ref {
-                Some(r) => searchos_storage_fs::ObjectStore::get(self.objects.as_ref(), r)
+            let content_ref = content_ref_by_version
+                .get(&version_id)
+                .cloned()
+                .ok_or_else(|| SearchOsError::Internal("rebuild content ref missing".into()))?;
+            let blob: Option<Vec<u8>> =
+                searchos_storage_fs::ObjectStore::get(self.objects.as_ref(), &content_ref)
                     .await
-                    .ok(),
-                None => None,
-            };
+                    .ok();
             let Some(blob) = blob else {
                 tracing::warn!(version = %version_id, "content blob missing; skipping in rebuild");
                 continue;
@@ -349,32 +777,53 @@ impl SearchOsRuntime {
                     title: title.clone(),
                     body: ch.text.clone(),
                     url: url.clone(),
-                    language: Some("en".into()),
-                    workspace_id: "*".into(),
-                    fetched_at: now,
+                    language: language.clone().or_else(|| Some("en".into())),
+                    workspace_id: workspace_id.clone(),
+                    fetched_at,
                 });
             }
         }
         let n = docs.len() as u64;
-        self.tantivy.rebuild_from(&docs).await?;
+        self.fulltext.rebuild_from(&docs).await?;
         Ok(n)
     }
 
-    /// Processes pending outbox rows into the tantivy index (RFC-006 6.7).
+    /// Processes pending outbox rows into the full-text index (RFC-006 6.7).
     /// Returns (processed, dead).
     pub async fn process_outbox(&self, limit: u32) -> Result<(u64, u64), SearchOsError> {
+        self.process_outbox_with_index(self.fulltext.clone(), limit)
+            .await
+    }
+
+    /// Outbox drain against an explicit index (tests / backend parity).
+    pub async fn process_outbox_with_index(
+        &self,
+        index: Arc<dyn SearchIndex>,
+        limit: u32,
+    ) -> Result<(u64, u64), SearchOsError> {
         let outbox = repos::OutboxRepo::new(&self.sqlite);
         let rows = outbox.pending(limit)?;
         let mut processed = 0u64;
         let mut dead = 0u64;
         for row in rows {
             let outcome = if row.operation == "delete" {
-                searchos_retrieval::SearchIndex::delete(
-                    self.tantivy.as_ref(),
-                    &searchos_domain::ids::DocumentId::new(row.entity_id.clone()),
-                )
-                .await
-                .is_ok()
+                // Delete outbox rows carry chunk_id, not document_id. Keep
+                // identifier space explicit and only mark processed when the
+                // index confirms deletion (INV-30-08).
+                let chunk_ids: Vec<searchos_domain::ids::ChunkId> = row
+                    .payload
+                    .as_deref()
+                    .and_then(|payload| serde_json::from_str::<serde_json::Value>(payload).ok())
+                    .and_then(|v| v.get("chunk_ids").cloned())
+                    .and_then(|v| serde_json::from_value(v).ok())
+                    .unwrap_or_else(|| {
+                        vec![searchos_domain::ids::ChunkId::new(row.entity_id.clone())]
+                    });
+                let deleted = index.delete_by_chunk_ids(&chunk_ids).await.is_ok();
+                if deleted {
+                    self.invalidate_caches().await;
+                }
+                deleted
             } else if row.operation == "refresh" {
                 // RFC-004 v1.1 10.1: re-fetch the existing source instead of
                 // deleting authoritative knowledge or buying a full search.
@@ -387,22 +836,48 @@ impl SearchOsRuntime {
                             .get("workspace_id")
                             .and_then(|x| x.as_str())
                             .unwrap_or("default");
-                        !url.is_empty()
-                            && self
-                                .application
-                                .fetch_service
-                                .fetch_and_persist(url, &searchos_domain::ids::WorkspaceId::new(ws))
-                                .await
-                                .is_ok()
+                        let workspace = searchos_domain::ids::WorkspaceId::new(ws);
+                        let fetched = self
+                            .application
+                            .fetch_service
+                            .fetch_and_persist(url, &workspace)
+                            .await;
+                        match fetched {
+                            Ok(doc) => {
+                                // A refresh only creates a new version when the
+                                // content actually changed. Unchanged content
+                                // is a metadata-only update, so no new index
+                                // payloads are enqueued (RFC-006 6.4) and the
+                                // existing index entries stay valid.
+                                if doc.changed {
+                                    // Refresh keeps the document row's owning
+                                    // workspace; the old version's chunks stay
+                                    // in the index until the rebuild worker
+                                    // prunes them, so index the new payloads
+                                    // directly and commit the writer.
+                                    let payloads = self
+                                        .application
+                                        .fetch_service
+                                        .reindex_current_version(&doc.document_id, &workspace)
+                                        .await
+                                        .unwrap_or_default();
+                                    for p in payloads {
+                                        let _ = index.index(p).await;
+                                    }
+                                    index.commit().await.is_ok()
+                                } else {
+                                    true
+                                }
+                            }
+                            Err(_) => false,
+                        }
                     }
                     Err(_) => false,
                 }
             } else if let Ok(payload) =
                 repos::parse_index_payload(row.payload.as_deref().unwrap_or(""))
             {
-                searchos_retrieval::SearchIndex::index(self.tantivy.as_ref(), payload)
-                    .await
-                    .is_ok()
+                index.index(payload).await.is_ok()
             } else {
                 false
             };
@@ -421,14 +896,14 @@ impl SearchOsRuntime {
                 }
             }
         }
-        self.tantivy.commit().await?;
+        index.commit().await?;
         Ok((processed, dead))
     }
 }
 
-/// LocalKnowledgePort over tantivy (application decision input).
+/// LocalKnowledgePort over the active full-text index (application decision input).
 struct TantivyLocalPort {
-    index: Arc<searchos_index_tantivy::TantivyIndex>,
+    index: Arc<dyn SearchIndex>,
 }
 
 #[async_trait::async_trait]
@@ -437,9 +912,10 @@ impl searchos_decision::LocalKnowledgePort for TantivyLocalPort {
         &self,
         text: &str,
         top_k: usize,
+        workspace_id: Option<&str>,
     ) -> Result<Vec<searchos_domain::retrieval::RetrievalCandidate>, SearchOsError> {
         let mut q = searchos_domain::retrieval::RetrievalQuery::new(text, top_k);
-        q.workspace_id = Some("*".into());
+        q.workspace_id = workspace_id.map(|s| s.to_string());
         SearchIndex::search(self.index.as_ref(), &q).await
     }
 
@@ -518,9 +994,31 @@ impl searchos_application::search_service::TaskRecorder for SqliteTaskRecorder {
         request_id: &str,
         task_id: &str,
         workspace_id: &str,
-    ) -> Result<(), SearchOsError> {
-        repos::IdempotencyRepo::new(&self.store).begin(request_id, task_id, workspace_id)?;
-        Ok(())
+    ) -> Result<IdempotencyClaim, SearchOsError> {
+        let repo = repos::IdempotencyRepo::new(&self.store);
+        if repo.begin(request_id, task_id, workspace_id)? {
+            return Ok(IdempotencyClaim::Claimed);
+        }
+        let Some(record) = repo.get(request_id)? else {
+            return Ok(IdempotencyClaim::Claimed);
+        };
+        match record.status.as_str() {
+            "completed" => {
+                let response = record
+                    .response_json
+                    .and_then(|s| serde_json::from_str(&s).ok())
+                    .unwrap_or(serde_json::Value::Null);
+                Ok(IdempotencyClaim::Completed { response })
+            }
+            "failed" => Ok(IdempotencyClaim::Failed),
+            _ => Ok(IdempotencyClaim::AlreadyRunning {
+                task_id: record.claim_owner_task_id.unwrap_or(record.task_id),
+            }),
+        }
+    }
+
+    async fn idempotency_status(&self, request_id: &str) -> Result<Option<String>, SearchOsError> {
+        repos::IdempotencyRepo::new(&self.store).status(request_id)
     }
 
     async fn idempotency_complete(
@@ -601,6 +1099,33 @@ struct SqliteCostSink {
     store: Arc<SqliteStore>,
 }
 
+/// Synchronous-capable budget settlement handle for RAII guards.
+struct SqliteBudgetSettler {
+    store: Arc<SqliteStore>,
+}
+
+#[async_trait::async_trait]
+impl BudgetSettler for SqliteBudgetSettler {
+    async fn settle(&self, task_id: &str, spent_micros: i64) -> Result<(), SearchOsError> {
+        self.settle_sync(task_id, spent_micros)
+    }
+    fn settle_sync(&self, task_id: &str, spent_micros: i64) -> Result<(), SearchOsError> {
+        repos::BudgetRepo::new(&self.store).settle(task_id, spent_micros)
+    }
+    async fn exceed(&self, task_id: &str) -> Result<(), SearchOsError> {
+        self.exceed_sync(task_id)
+    }
+    fn exceed_sync(&self, task_id: &str) -> Result<(), SearchOsError> {
+        repos::BudgetRepo::new(&self.store).mark_exceeded(task_id)
+    }
+    async fn release(&self, task_id: &str, spent_micros: i64) -> Result<(), SearchOsError> {
+        self.release_sync(task_id, spent_micros)
+    }
+    fn release_sync(&self, task_id: &str, spent_micros: i64) -> Result<(), SearchOsError> {
+        repos::BudgetRepo::new(&self.store).release(task_id, spent_micros)
+    }
+}
+
 #[async_trait::async_trait]
 impl searchos_application::search_service::CostEventSink for SqliteCostSink {
     async fn append(&self, ev: CostEvent) -> Result<(), SearchOsError> {
@@ -637,20 +1162,27 @@ impl searchos_application::search_service::CostEventSink for SqliteCostSink {
         )
     }
 
+    fn budget_guard_handle(&self) -> Arc<dyn BudgetSettler> {
+        Arc::new(SqliteBudgetSettler {
+            store: Arc::clone(&self.store),
+        })
+    }
+
     async fn reserve_budget(
         &self,
         task_id: &str,
         trace_id: &str,
         estimated_micros: i64,
         currency: &str,
-    ) -> Result<(), SearchOsError> {
+    ) -> Result<BudgetGuard, SearchOsError> {
         repos::BudgetRepo::new(&self.store).reserve(
             &searchos_domain::new_id("res"),
             task_id,
             Some(trace_id),
             estimated_micros,
             currency,
-        )
+        )?;
+        Ok(BudgetGuard::new(self.budget_guard_handle(), task_id))
     }
 
     async fn settle_budget(&self, task_id: &str, actual_micros: i64) -> Result<(), SearchOsError> {
@@ -776,7 +1308,15 @@ impl CostUseCase for SqliteCostSink {
     }
 
     async fn reservations(&self, limit: u32) -> Result<serde_json::Value, SearchOsError> {
-        let rows = repos::BudgetRepo::new(&self.store).list(limit)?;
+        self.reservations_scoped(limit, None).await
+    }
+
+    async fn reservations_scoped(
+        &self,
+        limit: u32,
+        workspace: Option<&str>,
+    ) -> Result<serde_json::Value, SearchOsError> {
+        let rows = repos::BudgetRepo::new(&self.store).list_scoped(limit, workspace)?;
         Ok(serde_json::json!({ "reservations": rows }))
     }
 
@@ -914,9 +1454,31 @@ fn dashboard_envelope(
     })
 }
 
-/// Memory service over sqlite.
+/// Memory service over sqlite, with semantic embedding + RRF retrieval
+/// (RFC-013 13.3, G-05).
 struct SqliteMemoryStore {
     store: Arc<SqliteStore>,
+    embedder: Arc<dyn EmbeddingProvider>,
+    embedding_provider: String,
+    embedding_model: String,
+    enabled: bool,
+}
+
+/// Normalizes obvious synonyms before feature hashing, so "asynchronous
+/// executor" can recall an "async runtime" memory entry.
+fn semantic_text(text: &str) -> String {
+    text.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .map(|t| match t {
+            "asynchronous" => "async",
+            "executor" | "scheduler" => "runtime",
+            "coroutines" | "coroutine" => "task",
+            "message" | "messages" => "msg",
+            other => other,
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[async_trait::async_trait]
@@ -930,6 +1492,9 @@ impl searchos_memory::MemoryService for SqliteMemoryStore {
         url: Option<&str>,
         tags: &[String],
     ) -> Result<MemoryEntry, SearchOsError> {
+        if !self.enabled {
+            return Err(SearchOsError::Policy("memory is disabled".into()));
+        }
         let entry = MemoryEntry {
             id: searchos_domain::ids::MemoryEntryId::generate(),
             namespace,
@@ -940,7 +1505,12 @@ impl searchos_memory::MemoryService for SqliteMemoryStore {
             tags: tags.to_vec(),
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
-            embedding_status: "none".into(),
+            embedding_status: format!(
+                "{}:{}:{}",
+                self.embedding_provider,
+                self.embedding_model,
+                self.embedder.model_id()
+            ),
         };
         repos::MemoryRepo::new(&self.store).insert(&entry)?;
         Ok(entry)
@@ -952,25 +1522,80 @@ impl searchos_memory::MemoryService for SqliteMemoryStore {
         reader: &searchos_domain::memory::MemoryNamespace,
         top_k: usize,
     ) -> Result<Vec<searchos_memory::MemorySearchHit>, SearchOsError> {
+        if !self.enabled {
+            return Ok(Vec::new());
+        }
         let entries = self.export_internal().await?;
-        let visible = searchos_memory::NamespaceGuard::visible_entries(&entries, reader);
-        // BM25-ish scoring: simple term overlap (memory search MVP; vector
-        // path arrives with semantic reuse phase).
-        let mut hits: Vec<searchos_memory::MemorySearchHit> = visible
+        let mut visible = searchos_memory::NamespaceGuard::visible_entries(&entries, reader);
+        // Freshness Check: default retention sweep excludes expired entries.
+        let stale: HashSet<String> = searchos_memory::NamespaceGuard::retention_sweep(
+            &visible,
+            &searchos_memory::RetentionPolicy::default(),
+            chrono::Utc::now(),
+        )
+        .into_iter()
+        .collect();
+        visible.retain(|e| !stale.contains(&e.id.to_string()));
+        if visible.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Metadata filter → lexical BM25-ish + vector → RRF fusion.
+        let normalized_query = semantic_text(query);
+        let query_terms: Vec<String> = normalized_query
+            .split_whitespace()
+            .map(|s| s.to_string())
+            .collect();
+        let entry_texts: Vec<String> = visible
+            .iter()
+            .map(|e| semantic_text(&format!("{} {}", e.title, e.content)))
+            .collect();
+        let mut texts = Vec::with_capacity(entry_texts.len() + 1);
+        texts.push(normalized_query.clone());
+        texts.extend(entry_texts.iter().cloned());
+        let mut vectors = self
+            .embedder
+            .embed(&texts)
+            .await
+            .map_err(|e| SearchOsError::Retrieval(format!("memory embedding: {e}")))?;
+        if vectors.len() != texts.len() {
+            return Err(SearchOsError::Retrieval(
+                "memory embedding count mismatch".into(),
+            ));
+        }
+        let query_vec = vectors.remove(0);
+        let mut lexical: Vec<(usize, f32)> = Vec::new();
+        let mut vector: Vec<(usize, f32)> = Vec::new();
+        for (idx, text) in entry_texts.iter().enumerate() {
+            let terms: Vec<&str> = text.split_whitespace().collect();
+            let overlap = query_terms
+                .iter()
+                .filter(|q| terms.contains(&q.as_str()))
+                .count();
+            let lexical_score = overlap as f32 / query_terms.len().max(1) as f32;
+            if lexical_score > 0.0 {
+                lexical.push((idx, lexical_score));
+            }
+            let vector_score = cosine_similarity(&query_vec, &vectors[idx]);
+            if vector_score > 0.02 {
+                vector.push((idx, vector_score));
+            }
+        }
+        lexical.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        vector.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        let mut rrf: HashMap<usize, f32> = HashMap::new();
+        for (rank, (idx, _)) in lexical.iter().enumerate() {
+            *rrf.entry(*idx).or_insert(0.0) += 1.0 / (60.0 + rank as f32 + 1.0);
+        }
+        for (rank, (idx, _)) in vector.iter().enumerate() {
+            *rrf.entry(*idx).or_insert(0.0) += 1.0 / (60.0 + rank as f32 + 1.0);
+        }
+        let mut hits: Vec<searchos_memory::MemorySearchHit> = rrf
             .into_iter()
-            .map(|e| {
-                let text = format!("{} {}", e.title, e.content).to_lowercase();
-                let query_lower = query.to_lowercase();
-                let terms: Vec<&str> = query_lower.split_whitespace().collect();
-                let hits = terms.iter().filter(|t| text.contains(*t)).count();
-                let score = if terms.is_empty() {
-                    0.0
-                } else {
-                    hits as f32 / terms.len() as f32
-                };
-                searchos_memory::MemorySearchHit { entry: e, score }
+            .map(|(idx, score)| searchos_memory::MemorySearchHit {
+                entry: visible[idx].clone(),
+                score,
             })
-            .filter(|h| h.score > 0.0)
             .collect();
         hits.sort_by(|a, b| {
             b.score
@@ -997,6 +1622,9 @@ impl searchos_memory::MemoryService for SqliteMemoryStore {
     }
 
     async fn stats(&self) -> Result<searchos_memory::MemoryStats, SearchOsError> {
+        if !self.enabled {
+            return Ok(searchos_memory::MemoryStats::default());
+        }
         let entries = self.export_internal().await?;
         let mut by_ws = std::collections::HashMap::new();
         for e in &entries {
@@ -1023,6 +1651,64 @@ impl SqliteMemoryStore {
     }
 }
 
+/// IngestJobPort over sqlite (RFC-029 7): batch / directory job tracking.
+struct SqliteIngestJobPort {
+    store: Arc<SqliteStore>,
+}
+
+#[async_trait::async_trait]
+impl searchos_application::ingest_service::IngestJobPort for SqliteIngestJobPort {
+    async fn create(
+        &self,
+        id: &str,
+        workspace_id: &str,
+        source_type: &str,
+        total_items: i64,
+    ) -> Result<(), SearchOsError> {
+        repos::IngestJobRepo::new(&self.store).create(id, workspace_id, source_type, total_items)
+    }
+
+    async fn mark_running(&self, id: &str) -> Result<(), SearchOsError> {
+        repos::IngestJobRepo::new(&self.store).mark_running(id)
+    }
+
+    async fn finish(
+        &self,
+        id: &str,
+        state: &str,
+        ok_items: i64,
+        failed_items: i64,
+        error_detail: Option<&str>,
+    ) -> Result<(), SearchOsError> {
+        repos::IngestJobRepo::new(&self.store).finish(
+            id,
+            state,
+            ok_items,
+            failed_items,
+            error_detail,
+        )
+    }
+
+    async fn insert_item(
+        &self,
+        id: &str,
+        job_id: &str,
+        source_key: &str,
+        state: &str,
+        document_id: Option<&str>,
+        error_detail: Option<&str>,
+    ) -> Result<(), SearchOsError> {
+        repos::IngestJobRepo::new(&self.store).insert_item(
+            id,
+            job_id,
+            source_key,
+            state,
+            document_id,
+            error_detail,
+        )
+    }
+}
+
 /// DocumentPort over sqlite repos + object store.
 struct SqliteDocumentPort {
     store: Arc<SqliteStore>,
@@ -1039,18 +1725,27 @@ impl DocumentPort for SqliteDocumentPort {
         repos::DocumentRepo::new(&self.store).find_by_url(canonical_url)
     }
 
+    async fn find_by_id(
+        &self,
+        id: &searchos_domain::ids::DocumentId,
+    ) -> Result<Option<searchos_domain::document::Document>, SearchOsError> {
+        repos::DocumentRepo::new(&self.store).get(id)
+    }
+
     async fn save_versioned(
         &self,
         document: &searchos_domain::document::Document,
         version: &searchos_domain::document::DocumentVersion,
         chunks: &[searchos_domain::document::DocumentChunk],
         index_payloads: &[searchos_domain::retrieval::IndexedDocument],
+        workspace_id: &searchos_domain::ids::WorkspaceId,
     ) -> Result<searchos_document::VersionDiff, SearchOsError> {
         repos::DocumentRepo::new(&self.store).save_versioned(
             document,
             version,
             chunks,
             index_payloads,
+            workspace_id,
         )
     }
 
@@ -1059,5 +1754,61 @@ impl DocumentPort for SqliteDocumentPort {
         id: &searchos_domain::ids::DocumentId,
     ) -> Result<Option<searchos_domain::document::DocumentVersion>, SearchOsError> {
         repos::DocumentRepo::new(&self.store).get_current_version(id)
+    }
+
+    async fn list_chunks(
+        &self,
+        version_id: &searchos_domain::ids::DocumentVersionId,
+    ) -> Result<Vec<searchos_domain::document::DocumentChunk>, SearchOsError> {
+        repos::DocumentRepo::new(&self.store).list_chunks(version_id)
+    }
+
+    async fn reindex_current_version(
+        &self,
+        document_id: &searchos_domain::ids::DocumentId,
+        workspace_id: &searchos_domain::ids::WorkspaceId,
+    ) -> Result<Vec<searchos_domain::retrieval::IndexedDocument>, SearchOsError> {
+        let repo = repos::DocumentRepo::new(&self.store);
+        let Some(doc) = repo.get(document_id)? else {
+            return Ok(Vec::new());
+        };
+        let Some(version_id) = doc.current_version_id.clone() else {
+            return Ok(Vec::new());
+        };
+        let stored = repo.list_chunks(&version_id)?;
+        if stored.is_empty() {
+            return Ok(Vec::new());
+        }
+        let Some(first) = stored.first() else {
+            return Ok(Vec::new());
+        };
+        let Some(blob) =
+            searchos_storage_fs::ObjectStore::get(self.objects.as_ref(), &first.content_ref)
+                .await
+                .ok()
+        else {
+            return Ok(Vec::new());
+        };
+        let text = String::from_utf8_lossy(&blob).to_string();
+        let chunks = searchos_document::chunk_text(&text, &Default::default());
+        let mut payloads = Vec::with_capacity(stored.len());
+        for (i, row) in stored.iter().enumerate() {
+            let Some(ch) = chunks.get(i) else { break };
+            if ch.hash != row.chunk_hash {
+                continue;
+            }
+            payloads.push(searchos_domain::retrieval::IndexedDocument {
+                chunk_id: row.id.clone(),
+                document_id: doc.id.clone(),
+                version_id: version_id.clone(),
+                title: doc.title.clone(),
+                body: ch.text.clone(),
+                url: doc.canonical_url.clone(),
+                language: doc.language.clone(),
+                workspace_id: workspace_id.to_string(),
+                fetched_at: chrono::Utc::now(),
+            });
+        }
+        Ok(payloads)
     }
 }

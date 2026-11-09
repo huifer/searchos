@@ -10,9 +10,12 @@ description = "Cross-crate integration suite: local-knowledge reuse, decision pa
 serde_json = { workspace = true }
 tokio = { workspace = true }
 tempfile = "3"
+async-trait = { workspace = true }
+axum = { workspace = true }
 chrono = { workspace = true }
 searchos-domain = { workspace = true }
 searchos-policy = { workspace = true }
+searchos-planner = { workspace = true }
 searchos-query = { workspace = true }
 searchos-decision = { workspace = true }
 searchos-cost = { workspace = true }
@@ -26,6 +29,7 @@ searchos-storage-sqlite = { workspace = true }
 searchos-document = { workspace = true }
 searchos-storage-fs = { workspace = true }
 searchos-index-tantivy = { workspace = true }
+searchos-vector-lancedb = { workspace = true }
 searchos-interface-http = { workspace = true }
 searchos-interface-mcp = { workspace = true }
 searchos-observability = { workspace = true }

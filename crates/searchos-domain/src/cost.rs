@@ -125,6 +125,9 @@ pub enum CostOperation {
     StorageRead,
     IndexMaintenance,
     NetworkTransfer,
+    /// Auditable provider attempt that produced no billable result
+    /// (Part 30 INV-30-06).
+    ProviderAttempt,
 }
 
 impl CostOperation {
@@ -144,6 +147,7 @@ impl CostOperation {
             Self::StorageRead => "storage_read",
             Self::IndexMaintenance => "index_maintenance",
             Self::NetworkTransfer => "network_transfer",
+            Self::ProviderAttempt => "provider_attempt",
         }
     }
 
@@ -163,8 +167,34 @@ impl CostOperation {
             "storage_read" => Self::StorageRead,
             "index_maintenance" => Self::IndexMaintenance,
             "network_transfer" => Self::NetworkTransfer,
+            "provider_attempt" => Self::ProviderAttempt,
             _ => return None,
         })
+    }
+}
+
+/// Outcome of a cost-bearing attempt (Part 30 §30.5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CostAttemptStatus {
+    #[default]
+    Succeeded,
+    Failed,
+}
+
+impl CostAttemptStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+        }
+    }
+
+    pub fn parse(s: &str) -> Self {
+        match s.to_ascii_lowercase().as_str() {
+            "failed" => Self::Failed,
+            _ => Self::Succeeded,
+        }
     }
 }
 
@@ -190,6 +220,12 @@ pub struct CostEvent {
     pub shared: bool,
     /// Pricing model version used for the estimate (RFC-008 8.4).
     pub pricing_model_version: String,
+    /// Whether this attempt succeeded; failed attempts have zero amount.
+    #[serde(default)]
+    pub status: CostAttemptStatus,
+    /// Stable error code for a failed attempt, never a secret or raw body.
+    #[serde(default)]
+    pub error_code: Option<String>,
 }
 
 /// Filter for ledger summarization (RFC-008 8.7).
@@ -287,6 +323,7 @@ mod tests {
             CostOperation::WebSearch,
             CostOperation::LocalCompute,
             CostOperation::NetworkTransfer,
+            CostOperation::ProviderAttempt,
         ] {
             assert_eq!(CostOperation::parse(op.as_str()), Some(op));
         }

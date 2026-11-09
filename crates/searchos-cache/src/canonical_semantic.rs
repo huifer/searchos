@@ -53,6 +53,11 @@ impl CanonicalQueryCache {
         self.entries.write().unwrap().insert(k, (candidates, meta));
     }
 
+    /// Invalidates everything (policy version bump / index change).
+    pub fn clear(&self) {
+        self.entries.write().unwrap().clear();
+    }
+
     /// Gets candidates when the entry is fresh and the policy version matches.
     pub fn get(
         &self,
@@ -71,34 +76,60 @@ impl CanonicalQueryCache {
 }
 
 /// Compatibility dimensions a semantic reuse must satisfy (RFC-007 7.4).
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SemanticCompatibility {
     pub intents: Vec<SearchIntent>,
     pub language: String,
     pub workspace_scope: String,
     pub freshness_policy: String,
     pub source_policy: String,
+    /// Effective freshness requirement (RFC-007 7.4), not just policy version.
+    #[serde(default)]
+    pub freshness_requirement: String,
+    /// Search mode: LocalOnly must never reuse external-acquired evidence.
+    #[serde(default)]
+    pub mode: String,
+    /// Minimum coverage threshold; reuse must be at least as strong.
+    #[serde(default)]
+    pub coverage_requirement: f32,
+    /// Validity / quality status of the cached answer.
+    #[serde(default)]
+    pub validity_status: String,
+}
+
+impl Default for SemanticCompatibility {
+    fn default() -> Self {
+        Self {
+            intents: vec![SearchIntent::Unknown],
+            language: "en".into(),
+            workspace_scope: "default".into(),
+            freshness_policy: "recent".into(),
+            source_policy: "trusted".into(),
+            freshness_requirement: "any".into(),
+            mode: "local_first".into(),
+            coverage_requirement: 0.6,
+            validity_status: "passed".into(),
+        }
+    }
 }
 
 impl SemanticCompatibility {
-    /// Whether reuse is permitted: intent compatible (overlap), language and
-    /// workspace compatible, and quality constraints (freshness/source)
-    /// compatible. Vector similarity is NOT checked here — this gate is
-    /// called *after* the caller found similar vectors.
+    /// Seven compatibility gates: intent, freshness, source, language,
+    /// workspace, coverage and validity. Vector similarity is only a recall
+    /// candidate; it never waives one of these gates.
     pub fn allows_reuse(&self, other: &Self) -> bool {
-        if self.language != other.language || self.workspace_scope != other.workspace_scope {
-            return false;
-        }
-        if self.freshness_policy != other.freshness_policy
-            || self.source_policy != other.source_policy
-        {
-            return false;
-        }
-        // Intent compatibility: any overlap between the two sets (both
-        // Unknown → treat as compatible by content similarity only).
-        self.intents.iter().any(|i| other.intents.contains(i))
+        let intent_ok = self.intents.iter().any(|i| other.intents.contains(i))
             || self.intents.iter().all(|i| *i == SearchIntent::Unknown)
-            || other.intents.iter().all(|i| *i == SearchIntent::Unknown)
+            || other.intents.iter().all(|i| *i == SearchIntent::Unknown);
+        intent_ok
+            && self.language == other.language
+            && self.workspace_scope == other.workspace_scope
+            && self.freshness_policy == other.freshness_policy
+            && self.freshness_requirement == other.freshness_requirement
+            && self.source_policy == other.source_policy
+            && self.mode == other.mode
+            && self.coverage_requirement >= other.coverage_requirement
+            && self.validity_status == other.validity_status
     }
 }
 
@@ -192,6 +223,8 @@ mod tests {
             fetched_at: Utc::now(),
             vector_score: None,
             bm25_score: None,
+            workspace_id: None,
+            language: None,
         }
     }
 
@@ -201,7 +234,11 @@ mod tests {
             language: "en".into(),
             workspace_scope: ws.into(),
             freshness_policy: fresh.into(),
-            source_policy: "trusted".into(),
+            freshness_requirement: fresh.into(),
+            mode: "local_first".into(),
+            coverage_requirement: 0.6,
+            validity_status: "passed".into(),
+            ..Default::default()
         }
     }
 
@@ -250,6 +287,24 @@ mod tests {
             ..compat("ws", "recent")
         };
         assert!(!a.allows_reuse(&c), "disjoint intents deny reuse");
+    }
+
+    /// G-02 / RFC-007 7.4: all seven compatibility dimensions are enforced.
+    #[test]
+    fn semantic_reuse_checks_all_seven_dimensions() {
+        let c = SemanticCache::new(600);
+        let stored = compat("ws", "recent");
+        c.put("bucket", vec![cand("a")], stored.clone(), "1");
+        assert!(c.get("bucket", &stored, "1").is_some());
+        let mut different = stored.clone();
+        different.mode = "local_only".into();
+        assert!(c.get("bucket", &different, "1").is_none());
+        let mut stricter = stored.clone();
+        stricter.coverage_requirement = 0.9;
+        assert!(c.get("bucket", &stricter, "1").is_none());
+        let mut invalid = stored.clone();
+        invalid.validity_status = "failed".into();
+        assert!(c.get("bucket", &invalid, "1").is_none());
     }
 
     #[test]

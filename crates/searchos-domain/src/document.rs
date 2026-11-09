@@ -15,7 +15,21 @@ pub enum DocumentStatus {
     Deleted,
 }
 
+/// Default [`Document::source_type`] for content fetched from a URL.
+fn default_source_type() -> String {
+    "web".to_string()
+}
+
+fn default_workspace_id() -> String {
+    "default".to_string()
+}
+
 /// A logical document identified by canonical URL (RFC-006 6.3).
+///
+/// `source_type` distinguishes URL-fetched content (`"web"`) from locally
+/// ingested content (`"local_text"` / `"local_file"` / `local_directory"`,
+/// RFC-029). Local documents use the canonical URI scheme
+/// `searchos-local://<workspace>/<source_key>`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Document {
     pub id: DocumentId,
@@ -24,8 +38,54 @@ pub struct Document {
     pub current_version_id: Option<DocumentVersionId>,
     pub content_type: String,
     pub language: Option<String>,
+    #[serde(default = "default_source_type")]
+    pub source_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Owning workspace row (RFC-017/RFC-029). Persisted on
+    /// `documents.workspace_id` and used by refresh/rebuild paths so they
+    /// never move a document into another workspace.
+    #[serde(default = "default_workspace_id")]
+    pub workspace_id: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+impl Document {
+    /// Canonical URI for a locally ingested source (RFC-029 5.1).
+    pub fn local_canonical_uri(workspace_id: &str, source_key: &str) -> String {
+        format!(
+            "searchos-local://{workspace_id}/{}",
+            normalize_source_key(source_key)
+        )
+    }
+
+    /// Whether this document came from local ingestion.
+    pub fn is_local(&self) -> bool {
+        self.source_type.starts_with("local_")
+            || self.canonical_url.starts_with("searchos-local://")
+    }
+}
+
+/// Normalizes a caller-supplied `source_key` (RFC-029 5.1): trimmed,
+/// lower-cased, path separators collapsed to `/`, leading `/` removed.
+pub fn normalize_source_key(key: &str) -> String {
+    let trimmed = key.trim();
+    let lowered = trimmed.to_lowercase();
+    let mut out = String::with_capacity(lowered.len());
+    let mut last_slash = false;
+    for ch in lowered.chars() {
+        if ch == '\\' || ch == '/' {
+            if !last_slash {
+                out.push('/');
+            }
+            last_slash = true;
+        } else {
+            out.push(ch);
+            last_slash = false;
+        }
+    }
+    out.trim_matches('/').to_string()
 }
 
 /// An immutable content version of a document (RFC-006 6.3/6.4).
@@ -81,5 +141,38 @@ mod tests {
             serde_json::to_string(&DocumentStatus::Normalized).unwrap(),
             "\"normalized\""
         );
+    }
+
+    #[test]
+    fn local_source_key_is_normalized() {
+        assert_eq!(
+            normalize_source_key("  Notes/Alpha\\Beta  "),
+            "notes/alpha/beta"
+        );
+        assert_eq!(normalize_source_key("/lead//slash/"), "lead/slash");
+    }
+
+    #[test]
+    fn local_canonical_uri_is_stable() {
+        let a = Document::local_canonical_uri("ws", "Notes/Alpha");
+        let b = Document::local_canonical_uri("ws", "notes/alpha");
+        assert_eq!(a, b);
+        assert!(a.starts_with("searchos-local://ws/"));
+    }
+
+    #[test]
+    fn document_defaults_to_web_source_type() {
+        // Backward compatible: JSON without source_type deserializes as web.
+        let json = r#"{
+            "id": "doc_1", "source_id": "src_1",
+            "canonical_url": "https://example.com",
+            "current_version_id": null, "content_type": "text/html",
+            "language": null, "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z"
+        }"#;
+        let doc: Document = serde_json::from_str(json).unwrap();
+        assert_eq!(doc.source_type, "web");
+        assert!(doc.title.is_none());
+        assert!(!doc.is_local());
     }
 }

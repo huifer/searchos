@@ -22,14 +22,15 @@ pub mod response;
 pub mod retrieval;
 
 pub use cost::{
-    CostEvent, CostOperation, CostQuery, CostSummary, Money, ReuseCostViews, SavingsReport,
+    CostAttemptStatus, CostEvent, CostOperation, CostQuery, CostSummary, Money, ReuseCostViews,
+    SavingsReport,
 };
 pub use decision::{
     CoverageGap, DecisionReason, DecisionStageTrace, DecisionTrace, GapPriority,
     GapResolutionStrategy, RequirementStatus, SearchDecision,
 };
 pub use document::{Document, DocumentChunk, DocumentStatus, DocumentVersion};
-pub use error::{SearchOsError, ValidationError};
+pub use error::{SearchOsError, ValidationError, TRANSPORT_ERROR_CODES};
 pub use evidence::{Evidence, Provenance, ProvenanceOrigin, ReliabilityLevel};
 pub use ids::*;
 pub use memory::{MemoryEntry, MemoryNamespace, SharingPolicy};

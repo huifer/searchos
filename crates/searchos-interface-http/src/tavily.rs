@@ -27,6 +27,11 @@ pub struct TavilySearchRequest {
     pub include_raw_content: Option<bool>,
     #[serde(default)]
     pub include_answer: Option<bool>,
+    /// Optional workspace override. Tavily clients normally get the
+    /// dedicated `tavily` workspace; token-bound deployments can supply
+    /// their own workspace explicitly.
+    #[serde(default)]
+    pub workspace_id: Option<String>,
 }
 
 /// Tavily-compatible result item.
@@ -79,13 +84,22 @@ impl TavilySearchRequest {
             self.query.clone(),
             profile,
             mode,
-            WorkspaceId::new("tavily"),
+            WorkspaceId::new(
+                self.workspace_id
+                    .as_deref()
+                    .filter(|w| !w.trim().is_empty())
+                    .unwrap_or("tavily"),
+            ),
         )
         .map_err(|e| e.to_string())?;
         if let Some(mr) = self.max_results {
-            // max_results affects result trimming, not external query count.
-            if mr > 20 {
-                unsupported.push("max_results > 20 clamped".into());
+            // One shared cap across CLI, HTTP and MCP (INV-30-19).
+            req = req.with_max_results(mr);
+            if mr > searchos_domain::request::MAX_RESULTS_LIMIT {
+                unsupported.push(format!(
+                    "max_results > {} clamped",
+                    searchos_domain::request::MAX_RESULTS_LIMIT
+                ));
             }
         }
         if let Some(d) = self.days {
@@ -97,9 +111,12 @@ impl TavilySearchRequest {
         Ok((req, unsupported))
     }
 
-    /// Requested result cap (default 5, capped at 20).
+    /// Requested result cap (shared default 5, shared max 100).
     pub fn effective_max_results(&self) -> usize {
-        self.max_results.unwrap_or(5).clamp(1, 20) as usize
+        searchos_domain::request::clamp_max_results(
+            self.max_results
+                .unwrap_or(searchos_domain::request::DEFAULT_MAX_RESULTS),
+        ) as usize
     }
 }
 
@@ -172,6 +189,23 @@ mod tests {
         };
         let (_req, unsupported) = dto.to_domain().unwrap();
         assert!(unsupported.iter().any(|u| u.contains("include_answer")));
+    }
+
+    #[test]
+    fn workspace_override_is_respected() {
+        let dto = TavilySearchRequest {
+            query: "q".into(),
+            workspace_id: Some("ws_bound".into()),
+            ..Default::default()
+        };
+        let (req, _) = dto.to_domain().unwrap();
+        assert_eq!(req.workspace_id.as_str(), "ws_bound");
+        let default_dto = TavilySearchRequest {
+            query: "q".into(),
+            ..Default::default()
+        };
+        let (default_req, _) = default_dto.to_domain().unwrap();
+        assert_eq!(default_req.workspace_id.as_str(), "tavily");
     }
 
     #[test]

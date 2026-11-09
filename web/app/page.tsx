@@ -2,14 +2,24 @@
 
 import { useCallback, useMemo, useState } from "react";
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import { Download } from "lucide-react";
 
-import {
-  BreakdownBars,
-  DistributionDonut,
-  MetricCard,
-  TimeSeriesChart,
-} from "@/components/analytics-charts";
+import { MetricCard } from "@/components/kpi";
+import { Skeleton as ShadcnSkeleton } from "@/components/ui/skeleton";
+
+const TimeSeriesChart = dynamic(
+  () => import("@/components/analytics-charts").then((m) => m.TimeSeriesChart),
+  { ssr: false, loading: () => <ShadcnSkeleton className="h-[220px] w-full" /> },
+);
+const DistributionDonut = dynamic(
+  () => import("@/components/analytics-charts").then((m) => m.DistributionDonut),
+  { ssr: false, loading: () => <ShadcnSkeleton className="h-[200px] w-full" /> },
+);
+const BreakdownBars = dynamic(
+  () => import("@/components/analytics-charts").then((m) => m.BreakdownBars),
+  { ssr: false, loading: () => <ShadcnSkeleton className="h-[220px] w-full" /> },
+);
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";

@@ -12,7 +12,6 @@ export const SITE = {
     "Analytics, decision traces, evidence and cost telemetry for the SearchOS local runtime.",
   url: process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3100",
   locale: "en_US",
-  alternateLocale: "zh_CN",
 } as const;
 
 export const OG_IMAGES = {
@@ -143,7 +142,6 @@ export function pageMetadata(page: PageSeo): Metadata {
       type: "website",
       siteName: SITE.name,
       locale: SITE.locale,
-      alternateLocale: [SITE.alternateLocale],
       images: [
         {
           url: OG_IMAGES.en.url,
@@ -178,7 +176,6 @@ export function metaTagsFor(page: PageSeo): MetaTag[] {
     { property: "og:image:height", content: String(OG_IMAGES.en.height), note: "Aspect hint" },
     { property: "og:image:alt", content: OG_IMAGES.en.alt, note: "Accessibility text" },
     { property: "og:locale", content: SITE.locale, note: "Primary locale" },
-    { property: "og:locale:alternate", content: SITE.alternateLocale, note: "Alternate locale" },
     { property: "twitter:card", content: "summary_large_image", note: "Large card layout" },
     { property: "twitter:title", content: pageTitle(page), note: "Card headline" },
     { property: "twitter:description", content: page.description, note: "Card body" },

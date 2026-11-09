@@ -19,6 +19,7 @@ members = [
     "crates/searchos-extension",
     "crates/searchos-storage-sqlite",
     "crates/searchos-index-tantivy",
+    "crates/searchos-index-remote",
     "crates/searchos-vector-lancedb",
     "crates/searchos-storage-fs",
     "crates/searchos-interface-cli",
@@ -56,6 +57,7 @@ searchos-crawler = { path = "crates/searchos-crawler" }
 searchos-extension = { path = "crates/searchos-extension" }
 searchos-storage-sqlite = { path = "crates/searchos-storage-sqlite" }
 searchos-index-tantivy = { path = "crates/searchos-index-tantivy" }
+searchos-index-remote = { path = "crates/searchos-index-remote" }
 searchos-vector-lancedb = { path = "crates/searchos-vector-lancedb" }
 searchos-storage-fs = { path = "crates/searchos-storage-fs" }
 searchos-observability = { path = "crates/searchos-observability" }
@@ -68,11 +70,12 @@ searchos-interface-mcp = { path = "crates/searchos-interface-mcp" }
 
 # Async runtime & HTTP (RFC Part 22: Runtime = Tokio, Gateway = Axum)
 tokio = { version = "1", features = ["full"] }
-axum = "0.8"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+axum = { version = "0.8", features = ["multipart"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 
 # CLI (RFC Part 22: CLI = Clap)
 clap = { version = "4", features = ["derive", "env"] }
+clap_complete = "4"
 
 # Serialization (RFC Part 22: Serde)
 serde = { version = "1", features = ["derive"] }
@@ -94,6 +97,14 @@ hex = "0.4"
 rusqlite = { version = "0.41", features = ["bundled"] }
 tantivy = "0.27"
 lancedb = "0.41"
+
+# Remote retrieval backends (user-selectable via storage.fulltext)
+sqlx = { version = "0.9", default-features = false, features = [
+    "postgres",
+    "mysql",
+    "runtime-tokio",
+    "tls-rustls-ring-webpki",
+] }
 
 # Retrieval text processing
 scraper = "0.20"

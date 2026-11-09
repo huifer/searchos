@@ -12,6 +12,7 @@ chrono = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 serde_json = { workspace = true }
+url = { workspace = true }
 searchos-domain = { workspace = true }
 
 [dev-dependencies]

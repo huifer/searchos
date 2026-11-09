@@ -11,5 +11,5 @@ pub mod status;
 
 pub use extract_rules::{DeclarativeExtractor, ExtractRule, ExtractorsSpec};
 pub use manifest::{CrawlerManifest, CrawlerType, MatchSpec, RuntimeSpec};
-pub use registry::{CrawlerRegistry, SelectedCrawler};
+pub use registry::{CrawlerRegistry, DiscoveryReport, SelectedCrawler};
 pub use status::{CrawlerErrorKind, CrawlerStatus, FailureTracker};

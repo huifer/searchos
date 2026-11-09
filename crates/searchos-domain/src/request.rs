@@ -27,6 +27,25 @@ impl SearchMode {
         }
     }
 
+    /// Parses one interface-level mode spelling.
+    ///
+    /// All interfaces accept the canonical snake_case name plus the
+    /// documented kebab-case alias so CLI examples, MCP schemas, and HTTP
+    /// clients behave identically. Anything else is a validation error —
+    /// never a silent fallback to an external-capable mode.
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "local_only" | "local-only" => Ok(Self::LocalOnly),
+            "local_first" | "local-first" => Ok(Self::LocalFirst),
+            "external_first" | "external-first" => Ok(Self::ExternalFirst),
+            "external_only" | "external-only" => Ok(Self::ExternalOnly),
+            "hybrid" => Ok(Self::Hybrid),
+            other => Err(format!(
+                "unknown mode {other}; use local_only|local_first|external_first|external_only|hybrid"
+            )),
+        }
+    }
+
     /// Whether local retrieval is permitted under this mode.
     pub fn allows_local(&self) -> bool {
         matches!(self, Self::LocalOnly | Self::LocalFirst | Self::Hybrid)
@@ -47,6 +66,19 @@ impl fmt::Display for SearchMode {
     }
 }
 
+/// Shared result-limit contract for CLI, HTTP and MCP (INV-30-19).
+pub const DEFAULT_MAX_RESULTS: u32 = 5;
+pub const MAX_RESULTS_LIMIT: u32 = 100;
+
+/// Clamps a transport result limit into the one shared range.
+pub fn clamp_max_results(value: u32) -> u32 {
+    value.clamp(1, MAX_RESULTS_LIMIT)
+}
+
+fn default_max_results() -> u32 {
+    DEFAULT_MAX_RESULTS
+}
+
 /// Freshness requirement attached to a request (RFC-002 2.3).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -55,6 +87,19 @@ pub enum FreshnessRequirement {
     Recent,
     Strict,
     MaximumAgeSeconds(u64),
+}
+
+impl FreshnessRequirement {
+    /// Stable cache/trace label; the numeric maximum-age variant carries its
+    /// value so differently bounded requests never share a cache identity.
+    pub fn cache_label(&self) -> String {
+        match self {
+            Self::Any => "any".into(),
+            Self::Recent => "recent".into(),
+            Self::Strict => "strict".into(),
+            Self::MaximumAgeSeconds(seconds) => format!("max_age_{seconds}"),
+        }
+    }
 }
 
 /// Budget bounds for one search task (RFC-009 9.6).
@@ -143,6 +188,10 @@ pub struct SearchRequest {
     pub agent_id: Option<AgentId>,
     pub budget: SearchBudget,
     pub constraints: SearchConstraints,
+    /// Shared output cap. Every transport writes this field; the service
+    /// enforces it before the response is returned (INV-30-19).
+    #[serde(default = "default_max_results")]
+    pub max_results: u32,
 }
 
 impl SearchRequest {
@@ -155,6 +204,12 @@ impl SearchRequest {
         if !id.trim().is_empty() {
             self.request_id = crate::ids::RequestId::new(id);
         }
+        self
+    }
+
+    /// Applies the shared transport result cap.
+    pub fn with_max_results(mut self, max_results: u32) -> Self {
+        self.max_results = clamp_max_results(max_results);
         self
     }
 
@@ -181,6 +236,7 @@ impl SearchRequest {
             agent_id: None,
             budget: SearchBudget::default(),
             constraints: SearchConstraints::default(),
+            max_results: DEFAULT_MAX_RESULTS,
         })
     }
 }
@@ -198,6 +254,27 @@ mod tests {
         assert!(SearchMode::Hybrid.allows_local() && SearchMode::Hybrid.allows_external());
     }
 
+    /// P0/P2 alignment: every interface must accept the same mode spellings
+    /// and reject unknown modes instead of silently selecting one.
+    #[test]
+    fn mode_parsing_is_strict_and_shared() {
+        assert_eq!(
+            SearchMode::parse("local_only").unwrap(),
+            SearchMode::LocalOnly
+        );
+        assert_eq!(
+            SearchMode::parse("local-only").unwrap(),
+            SearchMode::LocalOnly
+        );
+        assert_eq!(
+            SearchMode::parse("external_first").unwrap(),
+            SearchMode::ExternalFirst
+        );
+        for bogus in ["LOCAL_ONLY", "localOnly", "", "hybrid "] {
+            assert!(SearchMode::parse(bogus).is_err(), "accepted {bogus:?}");
+        }
+    }
+
     #[test]
     fn empty_query_rejected() {
         let err = SearchRequest::new(
@@ -207,6 +284,23 @@ mod tests {
             WorkspaceId::new("ws"),
         );
         assert!(err.is_err());
+    }
+
+    #[test]
+    fn transports_share_one_result_limit_contract() {
+        assert_eq!(DEFAULT_MAX_RESULTS, 5);
+        assert_eq!(clamp_max_results(0), 1);
+        assert_eq!(clamp_max_results(17), 17);
+        assert_eq!(clamp_max_results(500), MAX_RESULTS_LIMIT);
+        let req = SearchRequest::new(
+            "q",
+            ProfileId::general(),
+            SearchMode::LocalFirst,
+            WorkspaceId::new("ws"),
+        )
+        .unwrap()
+        .with_max_results(500);
+        assert_eq!(req.max_results, MAX_RESULTS_LIMIT);
     }
 
     #[test]

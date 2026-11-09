@@ -14,7 +14,6 @@ use searchos_domain::cost::{CostEvent, CostOperation, CostQuery, Money};
 use searchos_domain::ids::{ProfileId, TraceId, WorkspaceId};
 use searchos_domain::request::{FreshnessRequirement, SearchMode, SearchRequest};
 use searchos_domain::retrieval::RetrievalQuery;
-use searchos_retrieval::SearchIndex;
 
 /// Offline in-memory harness over real adapters.
 struct Harness {
@@ -51,8 +50,8 @@ impl Harness {
             workspace_id: "*".into(),
             fetched_at: chrono::Utc::now(),
         };
-        self.runtime.tantivy.index(doc).await.unwrap();
-        self.runtime.tantivy.commit().await.unwrap();
+        self.runtime.fulltext.index(doc).await.unwrap();
+        self.runtime.fulltext.commit().await.unwrap();
     }
 }
 
@@ -63,7 +62,15 @@ fn rebuild_deps(runtime: &Arc<searchos_core::SearchOsRuntime>) -> Arc<SearchDepe
         freshness: searchos_policy::FreshnessPolicy::default_policy(),
         source: searchos_policy::SourcePolicy::default_policy(),
         cost_config: searchos_cost::CostModelConfig::default_config(),
-        bm25: runtime.tantivy.clone(),
+        bm25: runtime.fulltext.clone(),
+        vector: Some(runtime.vector.clone()),
+        hybrid: Some(runtime.hybrid.clone()),
+        embedder: runtime.embedder.clone(),
+        canonical_cache: runtime.canonical_cache.clone(),
+        semantic_cache: runtime.semantic_cache.clone(),
+        retrieval_cache: runtime.retrieval_cache.clone(),
+        embedding_cache: runtime.embedding_cache.clone(),
+        rerank_cache: runtime.rerank_cache.clone(),
         router: runtime.provider_registry.clone(),
         search_providers: vec![],
         local_port: runtime.local_port(),
@@ -72,6 +79,10 @@ fn rebuild_deps(runtime: &Arc<searchos_core::SearchOsRuntime>) -> Arc<SearchDepe
         task_recorder: runtime.task_recorder(),
         singleflight: Arc::new(SingleflightCoordinator::new()),
         cache: runtime.exact_cache.clone(),
+        semantic_dedup: true,
+        incremental: true,
+        query_expansion: true,
+        reranking: true,
         allow_external: false,
     })
 }
@@ -150,8 +161,8 @@ async fn stale_local_data_escalates() {
         workspace_id: "*".into(),
         fetched_at: chrono::Utc::now() - chrono::Duration::hours(6),
     };
-    h.runtime.tantivy.index(stale_doc).await.unwrap();
-    h.runtime.tantivy.commit().await.unwrap();
+    h.runtime.fulltext.index(stale_doc).await.unwrap();
+    h.runtime.fulltext.commit().await.unwrap();
 
     // Latest query (strict freshness) must NOT be served from stale history
     // (RFC-004 Rule 1). Offline ⇒ explicit Reject, never a false pass.
@@ -210,6 +221,9 @@ async fn index_rebuild_restores_corpus() {
         current_version_id: None,
         content_type: "text/plain".into(),
         language: Some("en".into()),
+        source_type: "web".into(),
+        title: Some("Tokio".into()),
+        workspace_id: "*".into(),
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
     };
@@ -251,7 +265,13 @@ async fn index_rebuild_restores_corpus() {
         fetched_at: chrono::Utc::now(),
     }];
     let diff = doc_repo
-        .save_versioned(&doc, &version, &chunks, &payloads)
+        .save_versioned(
+            &doc,
+            &version,
+            &chunks,
+            &payloads,
+            &searchos_domain::ids::WorkspaceId::new("*"),
+        )
         .unwrap();
     assert_eq!(diff, searchos_document::VersionDiff::NewVersion);
     // Store the content blob (the fetch path does this before persistence).
@@ -264,7 +284,7 @@ async fn index_rebuild_restores_corpus() {
     assert_eq!((processed, dead), (1, 0));
     assert!(
         !h.runtime
-            .tantivy
+            .fulltext
             .search(&RetrievalQuery::new("work stealing scheduler", 5))
             .await
             .unwrap()
@@ -273,10 +293,10 @@ async fn index_rebuild_restores_corpus() {
     );
 
     // Wipe the index, rebuild from SQLite — same corpus returns.
-    h.runtime.tantivy.rebuild_from(&[]).await.unwrap();
+    h.runtime.fulltext.rebuild_from(&[]).await.unwrap();
     assert!(h
         .runtime
-        .tantivy
+        .fulltext
         .search(&RetrievalQuery::new("work stealing", 5))
         .await
         .unwrap()
@@ -285,7 +305,7 @@ async fn index_rebuild_restores_corpus() {
     assert_eq!(n, 1);
     assert!(
         !h.runtime
-            .tantivy
+            .fulltext
             .search(&RetrievalQuery::new("work stealing scheduler", 5))
             .await
             .unwrap()
@@ -381,6 +401,8 @@ async fn cost_attribution_and_summary() {
         trace_id: Some(TraceId::generate()),
         shared: false,
         pricing_model_version: "1".into(),
+        status: Default::default(),
+        error_code: None,
     };
     sink.append(ev).await.unwrap();
     sink.record_quality_pass(task.as_str()).await.unwrap();
@@ -639,8 +661,8 @@ async fn stale_knowledge_is_refreshed_not_deleted() {
         workspace_id: "*".into(),
         fetched_at: chrono::Utc::now() - chrono::Duration::days(400),
     };
-    h.runtime.tantivy.index(stale).await.unwrap();
-    h.runtime.tantivy.commit().await.unwrap();
+    h.runtime.fulltext.index(stale).await.unwrap();
+    h.runtime.fulltext.commit().await.unwrap();
     let resp = h
         .service
         .search(request(
@@ -663,7 +685,7 @@ async fn stale_knowledge_is_refreshed_not_deleted() {
     );
     assert!(
         !h.runtime
-            .tantivy
+            .fulltext
             .search(&RetrievalQuery::new("leader election", 5))
             .await
             .unwrap()

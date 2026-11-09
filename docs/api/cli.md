@@ -15,19 +15,40 @@ searchos doctor            Diagnose config, storage, index consistency
 searchos version           Print version
 ```
 
-## Search / fetch
+## Search / fetch / ingest
 
 ```text
 searchos search "Rust Tokio" [--profile latest] [--mode local-only]
                      [--workspace default] [--max-external-queries 3]
-                     [--max-cost 0.05] [--request-id <idempotency-key>]
+                     [--max-cost 0.05] [--max-results 5]
+                     [--request-id <idempotency-key>]
 searchos fetch <url> [--workspace default]
 ```
+
+## Local ingestion (RFC-029)
+
+```text
+searchos ingest --text "..." [--source-key notes/alpha] [--title "..."]
+                     [--content-type text/plain] [--workspace default]
+searchos ingest --file ./notes.md [--source-key notes/alpha] [--workspace default]
+searchos ingest --dir ./docs [--recursive] [--ext md,txt] [--workspace default]
+```
+
+Exactly one of `--text`, `--file`, `--dir` is required. `--source-key` is the
+stable logical identity; without it the source is content-addressed. `--dir`
+skips dotfiles, sorts by relative path, and uses each file's relative path as
+its `source_key`. Imported documents are searchable immediately under
+`--mode local-only` / `local_first`.
 
 ## Documents / memory
 
 ```text
-searchos document list|inspect <id>|refresh <id>|delete <id>
+searchos document list [--limit 50] [--source-type web|local|local_text|local_file|local_directory]
+                             [--workspace <id>]
+searchos document inspect <id>|refresh <id>|delete <id>
+searchos memory remember --title "..." --content "..." [--workspace default]
+                         [--sharing private|workspace_shared|project_shared|global_public]
+                         [--tags a,b]
 searchos memory search "Rust web framework" [--workspace default] [--top-k 5]
 searchos memory stats
 ```
@@ -35,7 +56,7 @@ searchos memory stats
 ## Providers / profiles / cost / trace
 
 ```text
-searchos provider list|add <tavily|brave>|health
+searchos provider list|check-key <tavily|brave>|health   # add = env key check, never writes config
 searchos profile list
 searchos profile inspect <id>                 # versioned SearchProfile
 searchos cost summary|agents|providers|operations|savings|reservations
@@ -63,7 +84,7 @@ searchos gateway status
 
 ```text
 searchos crawler list|inspect <domain>|test <url>|preview <url>|failures|status|validate
-searchos extension list|validate|inspect <id>
+searchos extension list [--quarantined]|validate|inspect <id>
 searchos backup create|restore <path>
 ```
 
@@ -84,9 +105,12 @@ searchos mcp    # JSON-RPC 2.0 over stdio: initialize, tools/list, tools/call
 ```
 
 Tools: `search`, `fetch`, `extract`, `memory_search`, `document_search`,
-`cost_summary`, `trace_inspect` (`search_trace` alias) — each with an explicit
-parameter schema (RFC-012 12.8, RFC-021 21.5). `search` supports a
-`request_id` idempotency key and describes `local_only` vs external-capable modes.
+`cost_summary`, `trace_inspect` (`search_trace` alias) — 7 RFC-021 tools plus
+one documented compatibility alias. Each has an explicit parameter schema
+(RFC-012 12.8, RFC-021 21.5). `search` accepts snake_case or kebab-case
+mode names, rejects unknown modes with -32602, supports a `request_id`
+idempotency key and a `max_results` output cap, and describes `local_only`
+vs external-capable modes.
 
 ## Search response status
 

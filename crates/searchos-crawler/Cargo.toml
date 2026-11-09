@@ -19,3 +19,6 @@ regex = { workspace = true }
 searchos-fetch = { workspace = true }
 searchos-provider = { workspace = true }
 searchos-document = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

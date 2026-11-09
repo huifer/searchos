@@ -13,5 +13,5 @@ pub mod http;
 pub mod robots;
 
 pub use guard::{UrlGuard, UrlViolation};
-pub use http::{FetchOutcome, HttpFetcher};
+pub use http::{FetchLimits, FetchOutcome, HttpFetcher};
 pub use robots::{RobotsChecker, RobotsDecision};

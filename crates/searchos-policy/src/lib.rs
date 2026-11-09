@@ -17,7 +17,7 @@ pub use budget::{BudgetCheck, BudgetEnforcer, BudgetReservation, BudgetViolation
 pub use freshness::{classify_content, ContentCategory, FreshnessPolicy};
 pub use profile::{ProfileRegistry, SearchProfile};
 pub use quality::QualityPolicy;
-pub use source::SourcePolicy;
+pub use source::{SourcePolicy, SourceViolation};
 
 /// Current suite version stamped into policies and profiles.
 pub const POLICY_SUITE_VERSION: &str = "1.0.0";

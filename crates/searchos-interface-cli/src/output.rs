@@ -5,20 +5,25 @@ use serde::Serialize;
 /// Output format selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum Format {
+    /// Pretty-printed JSON
     Json,
+    /// Aligned key/value text (default)
     Human,
+    /// GitHub-flavored markdown table
     Markdown,
 }
 
-/// Prints a serializable value in the chosen format. JSON goes to stdout
-/// exactly once; human hints go to stderr via tracing only.
+/// Prints a serializable value in the chosen format.
+///
+/// Output failures are reported on stderr and the process keeps a clean
+/// stdout. They must never be rendered as a fake payload on stdout: a
+/// machine consumer would parse it as a successful result.
 pub fn print<T: Serialize>(value: &T, format: Format) {
     match format {
-        Format::Json => {
-            let json = serde_json::to_string_pretty(value)
-                .unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"));
-            println!("{json}");
-        }
+        Format::Json => match serde_json::to_string_pretty(value) {
+            Ok(json) => println!("{json}"),
+            Err(e) => eprintln!("output serialization failed: {e}"),
+        },
         Format::Human => {
             println!("{}", human_table(value));
         }
@@ -129,6 +134,19 @@ mod tests {
         let v = json!({"a": 1});
         let s = serde_json::to_string_pretty(&v).unwrap();
         assert!(s.contains("\"a\": 1"));
+    }
+
+    /// A non-serializable payload must not be printed as a fake JSON value.
+    #[test]
+    fn json_output_failure_is_not_faked_on_stdout() {
+        struct NotJson;
+        impl Serialize for NotJson {
+            fn serialize<S: serde::Serializer>(&self, _s: S) -> Result<S::Ok, S::Error> {
+                Err(serde::ser::Error::custom("cannot serialize"))
+            }
+        }
+        // The function must not panic; the diagnostics path is stderr-only.
+        print(&NotJson, Format::Json);
     }
 
     #[test]

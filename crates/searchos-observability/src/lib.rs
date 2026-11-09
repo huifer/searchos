@@ -8,4 +8,6 @@
 pub mod logging;
 pub mod metrics;
 
-pub use metrics::{MetricsRegistry, Percentiles};
+pub use metrics::{
+    MetricsRegistry, MetricsSnapshot, Percentiles, INVARIANT_METRICS, MAX_LATENCY_SAMPLES,
+};

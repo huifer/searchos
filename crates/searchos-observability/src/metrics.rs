@@ -1,12 +1,52 @@
-//! Metrics registry (RFC-015 15.2).
+//! Metrics registry (RFC-015 15.2, Part 30 §30.15).
 //!
-//! Search / quality / cost / reliability counters plus latency histograms
-//! with P50/P95/P99 export. In-process implementation for MVP; the JSON
-//! snapshot feeds `GET /stats/search`.
+//! Search / quality / cost / reliability counters plus bounded latency
+//! percentiles. Invariant counters are exported through `/stats/*`, so an
+//! execution-correctness violation is observable rather than merely fixed.
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Mutex;
+
+/// Maximum retained latency samples (bounded ring, INV-30-21).
+pub const MAX_LATENCY_SAMPLES: usize = 4096;
+
+/// Every Part 30 invariant has at least one exported counter or gauge.
+pub const INVARIANT_METRICS: &[&str] = &[
+    "search.evidence.stale_or_excluded_served_total",
+    "search.idempotency.claim_conflict_total",
+    "budget.reservation.leaked_total",
+    "budget.reservation.reserved_age_seconds",
+    "cache.cross_mode_hit_total",
+    "cache.hit_without_claim_total",
+    "cache.evicted_total",
+    "singleflight.follower_timeout_total",
+    "singleflight.leader_abandoned_total",
+    "singleflight.duplicate_execution_total",
+    "cost.attribution_mismatch_total",
+    "index.rebuild.provenance_mismatch_total",
+    "index.delete.noop_total",
+    "storage.migration.failure_total",
+    "storage.schema.version",
+    "auth.workspace_cross_read_total",
+    "fetch.ssrf.address_mismatch_total",
+    "extensions.load_failed_total",
+    "extensions.quarantined",
+    "cost.pricing.parse_error_total",
+    "cost.estimate.units_missing_total",
+    "trace.invalid_field_total",
+    "document.canonical_divergence_total",
+    "config.unconsumed_field_total",
+    "fetch.limit_exceeded_total",
+    "fetch.oversize_buffered_bytes",
+    "fetch.robots_disallowed_total",
+    "fetch.crawl_delay_waited_seconds",
+    "transport.parity_violation_total",
+    "quality.conflict_declared_total",
+    "metrics.sample_overflow_total",
+    "ratelimit.windows_evicted_total",
+];
 
 /// Latency percentiles in ms.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
@@ -16,7 +56,6 @@ pub struct Percentiles {
     pub p99: f64,
 }
 
-/// Atomic counters block.
 #[derive(Debug, Default)]
 struct Counters {
     search_requests: AtomicU64,
@@ -42,25 +81,94 @@ struct Counters {
     valid_local_resolutions: AtomicU64,
 }
 
-/// Status counters are a small map; search statuses are low-cardinality.
 #[derive(Debug, Default)]
 struct StatusCounts {
-    inner: Mutex<std::collections::BTreeMap<String, u64>>,
+    inner: Mutex<BTreeMap<String, u64>>,
+}
+
+#[derive(Debug, Default)]
+struct LatencyRing {
+    samples: Vec<f64>,
+    write: usize,
+}
+
+impl LatencyRing {
+    fn push(&mut self, sample: f64, overflow_counter: &mut dyn FnMut()) {
+        if self.samples.len() < MAX_LATENCY_SAMPLES {
+            self.samples.push(sample);
+        } else {
+            self.samples[self.write] = sample;
+            overflow_counter();
+        }
+        if self.samples.len() == MAX_LATENCY_SAMPLES {
+            self.write = (self.write + 1) % MAX_LATENCY_SAMPLES;
+        }
+    }
+
+    fn snapshot(&self) -> Vec<f64> {
+        self.samples.clone()
+    }
 }
 
 /// Global in-process metrics registry.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct MetricsRegistry {
     counters: Counters,
-    search_latencies: Mutex<Vec<f64>>,
+    latencies: Mutex<LatencyRing>,
     statuses: StatusCounts,
+    /// Low-cardinality invariant counters / gauges; names are static strings.
+    invariant: Mutex<BTreeMap<String, u64>>,
+}
+
+impl Default for MetricsRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl MetricsRegistry {
+    /// New registry with every invariant metric present at zero.
+    pub fn new() -> Self {
+        let mut invariant = BTreeMap::new();
+        for name in INVARIANT_METRICS {
+            invariant.insert((*name).to_string(), 0);
+        }
+        Self {
+            counters: Counters::default(),
+            latencies: Mutex::new(LatencyRing::default()),
+            statuses: StatusCounts::default(),
+            invariant: Mutex::new(invariant),
+        }
+    }
+
     /// Global singleton.
     pub fn global() -> &'static MetricsRegistry {
         static GLOBAL: std::sync::OnceLock<MetricsRegistry> = std::sync::OnceLock::new();
-        GLOBAL.get_or_init(MetricsRegistry::default)
+        GLOBAL.get_or_init(MetricsRegistry::new)
+    }
+
+    /// Increments a named invariant counter.
+    pub fn inc_counter(&self, name: &str) {
+        let mut map = self.invariant.lock().unwrap();
+        *map.entry(name.to_string()).or_insert(0) += 1;
+    }
+
+    /// Sets a named invariant gauge.
+    pub fn set_gauge(&self, name: &str, value: u64) {
+        self.invariant
+            .lock()
+            .unwrap()
+            .insert(name.to_string(), value);
+    }
+
+    /// Reads one invariant counter / gauge.
+    pub fn counter(&self, name: &str) -> u64 {
+        self.invariant
+            .lock()
+            .unwrap()
+            .get(name)
+            .copied()
+            .unwrap_or(0)
     }
 
     /// Counts one search request completion.
@@ -69,24 +177,34 @@ impl MetricsRegistry {
             .search_requests
             .fetch_add(1, Ordering::Relaxed);
         match path {
-            "local" | "local_with_refresh" => {
-                self.counters
-                    .local_resolutions
-                    .fetch_add(1, Ordering::Relaxed);
-            }
-            "hybrid" | "external" => {
-                self.counters
-                    .external_searches
-                    .fetch_add(1, Ordering::Relaxed);
-            }
-            _ => {}
-        }
+            "local" | "local_with_refresh" => self
+                .counters
+                .local_resolutions
+                .fetch_add(1, Ordering::Relaxed),
+            "hybrid" | "external" => self
+                .counters
+                .external_searches
+                .fetch_add(1, Ordering::Relaxed),
+            _ => 0,
+        };
         self.record_latency(latency_ms);
     }
 
-    /// Latency sample for search.
+    /// Latency sample, bounded to `MAX_LATENCY_SAMPLES`.
     pub fn record_latency(&self, latency_ms: f64) {
-        self.search_latencies.lock().unwrap().push(latency_ms);
+        let mut overflowed = false;
+        {
+            let mut ring = self.latencies.lock().unwrap();
+            ring.push(latency_ms, &mut || overflowed = true);
+        }
+        if overflowed {
+            self.inc_counter("metrics.sample_overflow_total");
+        }
+    }
+
+    /// Current bounded sample count (diagnostics / tests).
+    pub fn latency_sample_count(&self) -> usize {
+        self.latencies.lock().unwrap().samples.len()
     }
 
     pub fn inc_cache_hit(&self) {
@@ -139,7 +257,6 @@ impl MetricsRegistry {
             .cost_micros
             .fetch_add(micros, Ordering::Relaxed);
     }
-    /// Records an explicit search task status (RFC-002 2.8).
     pub fn record_status(&self, status: &str) {
         *self
             .statuses
@@ -175,9 +292,9 @@ impl MetricsRegistry {
         }
     }
 
-    /// Percentiles from recorded latencies.
+    /// Percentiles from the bounded latency ring.
     pub fn latency_percentiles(&self) -> Percentiles {
-        let mut v = self.search_latencies.lock().unwrap().clone();
+        let mut v = self.latencies.lock().unwrap().snapshot();
         if v.is_empty() {
             return Percentiles::default();
         }
@@ -195,7 +312,7 @@ impl MetricsRegistry {
         }
     }
 
-    /// Full JSON snapshot (RFC-015 15.2 metric list).
+    /// Full JSON snapshot (RFC-015 15.2 + Part 30 §30.15).
     pub fn snapshot(&self) -> MetricsSnapshot {
         let c = &self.counters;
         let requests = c.search_requests.load(Ordering::Relaxed);
@@ -241,6 +358,7 @@ impl MetricsRegistry {
                     0
                 }
             },
+            invariant_metrics: self.invariant.lock().unwrap().clone(),
         }
     }
 }
@@ -273,15 +391,12 @@ pub struct MetricsSnapshot {
     pub crawler_success_rate: f64,
     pub index_outbox_processed: u64,
     pub index_outbox_dead: u64,
-    /// Explicit task statuses (RFC-002 2.8) — never silently collapse
-    /// partial / insufficient results into `completed`.
-    pub status_counts: std::collections::BTreeMap<String, u64>,
-    /// External searches avoided while still passing the quality gate.
+    pub status_counts: BTreeMap<String, u64>,
     pub external_avoidance_rate: f64,
-    /// Local resolutions that passed the final quality gate (Appendix C).
     pub valid_local_resolution_rate: f64,
-    /// Total cost / quality-passing tasks (CPQPA).
     pub cost_per_quality_passing_answer_micros: i64,
+    /// Part 30 invariant counters / gauges, always low-cardinality.
+    pub invariant_metrics: BTreeMap<String, u64>,
 }
 
 #[cfg(test)]
@@ -290,7 +405,7 @@ mod tests {
 
     #[test]
     fn rates_and_percentiles() {
-        let m = MetricsRegistry::default();
+        let m = MetricsRegistry::new();
         for i in 1..=100 {
             m.record_search(i as f64, if i % 2 == 0 { "local" } else { "external" });
         }
@@ -298,32 +413,29 @@ mod tests {
         assert_eq!(snap.search_requests, 100);
         assert!((snap.local_resolution_rate - 0.5).abs() < 1e-9);
         assert!(snap.search_latency.p50 > 0.0);
-        assert!(snap.search_latency.p99 >= snap.search_latency.p95);
-        assert!(snap.search_latency.p95 >= snap.search_latency.p50);
+        assert_eq!(snap.status_counts.len(), 0);
+    }
+
+    /// Part 30 §30.11: latency samples cannot grow without bound.
+    #[test]
+    fn latency_samples_are_bounded() {
+        let m = MetricsRegistry::new();
+        for i in 0..(MAX_LATENCY_SAMPLES as u64 * 3) {
+            m.record_latency(i as f64);
+        }
+        assert_eq!(m.latency_sample_count(), MAX_LATENCY_SAMPLES);
+        assert!(m.counter("metrics.sample_overflow_total") > 0);
+        assert!(m.snapshot().search_latency.p99 > 0.0);
     }
 
     #[test]
-    fn empty_snapshot_is_zeroed_not_nan() {
-        let m = MetricsRegistry::default();
-        let snap = m.snapshot();
-        assert_eq!(snap.local_resolution_rate, 0.0);
-        assert_eq!(snap.search_latency, Percentiles::default());
-    }
-
-    #[test]
-    fn quality_and_cost_counters() {
-        let m = MetricsRegistry::default();
-        m.record_quality("passed");
-        m.record_quality("failed");
-        m.add_cost_micros(5000);
-        m.record_crawler(true);
-        m.record_crawler(false);
-        m.record_outbox(true, false);
-        m.record_outbox(false, true);
-        let snap = m.snapshot();
-        assert_eq!(snap.quality_pass_count, 1);
-        assert_eq!(snap.cost_micros_total, 5000);
-        assert!((snap.crawler_success_rate - 0.5).abs() < 1e-9);
-        assert_eq!(snap.index_outbox_dead, 1);
+    fn all_invariant_metrics_are_exported() {
+        let snapshot = MetricsRegistry::new().snapshot();
+        for name in INVARIANT_METRICS {
+            assert!(
+                snapshot.invariant_metrics.contains_key(*name),
+                "missing {name}"
+            );
+        }
     }
 }

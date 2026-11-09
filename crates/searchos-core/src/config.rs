@@ -1,7 +1,7 @@
 //! Configuration (configs/searchos.example.yaml schema + env overrides).
 
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 /// Top-level configuration.
@@ -14,6 +14,7 @@ pub struct SearchOsConfig {
     pub server: ServerConfig,
     pub storage: StorageConfig,
     pub search: SearchConfig,
+    pub ingest: IngestConfig,
     pub memory: MemoryConfig,
     pub intelligence: IntelligenceConfig,
     pub indexes: IndexesConfig,
@@ -102,6 +103,11 @@ pub struct CrawlerConfig {
     pub default_timeout_ms: u64,
     pub max_concurrent: u32,
     pub respect_robots: bool,
+    /// RFC 9309 default is false: unreachable robots.txt disallows all.
+    /// Set true only for an explicitly permissive deployment.
+    pub robots_unknown_allow: bool,
+    /// Upper bound for a site-declared Crawl-delay.
+    pub crawl_delay_cap_seconds: u64,
 }
 impl Default for CrawlerConfig {
     fn default() -> Self {
@@ -109,6 +115,8 @@ impl Default for CrawlerConfig {
             default_timeout_ms: 15_000,
             max_concurrent: 4,
             respect_robots: true,
+            robots_unknown_allow: false,
+            crawl_delay_cap_seconds: 10,
         }
     }
 }
@@ -171,6 +179,7 @@ impl Default for SearchOsConfig {
             server: ServerConfig::default(),
             storage: StorageConfig::default(),
             search: SearchConfig::default(),
+            ingest: IngestConfig::default(),
             memory: MemoryConfig::default(),
             intelligence: IntelligenceConfig::default(),
             indexes: IndexesConfig::default(),
@@ -251,6 +260,8 @@ pub struct StorageConfig {
     pub fulltext: String,
     pub vector: String,
     pub objects: String,
+    /// Remote retrieval backends (user-selectable via `fulltext`).
+    pub remote: RemoteStorageConfig,
 }
 
 impl Default for StorageConfig {
@@ -260,6 +271,60 @@ impl Default for StorageConfig {
             fulltext: "tantivy".into(),
             vector: "lancedb".into(),
             objects: "local".into(),
+            remote: RemoteStorageConfig::default(),
+        }
+    }
+}
+
+/// Remote full-text backend connection settings (ADR-027). Only the
+/// backend selected by `storage.fulltext` is used; secrets come from the
+/// environment, never from this file.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct RemoteStorageConfig {
+    pub elasticsearch: RemoteBackendSection,
+    pub meilisearch: RemoteBackendSection,
+    pub postgres: RemoteBackendSection,
+    pub mysql: RemoteBackendSection,
+}
+
+/// One remote backend section.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RemoteBackendSection {
+    /// REST base URL or SQL connection string.
+    pub url: String,
+    /// Bearer token for REST backends (env override preferred).
+    pub api_key: String,
+    /// Index / table name.
+    pub index: String,
+    /// Per-request timeout seconds.
+    pub timeout_seconds: u64,
+    /// Verify TLS certificates (default true).
+    pub verify_tls: bool,
+}
+
+impl Default for RemoteBackendSection {
+    fn default() -> Self {
+        Self {
+            url: String::new(),
+            api_key: String::new(),
+            index: "searchos_chunks".into(),
+            timeout_seconds: 10,
+            verify_tls: true,
+        }
+    }
+}
+
+impl RemoteBackendSection {
+    /// Converts to the adapter crate's config type.
+    pub fn to_adapter_config(&self) -> searchos_index_remote::RemoteBackendConfig {
+        searchos_index_remote::RemoteBackendConfig {
+            url: self.url.clone(),
+            api_key: self.api_key.clone(),
+            index: self.index.clone(),
+            timeout_seconds: self.timeout_seconds,
+            verify_tls: self.verify_tls,
         }
     }
 }
@@ -284,6 +349,23 @@ impl Default for SearchConfig {
             incremental: true,
             max_external_queries: 3,
             cache_ttl_seconds: 3600,
+        }
+    }
+}
+
+/// RFC-029 local ingestion bounds.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct IngestConfig {
+    pub max_bytes_per_document: usize,
+    pub max_bytes_per_batch: usize,
+}
+
+impl Default for IngestConfig {
+    fn default() -> Self {
+        Self {
+            max_bytes_per_document: 20 * 1024 * 1024,
+            max_bytes_per_batch: 200 * 1024 * 1024,
         }
     }
 }
@@ -324,7 +406,8 @@ impl Default for EmbeddingConfig {
 }
 
 /// Providers section (keys come from env: TAVILY_API_KEY / BRAVE_API_KEY —
-/// RFC-014 14.3: keys never in config files).
+/// RFC-014 14.3: keys never in config files; multi-key rotation uses
+/// TAVILY_API_KEYS / BRAVE_API_KEYS).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct ProvidersConfig {
@@ -338,6 +421,11 @@ pub struct ProvidersConfig {
 pub struct ProviderConfig {
     pub enabled: bool,
     pub priority: u32,
+    /// Multiple API keys for rotation (RFC-009 9.7). Env override:
+    /// `TAVILY_API_KEYS` / `BRAVE_API_KEYS` (comma or whitespace separated).
+    pub api_keys: Vec<String>,
+    /// Rotation policy: `round_robin` (default) | `failover`.
+    pub rotation: String,
 }
 
 impl Default for ProviderConfig {
@@ -345,6 +433,8 @@ impl Default for ProviderConfig {
         Self {
             enabled: true,
             priority: 1,
+            api_keys: Vec::new(),
+            rotation: "round_robin".into(),
         }
     }
 }
@@ -359,6 +449,9 @@ fn dirs_home() -> PathBuf {
 pub const ENV_DATA_DIR: &str = "SEARCHOS_DATA_DIR";
 pub const ENV_TAVILY_KEY: &str = "TAVILY_API_KEY";
 pub const ENV_BRAVE_KEY: &str = "BRAVE_API_KEY";
+/// Multi-key rotation env vars (comma / whitespace separated).
+pub const ENV_TAVILY_KEYS: &str = "TAVILY_API_KEYS";
+pub const ENV_BRAVE_KEYS: &str = "BRAVE_API_KEYS";
 pub const ENV_CONFIG_PATH: &str = "SEARCHOS_CONFIG";
 pub const ENV_AUTH_TOKEN: &str = "SEARCHOS_AUTH_TOKEN";
 
@@ -394,17 +487,279 @@ impl SearchOsConfig {
             .unwrap_or_else(|_| self.app.data_dir.join("extensions").join("crawlers"))
     }
 
-    /// Tavily key resolution: env first (RFC-014 14.3).
+    /// Tavily key resolution: env first (RFC-014 14.3). Multi-key env
+    /// (`TAVILY_API_KEYS`) wins; then config list; then the single-key env.
     pub fn tavily_api_key(&self) -> Option<String> {
-        std::env::var(ENV_TAVILY_KEY)
-            .ok()
-            .filter(|k| !k.trim().is_empty())
+        Self::resolve_keys(
+            ENV_TAVILY_KEYS,
+            &self.providers.tavily.api_keys,
+            ENV_TAVILY_KEY,
+        )
+        .into_iter()
+        .next()
     }
+
+    /// All Tavily keys for rotation (deduped, empty removed).
+    pub fn tavily_api_keys(&self) -> Vec<String> {
+        Self::resolve_keys(
+            ENV_TAVILY_KEYS,
+            &self.providers.tavily.api_keys,
+            ENV_TAVILY_KEY,
+        )
+    }
+
     /// Brave key resolution: env first.
     pub fn brave_api_key(&self) -> Option<String> {
-        std::env::var(ENV_BRAVE_KEY)
-            .ok()
-            .filter(|k| !k.trim().is_empty())
+        Self::resolve_keys(
+            ENV_BRAVE_KEYS,
+            &self.providers.brave.api_keys,
+            ENV_BRAVE_KEY,
+        )
+        .into_iter()
+        .next()
+    }
+
+    /// All Brave keys for rotation (deduped, empty removed).
+    pub fn brave_api_keys(&self) -> Vec<String> {
+        Self::resolve_keys(
+            ENV_BRAVE_KEYS,
+            &self.providers.brave.api_keys,
+            ENV_BRAVE_KEY,
+        )
+    }
+
+    /// Rotation policy for a provider section (`round_robin` | `failover`).
+    pub fn rotation_policy(&self, provider: &str) -> searchos_provider::RotationPolicy {
+        let raw = match provider {
+            "tavily" => &self.providers.tavily.rotation,
+            "brave" => &self.providers.brave.rotation,
+            _ => return searchos_provider::RotationPolicy::RoundRobin,
+        };
+        searchos_provider::RotationPolicy::from_config(raw)
+    }
+
+    /// Key resolution order: multi-key env → config list → single env key.
+    fn resolve_keys(env_multi: &str, config_keys: &[String], env_single: &str) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        if let Ok(raw) = std::env::var(env_multi) {
+            for part in raw.split([',', ';', ' ', '\n']) {
+                push_key(&mut out, part);
+            }
+        }
+        for k in config_keys {
+            push_key(&mut out, k);
+        }
+        if out.is_empty() {
+            if let Ok(single) = std::env::var(env_single) {
+                push_key(&mut out, &single);
+            }
+        }
+        out
+    }
+}
+
+/// Pushes a trimmed, non-empty, not-yet-present key.
+fn push_key(out: &mut Vec<String>, raw: &str) {
+    let k = raw.trim().to_string();
+    if !k.is_empty() && !out.contains(&k) {
+        out.push(k);
+    }
+}
+
+/// Complete schema field list accepted by `Config::validate`.
+/// A field must appear here and in CONSUMED/DEPRECATED lists below.
+pub const ALL_CONFIG_FIELDS: &[&str] = &[
+    "config_version",
+    "app.name",
+    "app.mode",
+    "app.data_dir",
+    "server.enabled",
+    "server.host",
+    "server.port",
+    "server.auth_token",
+    "server.api_version",
+    "server.rate_limit_per_minute",
+    "server.cors_origin",
+    "server.workspace_tokens",
+    "storage.metadata",
+    "storage.fulltext",
+    "storage.vector",
+    "storage.objects",
+    "storage.remote.elasticsearch.url",
+    "storage.remote.elasticsearch.api_key",
+    "storage.remote.elasticsearch.index",
+    "storage.remote.elasticsearch.timeout_seconds",
+    "storage.remote.elasticsearch.verify_tls",
+    "storage.remote.meilisearch.url",
+    "storage.remote.meilisearch.api_key",
+    "storage.remote.meilisearch.index",
+    "storage.remote.meilisearch.timeout_seconds",
+    "storage.remote.meilisearch.verify_tls",
+    "storage.remote.postgres.url",
+    "storage.remote.postgres.api_key",
+    "storage.remote.postgres.index",
+    "storage.remote.postgres.timeout_seconds",
+    "storage.remote.postgres.verify_tls",
+    "storage.remote.mysql.url",
+    "storage.remote.mysql.api_key",
+    "storage.remote.mysql.index",
+    "storage.remote.mysql.timeout_seconds",
+    "storage.remote.mysql.verify_tls",
+    "search.local_first",
+    "search.semantic_dedup",
+    "search.incremental",
+    "search.max_external_queries",
+    "search.cache_ttl_seconds",
+    "ingest.max_bytes_per_document",
+    "ingest.max_bytes_per_batch",
+    "memory.enabled",
+    "memory.embedding.provider",
+    "memory.embedding.model",
+    "intelligence.query_expansion",
+    "intelligence.reranking",
+    "intelligence.answer_generation",
+    "indexes.rebuild_on_start",
+    "indexes.verify_on_start",
+    "policies.default_profile",
+    "policies.minimum_quality",
+    "policies.require_provenance",
+    "budgets.default_max_external_queries",
+    "budgets.default_max_total_cost_micros",
+    "budgets.baseline_per_query_micros",
+    "crawler.default_timeout_ms",
+    "crawler.max_concurrent",
+    "crawler.respect_robots",
+    "crawler.robots_unknown_allow",
+    "crawler.crawl_delay_cap_seconds",
+    "extensions.allow_native",
+    "extensions.wasm_enabled",
+    "security.ssrf_protection",
+    "security.max_response_bytes",
+    "security.max_redirects",
+    "observability.log_level",
+    "observability.trace_retention_days",
+    "observability.metrics_enabled",
+    "providers.tavily.enabled",
+    "providers.tavily.priority",
+    "providers.tavily.api_keys",
+    "providers.tavily.rotation",
+    "providers.brave.enabled",
+    "providers.brave.priority",
+    "providers.brave.api_keys",
+    "providers.brave.rotation",
+];
+
+/// Fields with a real runtime consumer (Part 30 INV-30-16).
+pub const CONSUMED_CONFIG_FIELDS: &[&str] = &[
+    "config_version",
+    "app.name",
+    "app.mode",
+    "app.data_dir",
+    "server.enabled",
+    "server.host",
+    "server.port",
+    "server.auth_token",
+    "server.api_version",
+    "server.rate_limit_per_minute",
+    "server.cors_origin",
+    "server.workspace_tokens",
+    "storage.metadata",
+    "storage.fulltext",
+    "storage.vector",
+    "storage.objects",
+    "storage.remote.elasticsearch.url",
+    "storage.remote.elasticsearch.api_key",
+    "storage.remote.elasticsearch.index",
+    "storage.remote.elasticsearch.timeout_seconds",
+    "storage.remote.elasticsearch.verify_tls",
+    "storage.remote.meilisearch.url",
+    "storage.remote.meilisearch.api_key",
+    "storage.remote.meilisearch.index",
+    "storage.remote.meilisearch.timeout_seconds",
+    "storage.remote.meilisearch.verify_tls",
+    "storage.remote.postgres.url",
+    "storage.remote.postgres.api_key",
+    "storage.remote.postgres.index",
+    "storage.remote.postgres.timeout_seconds",
+    "storage.remote.postgres.verify_tls",
+    "storage.remote.mysql.url",
+    "storage.remote.mysql.api_key",
+    "storage.remote.mysql.index",
+    "storage.remote.mysql.timeout_seconds",
+    "storage.remote.mysql.verify_tls",
+    "search.local_first",
+    "search.semantic_dedup",
+    "search.incremental",
+    "search.max_external_queries",
+    "search.cache_ttl_seconds",
+    "ingest.max_bytes_per_document",
+    "ingest.max_bytes_per_batch",
+    "memory.enabled",
+    "memory.embedding.provider",
+    "memory.embedding.model",
+    "intelligence.query_expansion",
+    "intelligence.reranking",
+    "indexes.rebuild_on_start",
+    "indexes.verify_on_start",
+    "policies.default_profile",
+    "policies.minimum_quality",
+    "policies.require_provenance",
+    "budgets.default_max_external_queries",
+    "budgets.default_max_total_cost_micros",
+    "budgets.baseline_per_query_micros",
+    "crawler.default_timeout_ms",
+    "crawler.max_concurrent",
+    "crawler.respect_robots",
+    "crawler.robots_unknown_allow",
+    "crawler.crawl_delay_cap_seconds",
+    "extensions.allow_native",
+    "extensions.wasm_enabled",
+    "security.ssrf_protection",
+    "security.max_response_bytes",
+    "security.max_redirects",
+    "observability.log_level",
+    "observability.trace_retention_days",
+    "observability.metrics_enabled",
+    "providers.tavily.enabled",
+    "providers.tavily.priority",
+    "providers.tavily.api_keys",
+    "providers.tavily.rotation",
+    "providers.brave.enabled",
+    "providers.brave.priority",
+    "providers.brave.api_keys",
+    "providers.brave.rotation",
+];
+
+/// Explicitly deprecated knobs; `config validate` warns about them.
+pub const DEPRECATED_CONFIG_FIELDS: &[&str] = &["intelligence.answer_generation"];
+
+impl SearchOsConfig {
+    /// Fields read by runtime code (static parity assertion target).
+    pub fn consumed_config_fields() -> &'static [&'static str] {
+        CONSUMED_CONFIG_FIELDS
+    }
+
+    /// Explicit deprecation warnings, never silent no-op knobs.
+    pub fn deprecation_warnings(&self) -> Vec<String> {
+        DEPRECATED_CONFIG_FIELDS
+            .iter()
+            .map(|field| {
+                format!(
+                    "deprecated config field {field}: SearchOS returns evidence, not generated answers"
+                )
+            })
+            .collect()
+    }
+
+    /// Fields neither consumed nor explicitly deprecated.
+    pub fn unconsumed_fields() -> Vec<&'static str> {
+        let consumed: BTreeSet<&str> = CONSUMED_CONFIG_FIELDS.iter().copied().collect();
+        let deprecated: BTreeSet<&str> = DEPRECATED_CONFIG_FIELDS.iter().copied().collect();
+        ALL_CONFIG_FIELDS
+            .iter()
+            .copied()
+            .filter(|f| !consumed.contains(f) && !deprecated.contains(f))
+            .collect()
     }
 
     /// Validates the resolved configuration (RFC-019 19.4). Invalid
@@ -436,9 +791,45 @@ impl SearchOsConfig {
         }
         if self.intelligence.answer_generation {
             errors.push(
-                "intelligence.answer_generation is out of scope: SearchOS returns evidence, not answers"
+                "intelligence.answer_generation is deprecated/out of scope: SearchOS returns evidence, not answers"
                     .into(),
             );
+        }
+        for field in Self::unconsumed_fields() {
+            errors.push(format!(
+                "config field {field} has no runtime consumer and is not deprecated"
+            ));
+        }
+        // Pricing strings are validated here as well as in the estimator, so
+        // a malformed price is never silently zero (INV-30-13).
+        for e in searchos_cost::CostModelConfig::default_config().validate_prices() {
+            errors.push(e);
+        }
+        // Storage backend selection (ADR-027): only known backends are
+        // accepted; a remote backend must have a configured endpoint.
+        let fulltext = self.storage.fulltext.trim().to_lowercase();
+        let kind = searchos_index_remote::BackendKind::from_config(&fulltext);
+        if kind.is_remote() {
+            let section = match kind {
+                searchos_index_remote::BackendKind::Elasticsearch => {
+                    &self.storage.remote.elasticsearch
+                }
+                searchos_index_remote::BackendKind::Meilisearch => &self.storage.remote.meilisearch,
+                searchos_index_remote::BackendKind::PostgresFts => &self.storage.remote.postgres,
+                searchos_index_remote::BackendKind::MySqlFts => &self.storage.remote.mysql,
+                searchos_index_remote::BackendKind::Tantivy => unreachable!(),
+            };
+            if section.url.trim().is_empty() {
+                errors.push(format!(
+                    "storage.remote.{}.url is empty — set the {backend} endpoint or keep storage.fulltext: tantivy",
+                    kind.config_name(),
+                    backend = kind.config_name()
+                ));
+            }
+        } else if !fulltext.is_empty() && fulltext != "tantivy" && fulltext != "local" {
+            errors.push(format!(
+                "storage.fulltext: unknown backend '{fulltext}' (expected tantivy | elasticsearch | meilisearch | postgres | mysql)"
+            ));
         }
         if errors.is_empty() {
             Ok(())
@@ -479,10 +870,10 @@ impl SearchOsConfig {
     }
 }
 
-/// Loads a config file; missing file → defaults. Parse/validation problems
-/// are returned alongside the safe default so callers can report them
-/// instead of silently running on a wrong configuration.
-pub fn load_config_report(explicit: Option<&Path>) -> (SearchOsConfig, Vec<String>) {
+/// Loads a config file with errors and deprecation warnings separated.
+pub fn load_config_report_full(
+    explicit: Option<&Path>,
+) -> (SearchOsConfig, Vec<String>, Vec<String>) {
     let path = explicit
         .map(|p| p.to_path_buf())
         .or_else(|| std::env::var(ENV_CONFIG_PATH).ok().map(PathBuf::from))
@@ -511,16 +902,25 @@ pub fn load_config_report(explicit: Option<&Path>) -> (SearchOsConfig, Vec<Strin
     if let Err(v) = cfg.validate() {
         errors.extend(v);
     }
+    let warnings = cfg.deprecation_warnings();
+    (cfg, errors, warnings)
+}
+
+/// Compatibility wrapper: parse/validation errors alongside the safe default.
+pub fn load_config_report(explicit: Option<&Path>) -> (SearchOsConfig, Vec<String>) {
+    let (cfg, errors, _) = load_config_report_full(explicit);
     (cfg, errors)
 }
 
-/// Loads a config file; missing file → defaults. Warnings are surfaced on
-/// stderr; `config validate` / `doctor` use [`load_config_report`] for the
-/// full diagnostic.
+/// Loads a config file; missing file → defaults. Errors and deprecation
+/// warnings go to stderr so stdout stays machine-parseable.
 pub fn load_config(explicit: Option<&Path>) -> SearchOsConfig {
-    let (cfg, errors) = load_config_report(explicit);
+    let (cfg, errors, warnings) = load_config_report_full(explicit);
     for e in errors {
         eprintln!("searchos config: {e}");
+    }
+    for w in warnings {
+        eprintln!("searchos config warning: {w}");
     }
     cfg
 }
@@ -588,6 +988,33 @@ providers:
         assert!(c.security.ssrf_protection);
         assert!(!c.extensions.wasm_enabled);
         assert!(c.validate().is_ok());
+    }
+
+    /// Part 30 §30.11: every validated config field is consumed or
+    /// explicitly deprecated; silent no-op knobs are forbidden.
+    #[test]
+    fn no_unconsumed_config_fields() {
+        let unconsumed = SearchOsConfig::unconsumed_fields();
+        assert!(
+            unconsumed.is_empty(),
+            "unconsumed config fields: {unconsumed:?}"
+        );
+        for field in ALL_CONFIG_FIELDS {
+            assert!(
+                CONSUMED_CONFIG_FIELDS.contains(field) || DEPRECATED_CONFIG_FIELDS.contains(field),
+                "{field} is neither consumed nor deprecated"
+            );
+        }
+    }
+
+    #[test]
+    fn deprecated_field_emits_warning() {
+        let warnings = SearchOsConfig::default().deprecation_warnings();
+        assert!(warnings
+            .iter()
+            .any(|w| w.contains("intelligence.answer_generation")));
+        let (_, _, warnings) = load_config_report_full(None);
+        assert!(!warnings.is_empty());
     }
 
     #[test]

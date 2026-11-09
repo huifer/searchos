@@ -14,7 +14,7 @@
   <img src="https://img.shields.io/badge/rust-1.75%2B-orange?logo=rust" alt="rust" />
   <img src="https://img.shields.io/badge/next.js-16-black?logo=nextdotjs" alt="nextjs" />
   <img src="https://img.shields.io/badge/license-MIT-36f555" alt="license" />
-  <img src="https://img.shields.io/badge/tests-295%20passed-36f555" alt="tests" />
+  <img src="https://img.shields.io/badge/tests-CI%20green-36f555" alt="tests" />
 </p>
 
 <p align="center">
@@ -50,7 +50,7 @@ SearchOS 用一套统一的基础设施解决这些问题。
 - **本地优先搜索**——优先从本地索引与记忆中返回答案，再决定是否访问外部搜索。
 - **搜索记忆（Search Memory）**——搜索历史、文档版本、语义记忆、研究记忆都是一等公民级、可持续积累的资产。
 - **混合检索（Hybrid Retrieval）**——BM25 + 向量 + 元数据，经 Reciprocal Rank Fusion（RRF）融合，并支持可插拔重排序。
-- **扩展优先（Extension-first）**——Provider、网站专属爬虫、Extractor、Embedding、Reranker 全部通过统一、故障隔离的扩展系统接入。
+- **可扩展核心**——Manifest 生命周期、权限、故障隔离的发现与隔离；原生 Provider 与网站爬虫随主程序编译。
 - **成本感知路由**——综合质量、新鲜度、延迟、成本、可用性进行评分选择；并提供 Singleflight 请求合并。
 - **分布式就绪（Distributed-ready）**——从数据模型与接口层面第一天就为多节点设计，但不在 v1 强制引入分布式复杂度。
 
@@ -98,7 +98,7 @@ SEARCHOS_DATA_DIR=./data ./target/release/searchos gateway start --port 8787
 ```bash
 curl -s http://127.0.0.1:8787/search \
   -H 'content-type: application/json' \
-  -d '{"query":"What is Rust ownership?","mode":"local_first"}'
+  -d '{"query":"What is Rust ownership?","search_depth":"basic","max_results":5}'
 ```
 
 ### 4. 启动控制台
@@ -115,7 +115,7 @@ npm run dev                     # http://localhost:3100
 ### MCP
 
 ```bash
-searchos mcp                    # stdio MCP server，暴露全部 7 个 RFC-021 工具
+searchos mcp                    # stdio MCP server：7 个 RFC-021 工具 + search_trace 别名
 ```
 
 ## 架构总览
@@ -140,6 +140,7 @@ searchos mcp                    # stdio MCP server，暴露全部 7 个 RFC-021 
 ┌──────────────────▼───────────────────────┐
 │              基础设施 Infrastructure      │
 │  SQLite · Tantivy · LanceDB · 文件/对象    │
+│  + ES / Meili / PG / MySQL（可选）          │
 │  队列 · Provider · Embedding · 浏览器      │
 └──────────────────────────────────────────┘
 ```
@@ -162,7 +163,7 @@ docs/                   架构、RFC 套件、API/CLI 参考、ADR
 ## 开发与验证
 
 ```bash
-cargo test --workspace          # 57 个套件共 295 个测试
+cargo test --workspace          # 全部套件通过（精确数量由 CI 跟踪）
 cargo clippy --workspace --all-targets
 cargo fmt --all -- --check
 
@@ -191,7 +192,7 @@ CI 在每次 push / PR 时运行 fmt / clippy / test 以及控制台 typecheck +
 ## 文档
 
 - [架构说明](docs/architecture.md)
-- [正式 RFC 套件（16 份 RFC + 附录 17–24 + RFC-026..028）](docs/rfc/README.md)
+- [正式 RFC 套件（16 份 RFC + 附录 17–24 + RFC-026..029）](docs/rfc/README.md)
   - [RFC-001：产品架构](docs/rfc/rfc-001-product-architecture.md)
   - [RFC-004：搜索决策引擎](docs/rfc/rfc-004-search-decision-engine.md)
   - [附录 23：决策引擎工程基线（RFC-004 v1.1）](docs/rfc/part-23-decision-engineering-baseline.md)
@@ -199,7 +200,9 @@ CI 在每次 push / PR 时运行 fmt / clippy / test 以及控制台 typecheck +
   - [RFC-026：可视化与分析层](docs/rfc/rfc-026-visualization-analytics-architecture.md)
   - [RFC-027：分析数据模型](docs/rfc/rfc-027-analytics-data-model.md)
   - [RFC-028：Dashboard API 与前端集成](docs/rfc/rfc-028-dashboard-api-frontend.md)
+  - [RFC-029：本地数据导入与本地优先检索](docs/rfc/rfc-029-local-data-ingestion.md)
 - [功能遗漏分析：源设计 vs. 实现](docs/gap-analysis.md)
+- [RFC 实现缺口登记](docs/rfc-implementation-gaps.md)
 - [可视化控制台（Next.js / React）](docs/ui.md) · [web/README.md](web/README.md)
 - [HTTP API](docs/api/http.md) · [CLI 参考](docs/api/cli.md)
 - [扩展与爬虫系统](docs/extensions.md)

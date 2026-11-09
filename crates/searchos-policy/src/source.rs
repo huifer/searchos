@@ -2,7 +2,13 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Hard rules about which sources may serve a request.
+/// Which source-policy constraint failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceViolation {
+    ExcludedDomain,
+    RequiredDomainMissing,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SourcePolicy {
     /// Version marker; changing it invalidates dependent caches.
@@ -42,24 +48,31 @@ impl SourcePolicy {
         }
     }
 
-    /// Whether a URL satisfies required/excluded domain constraints.
-    pub fn allows(&self, url: &str) -> bool {
-        let Some(domain) = Self::domain_of(url) else {
-            return false;
-        };
+    /// Classifies a source-policy violation with the exact constraint that
+    /// failed (INV-30-20: exclusions are not "missing required domain").
+    pub fn violation(&self, url: &str) -> Option<SourceViolation> {
+        let domain = Self::domain_of(url)?;
         if self
             .excluded_domains
             .iter()
             .any(|d| domain == *d || domain.ends_with(&format!(".{d}")))
         {
-            return false;
+            return Some(SourceViolation::ExcludedDomain);
         }
-        if self.required_domains.is_empty() {
-            return true;
+        if !self.required_domains.is_empty()
+            && !self
+                .required_domains
+                .iter()
+                .any(|d| domain == *d || domain.ends_with(&format!(".{d}")))
+        {
+            return Some(SourceViolation::RequiredDomainMissing);
         }
-        self.required_domains
-            .iter()
-            .any(|d| domain == *d || domain.ends_with(&format!(".{d}")))
+        None
+    }
+
+    /// Whether a URL satisfies required/excluded domain constraints.
+    pub fn allows(&self, url: &str) -> bool {
+        self.violation(url).is_none()
     }
 
     /// Merges request constraints into a policy copy.

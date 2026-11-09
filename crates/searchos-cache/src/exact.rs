@@ -1,13 +1,19 @@
-//! Exact Query Cache (RFC-007 7.2 row 1).
+//! Exact Query Cache (RFC-007 7.2 row 1, Part 30 INV-30-21).
 //!
-//! Keyed by the full [`SearchCacheKey`] so different quality constraints can
-//! never collide. Invalidation: TTL or policy version change.
+//! Keyed by the full [`SearchCacheKey`] so different mode / freshness /
+//! source constraints can never collide. Hits take a read lock; insertion is
+//! bounded by an LRU eviction policy, and expired entries are removed on a
+//! short write-lock path.
 
 use crate::CacheEntryMeta;
 use searchos_domain::retrieval::SearchCacheKey;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::RwLock;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, RwLock};
+
+/// Default maximum resident exact-cache entries.
+pub const DEFAULT_MAX_CACHE_ENTRIES: usize = 1024;
 
 /// Outcome of a cache lookup.
 #[derive(Debug, Clone, PartialEq)]
@@ -33,62 +39,112 @@ pub struct CachedSearchResult {
     pub quality_status: String,
 }
 
+#[derive(Debug)]
+struct CacheEntry {
+    value: CachedSearchResult,
+    meta: CacheEntryMeta,
+    /// Logical LRU clock; atomic lets a read lock record a hit.
+    last_access: AtomicU64,
+}
+
+type EntryMap = HashMap<String, Arc<CacheEntry>>;
+
 /// In-memory exact query cache with TTL + policy-version invalidation.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct ExactQueryCache {
-    entries: RwLock<HashMap<String, (CachedSearchResult, CacheEntryMeta)>>,
-    hits: std::sync::atomic::AtomicU64,
-    misses: std::sync::atomic::AtomicU64,
-    /// TTL seconds; policy version checked on every hit.
+    entries: RwLock<EntryMap>,
+    hits: AtomicU64,
+    misses: AtomicU64,
+    clock: AtomicU64,
     ttl_seconds: u64,
+    max_entries: usize,
+}
+
+impl Default for ExactQueryCache {
+    fn default() -> Self {
+        Self::new(3600)
+    }
 }
 
 impl ExactQueryCache {
-    /// New cache with a TTL.
+    /// New cache with a TTL and the default bounded entry count.
     pub fn new(ttl_seconds: u64) -> Self {
+        Self::with_max_entries(ttl_seconds, DEFAULT_MAX_CACHE_ENTRIES)
+    }
+
+    /// New cache with an explicit maximum entry count (tests / config).
+    pub fn with_max_entries(ttl_seconds: u64, max_entries: usize) -> Self {
         Self {
+            entries: RwLock::new(HashMap::new()),
+            hits: AtomicU64::new(0),
+            misses: AtomicU64::new(0),
+            clock: AtomicU64::new(0),
             ttl_seconds,
-            ..Default::default()
+            max_entries: max_entries.max(1),
         }
     }
 
-    /// Stores a result under a cache key.
+    /// Stores a result under a cache key, evicting the least-recently-used
+    /// entry when the cache is full.
     pub fn put(&self, key: &SearchCacheKey, value: CachedSearchResult, policy_version: &str) {
         let meta = CacheEntryMeta::new(self.ttl_seconds, policy_version);
-        self.entries
-            .write()
-            .unwrap()
-            .insert(key.cache_key(), (value, meta));
+        let tick = self.clock.fetch_add(1, Ordering::Relaxed) + 1;
+        let k = key.cache_key();
+        let mut map = self.entries.write().unwrap();
+        if !map.contains_key(&k) && map.len() >= self.max_entries {
+            let victim = map
+                .iter()
+                .min_by_key(|(_, e)| e.last_access.load(Ordering::Relaxed))
+                .map(|(k, _)| k.clone());
+            if let Some(victim) = victim {
+                map.remove(&victim);
+                searchos_observability::MetricsRegistry::global()
+                    .inc_counter("cache.evicted_total");
+            }
+        }
+        map.insert(
+            k,
+            Arc::new(CacheEntry {
+                value,
+                meta,
+                last_access: AtomicU64::new(tick),
+            }),
+        );
     }
 
-    /// Looks a result up; expired or policy-changed entries are evicted.
+    /// Looks a result up; valid hits only take a read lock.
     pub fn get(
         &self,
         key: &SearchCacheKey,
         policy_version: &str,
     ) -> CacheLookup<CachedSearchResult> {
-        let mut map = self.entries.write().unwrap();
         let k = key.cache_key();
-        match map.get(&k) {
-            Some((v, meta)) if meta.valid(policy_version) => {
-                self.hits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                CacheLookup::Hit(CacheHit {
-                    value: v.clone(),
-                    created_at: meta.created_at,
-                })
-            }
-            Some(_) => {
+        let entry = {
+            let map = self.entries.read().unwrap();
+            map.get(&k).cloned()
+        };
+        let Some(entry) = entry else {
+            self.misses.fetch_add(1, Ordering::Relaxed);
+            return CacheLookup::Miss;
+        };
+        if entry.meta.valid(policy_version) {
+            let tick = self.clock.fetch_add(1, Ordering::Relaxed) + 1;
+            entry.last_access.store(tick, Ordering::Relaxed);
+            self.hits.fetch_add(1, Ordering::Relaxed);
+            return CacheLookup::Hit(CacheHit {
+                value: entry.value.clone(),
+                created_at: entry.meta.created_at,
+            });
+        }
+        // Expired / policy-changed: remove only the same generation.
+        {
+            let mut map = self.entries.write().unwrap();
+            if map.get(&k).map(|e| Arc::ptr_eq(e, &entry)).unwrap_or(false) {
                 map.remove(&k);
-                self.misses
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                CacheLookup::Miss
-            }
-            None => {
-                self.misses
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                CacheLookup::Miss
             }
         }
+        self.misses.fetch_add(1, Ordering::Relaxed);
+        CacheLookup::Miss
     }
 
     /// Evicts everything (policy version bump).
@@ -99,8 +155,8 @@ impl ExactQueryCache {
     /// Hit/miss counters (RFC-015 15.2 Cache Hit Rate).
     pub fn stats(&self) -> (u64, u64) {
         (
-            self.hits.load(std::sync::atomic::Ordering::Relaxed),
-            self.misses.load(std::sync::atomic::Ordering::Relaxed),
+            self.hits.load(Ordering::Relaxed),
+            self.misses.load(Ordering::Relaxed),
         )
     }
 
@@ -127,6 +183,9 @@ mod tests {
             source_policy_version: "1".into(),
             language: "en".into(),
             workspace_scope: "ws".into(),
+            mode: "local_only".into(),
+            freshness_requirement: "recent".into(),
+            key_version: "v2".into(),
         }
     }
 
@@ -143,7 +202,6 @@ mod tests {
             "1.0.0",
         );
         assert!(matches!(c.get(&k, "1.0.0"), CacheLookup::Hit(_)));
-        // Policy version changed → invalidated.
         assert!(matches!(c.get(&k, "2.0.0"), CacheLookup::Miss));
     }
 
@@ -153,6 +211,8 @@ mod tests {
         let k1 = key("fp1");
         let mut k2 = key("fp1");
         k2.freshness_policy_version = "2".into();
+        let mut k3 = key("fp1");
+        k3.mode = "external_first".into();
         c.put(
             &k1,
             CachedSearchResult {
@@ -162,6 +222,7 @@ mod tests {
             "1",
         );
         assert!(matches!(c.get(&k2, "1"), CacheLookup::Miss));
+        assert!(matches!(c.get(&k3, "1"), CacheLookup::Miss));
     }
 
     #[test]
@@ -177,10 +238,30 @@ mod tests {
             "1",
         );
         let _ = c.get(&k, "1");
-        let _ = c.get(&k, "1"); // still valid → hit
+        let _ = c.get(&k, "1");
         let (hits, misses) = c.stats();
         assert_eq!((hits, misses), (2, 0));
         c.clear();
         assert!(c.is_empty());
+    }
+
+    /// Part 30 §30.11: a hot cache cannot grow without bound.
+    #[test]
+    fn cache_respects_max_entries() {
+        let c = ExactQueryCache::with_max_entries(600, 3);
+        for i in 0..10 {
+            c.put(
+                &key(&format!("fp{i}")),
+                CachedSearchResult {
+                    payload: serde_json::json!(i),
+                    quality_status: "passed".into(),
+                },
+                "1",
+            );
+        }
+        assert_eq!(c.len(), 3);
+        assert!(
+            searchos_observability::MetricsRegistry::global().counter("cache.evicted_total") > 0
+        );
     }
 }

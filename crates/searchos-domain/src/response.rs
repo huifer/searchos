@@ -139,6 +139,17 @@ pub struct SearchResponse {
     pub replayed: bool,
 }
 
+impl CoverageStatus {
+    /// Snake-case wire name; decision traces must carry this, not a count.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Sufficient => "sufficient",
+            Self::Partial => "partial",
+            Self::Insufficient => "insufficient",
+        }
+    }
+}
+
 impl QualityStatus {
     /// Snake-case name.
     pub fn as_str(&self) -> &'static str {

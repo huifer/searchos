@@ -1,6 +1,7 @@
 "use client";
 
 import type { ReactNode } from "react";
+import dynamic from "next/dynamic";
 import { AlertTriangle, ArrowRight, ArrowUpRight, RefreshCw } from "lucide-react";
 
 import {
@@ -13,8 +14,12 @@ import { Badge as ShadcnBadge } from "@/components/ui/badge";
 import { Button as ShadcnButton } from "@/components/ui/button";
 import { Skeleton as ShadcnSkeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { TimeSeriesChart } from "@/components/analytics-charts";
 import { cn } from "@/lib/utils";
+
+const TimeSeriesChart = dynamic(
+  () => import("@/components/analytics-charts").then((m) => m.TimeSeriesChart),
+  { ssr: false, loading: () => <ShadcnSkeleton className="h-[220px] w-full" /> },
+);
 
 export type Tone = "neutral" | "ok" | "warn" | "accent" | "muted";
 

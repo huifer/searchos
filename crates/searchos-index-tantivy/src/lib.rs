@@ -15,7 +15,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use tantivy::collector::TopDocs;
-use tantivy::query::{BooleanQuery, Query, QueryParser};
+use tantivy::query::{BooleanQuery, Query, QueryParser, TermQuery};
 use tantivy::schema::{Field, IndexRecordOption, Schema, TextFieldIndexing, TextOptions, STORED};
 use tantivy::{doc, Index, IndexWriter, Term};
 
@@ -138,13 +138,28 @@ impl TantivyIndex {
             .map_err(|e| SearchOsError::Retrieval(format!("query parse: {e}")))?;
         let mut clauses: Vec<(tantivy::query::Occur, Box<dyn Query>)> =
             vec![(tantivy::query::Occur::Must, Box::new(user_q))];
+        // Workspace scope: the requesting workspace OR the global `*`
+        // namespace (RFC-013 8.7). Other workspaces are never included, so
+        // requester isolation is preserved.
         if let Some(ws) = &query.workspace_id {
             clauses.push((
                 tantivy::query::Occur::Must,
-                Box::new(tantivy::query::TermQuery::new(
-                    Term::from_field_text(self.f_workspace, ws),
-                    IndexRecordOption::Basic,
-                )),
+                Box::new(BooleanQuery::new(vec![
+                    (
+                        tantivy::query::Occur::Should,
+                        Box::new(TermQuery::new(
+                            Term::from_field_text(self.f_workspace, ws),
+                            IndexRecordOption::Basic,
+                        )) as Box<dyn Query>,
+                    ),
+                    (
+                        tantivy::query::Occur::Should,
+                        Box::new(TermQuery::new(
+                            Term::from_field_text(self.f_workspace, "*"),
+                            IndexRecordOption::Basic,
+                        )) as Box<dyn Query>,
+                    ),
+                ])),
             ));
         }
         if let Some(lang) = &query.language {
@@ -161,6 +176,10 @@ impl TantivyIndex {
 
     /// Commits pending writes and refreshes readers (explicit consistency).
     pub async fn commit(&self) -> Result<(), SearchOsError> {
+        self.commit_impl().await
+    }
+
+    async fn commit_impl(&self) -> Result<(), SearchOsError> {
         let mut writer = self.writer.lock().await;
         writer
             .commit()
@@ -176,6 +195,10 @@ impl TantivyIndex {
 
     /// Drops and recreates from chunk payloads (ADR-022 rebuildable).
     pub async fn rebuild_from(&self, documents: &[IndexedDocument]) -> Result<u64, SearchOsError> {
+        self.rebuild_from_impl(documents).await
+    }
+
+    async fn rebuild_from_impl(&self, documents: &[IndexedDocument]) -> Result<u64, SearchOsError> {
         {
             let mut writer = self.writer.lock().await;
             writer
@@ -184,17 +207,32 @@ impl TantivyIndex {
             writer
                 .commit()
                 .map_err(|e| SearchOsError::Storage(e.to_string()))?;
+            *self.count.write().unwrap() = 0;
         }
         for d in documents {
             self.index(d.clone()).await?;
         }
         self.commit().await?;
         self.bump_version();
-        Ok(self.count())
+        Ok(self.num_docs())
     }
 
     /// Current index version (invalidates retrieval caches on change).
     pub fn version(&self) -> u64 {
+        self.index_version.load(Ordering::SeqCst)
+    }
+
+    /// Authoritative committed doc count from the tantivy searcher.
+    /// Restarts must not report false index drift (RFC-018 18.4).
+    pub fn num_docs(&self) -> u64 {
+        self.index
+            .reader()
+            .map(|r| r.searcher().num_docs())
+            .unwrap_or(0)
+    }
+
+    /// Raw index version counter.
+    pub fn index_version(&self) -> u64 {
         self.index_version.load(Ordering::SeqCst)
     }
 
@@ -203,16 +241,23 @@ impl TantivyIndex {
         self.index_version.fetch_add(1, Ordering::SeqCst);
     }
 
-    /// Indexed chunk count (manual tracking; searcher num_docs is eventual).
-    fn count(&self) -> u64 {
-        *self.count.read().unwrap()
+    /// Resets the counter from the authoritative committed searcher.
+    fn refresh_count(&self) -> Result<(), SearchOsError> {
+        self.index
+            .reader()
+            .map_err(|e| SearchOsError::Storage(format!("reader: {e}")))?
+            .reload()
+            .map_err(|e| SearchOsError::Storage(format!("reload: {e}")))?;
+        *self.count.write().unwrap() = self.num_docs();
+        Ok(())
     }
 }
 
 #[async_trait]
 impl SearchIndex for TantivyIndex {
     async fn index(&self, document: IndexedDocument) -> Result<(), SearchOsError> {
-        let fetched = tantivy::DateTime::from_timestamp_secs(document.fetched_at.timestamp());
+        let fetched =
+            tantivy::DateTime::from_timestamp_millis(document.fetched_at.timestamp_millis());
         let writer = self.writer.lock().await;
         writer
             .add_document(doc!(
@@ -236,11 +281,14 @@ impl SearchIndex for TantivyIndex {
         query: &RetrievalQuery,
     ) -> Result<Vec<RetrievalCandidate>, SearchOsError> {
         self.commit().await?;
-        let searcher = self
+        let reader = self
             .index
             .reader()
-            .map_err(|e| SearchOsError::Storage(format!("reader: {e}")))?
-            .searcher();
+            .map_err(|e| SearchOsError::Storage(format!("reader: {e}")))?;
+        reader
+            .reload()
+            .map_err(|e| SearchOsError::Storage(format!("reload: {e}")))?;
+        let searcher = reader.searcher();
         let q = self.build_query(query)?;
         let top = TopDocs::with_limit(query.top_k.max(1)).order_by_score();
         let hits = searcher
@@ -287,6 +335,8 @@ impl SearchIndex for TantivyIndex {
                 fetched_at: chrono::DateTime::from_timestamp_secs(fetched_at).unwrap_or_default(),
                 vector_score: None,
                 bm25_score: Some(score),
+                workspace_id: get(self.f_workspace),
+                language: get(self.f_language),
             });
         }
         Ok(out)
@@ -302,12 +352,35 @@ impl SearchIndex for TantivyIndex {
             .commit()
             .map_err(|e| SearchOsError::Storage(e.to_string()))?;
         drop(writer);
+        self.refresh_count()?;
+        self.bump_version();
+        Ok(())
+    }
+
+    async fn delete_by_chunk_ids(&self, chunk_ids: &[ChunkId]) -> Result<(), SearchOsError> {
+        let mut writer = self.writer.lock().await;
+        for id in chunk_ids {
+            writer.delete_term(Term::from_field_text(self.f_chunk_id, id.as_str()));
+        }
+        writer
+            .commit()
+            .map_err(|e| SearchOsError::Storage(e.to_string()))?;
+        drop(writer);
+        self.refresh_count()?;
         self.bump_version();
         Ok(())
     }
 
     async fn count(&self) -> Result<u64, SearchOsError> {
-        Ok(self.count())
+        Ok(self.num_docs())
+    }
+
+    async fn commit(&self) -> Result<(), SearchOsError> {
+        self.commit_impl().await
+    }
+
+    async fn rebuild_from(&self, documents: &[IndexedDocument]) -> Result<u64, SearchOsError> {
+        self.rebuild_from_impl(documents).await
     }
 }
 
@@ -386,6 +459,22 @@ mod tests {
         let q = RetrievalQuery::new("zanzibar", 5);
         assert!(!idx.search(&q).await.unwrap().is_empty());
         idx.delete(&DocumentId::new("doc_1")).await.unwrap();
+        assert!(idx.search(&q).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn delete_by_chunk_ids_removes_hits() {
+        let idx = TantivyIndex::in_memory().unwrap();
+        idx.index(doc("c1", "special searchable term zanzibar"))
+            .await
+            .unwrap();
+        idx.index(doc("c2", "other content")).await.unwrap();
+        idx.commit().await.unwrap();
+        let q = RetrievalQuery::new("zanzibar", 5);
+        assert!(!idx.search(&q).await.unwrap().is_empty());
+        idx.delete_by_chunk_ids(&[ChunkId::new("c1")])
+            .await
+            .unwrap();
         assert!(idx.search(&q).await.unwrap().is_empty());
     }
 

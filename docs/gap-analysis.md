@@ -39,7 +39,7 @@ found concrete functional gaps. This document records them and what was added.
 | 11 | RFC-006 6.7 | No way to import provider billing; estimate could be presented as an invoice | `cost_reconciliations` + `POST /cost/reconcile` / `searchos cost reconcile`; estimates are never rewritten, `is_estimate` stays honest. |
 | 12 | RFC-006 6.9/6.10; App. C | No savings / CPQPA / four reuse cost views | `SavingsReport` + `ReuseCostViews`; `searchos cost savings`, `stats savings`, `/stats/savings`, `/cost/savings`; new metrics (`external_avoidance_rate`, `valid_local_resolution_rate`, `cost_per_quality_passing_answer_micros`). |
 | 13 | RFC-013 13.3; RFC-017 17.6 | Gateway had a single bearer token, **no workspace authorization**, no rate limit, no API version | `server.workspace_tokens` (token→workspace binding), in-process `RateLimiter` (429), `/v1/*` mount + `x-searchos-api-version` header. |
-| 14 | RFC-021 21.2/21.5 | Missing `GET /trace/{id}`; MCP missing `fetch`, `document_search`, `trace_inspect` | All added; MCP tool descriptions now distinguish `local_only` from external-capable modes. |
+| 14 | RFC-021 21.2/21.5 | Missing `GET /trace/{id}`; MCP missing `fetch`, `document_search`, `trace_inspect` | All added; MCP now also exposes `ingest_text` / `ingest_file`; tool descriptions distinguish `local_only` from external-capable modes. |
 | 15 | RFC-019 19.3/19.4/19.5 | Config had 6 of 13 declared sections; invalid YAML silently fell back to defaults; no `profile` commands | All governance sections added with defaults, `validate()` + `load_config_report()`, `searchos config validate`, `profile list|inspect`, `stats retrieval|savings`, `index stats`. |
 | 16 | RFC-024 24.5 | No data export | `searchos export` (documents, cost summary, redacted config, index state; secrets never exported). |
 | 17 | RFC-015 15.4 | Evaluation framework existed only as a library; no way to run the 500-question dataset | `searchos eval run --dataset ... --limit N --out ...` wiring the real search service into `run_dataset` and comparing baselines A/B/C. |
@@ -72,7 +72,7 @@ actively rejected by config validation because SearchOS returns evidence, not an
 ### 5. Verification
 
 ```bash
-cargo test --workspace                 # 291 passed, 0 failed (57 suites)
+cargo test --workspace                 # all suites green (CI tracks the count)
 cargo clippy --workspace --all-targets # 0 warnings
 cargo fmt --all -- --check
 cargo build --bin searchos
@@ -90,7 +90,8 @@ SRC_DIR=crates/searchos-interface-http/src \
 
 分享链接里的对话是项目的**原始设计源**。其中 #82 是完整的 25 份 RFC 基线，
 #87 是 RFC-004 v1.1 的工程化细化，#74 是 MVP 验收口径。仓库 `docs/rfc/` 原先
-是浓缩后的 16 份 RFC + 附录 17-22。对照后发现上表 20 项功能缺口，均已补强。
+是浓缩后的 16 份 RFC + 附录 17-22。对照后发现上表 20 项功能缺口，均已补强；Part 30
+的 21 条执行正确性不变量也已落地并通过命名验收测试。
 
 ### 2. 可视化界面
 
@@ -120,4 +121,4 @@ WASM 扩展、Gateway 集群、多租户 RBAC/SSO、自研向量库/Embedding/LL
 
 ### 5. 验收
 
-见上方命令；`cargo test --workspace` 291 个测试全部通过，网关路由扫描无冲突。
+见上方命令；`cargo test --workspace` 全部套件通过，网关路由扫描无冲突。

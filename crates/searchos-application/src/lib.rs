@@ -11,12 +11,18 @@
 
 pub mod analytics;
 pub mod fetch_service;
+pub mod ingest_service;
 pub mod merge;
 pub mod search_service;
 pub mod singleflight;
 
 pub use analytics::{AnalyticsQuery, AnalyticsQueryService};
 pub use fetch_service::{FetchService, FetchServiceImpl};
+pub use ingest_service::{
+    IngestBatchItem, IngestBatchResult, IngestFailure, IngestJobPort, IngestPayload, IngestRequest,
+    IngestService, IngestServiceImpl, IngestedDocument, LOCAL_SOURCE_TYPE_DIRECTORY,
+    LOCAL_SOURCE_TYPE_FILE, LOCAL_SOURCE_TYPE_MIXED, LOCAL_SOURCE_TYPE_TEXT,
+};
 pub use search_service::{SearchService, SearchServiceImpl};
 pub use singleflight::SingleflightCoordinator;
 
@@ -30,6 +36,8 @@ use std::sync::Arc;
 pub struct SearchOsApplication {
     pub search_service: Arc<dyn SearchService>,
     pub fetch_service: Arc<dyn FetchService>,
+    /// RFC-029: local data import (text / file / directory).
+    pub ingest_service: Arc<dyn IngestService>,
     pub memory_service: Arc<dyn MemoryUseCase>,
     pub cost_service: Arc<dyn CostUseCase>,
     /// RFC-026: single Analytics Query Service behind the Dashboard API.
@@ -89,6 +97,15 @@ pub trait CostUseCase: Send + Sync {
     /// Budget reservation ledger view (RFC-004 v1.1 15).
     async fn reservations(&self, _limit: u32) -> Result<serde_json::Value, SearchOsError> {
         Ok(serde_json::json!({ "reservations": [] }))
+    }
+
+    /// Reservations scoped at the SQL level to one workspace (INV-30-10).
+    async fn reservations_scoped(
+        &self,
+        limit: u32,
+        _workspace: Option<&str>,
+    ) -> Result<serde_json::Value, SearchOsError> {
+        self.reservations(limit).await
     }
     /// Provider-bill reconciliation: estimated cost is never rewritten
     /// (RFC-006 6.7).

@@ -21,9 +21,18 @@ pub enum SelectedCrawler {
     FallbackFetch,
 }
 
+/// Per-manifest discovery outcome; failures are isolated, never swallowed.
+#[derive(Debug, Clone, Default)]
+pub struct DiscoveryReport {
+    pub loaded: Vec<String>,
+    pub quarantined: Vec<String>,
+    pub errors: Vec<String>,
+}
+
 /// Registry of loaded crawler manifests + failure tracker.
 pub struct CrawlerRegistry {
     crawlers: RwLock<HashMap<String, CrawlerManifest>>,
+    quarantined: RwLock<HashMap<String, String>>,
     tracker: FailureTracker,
 }
 
@@ -32,6 +41,7 @@ impl CrawlerRegistry {
     pub fn new() -> Self {
         Self {
             crawlers: RwLock::new(HashMap::new()),
+            quarantined: RwLock::new(HashMap::new()),
             tracker: FailureTracker::new(5, std::time::Duration::from_secs(60)),
         }
     }
@@ -39,20 +49,18 @@ impl CrawlerRegistry {
     /// Registers a manifest (validates first, RFC-010 10.3).
     pub fn register(&self, manifest: CrawlerManifest) -> Result<(), String> {
         manifest.validate()?;
-        self.crawlers
-            .write()
-            .unwrap()
-            .insert(manifest.id.clone(), manifest);
+        let id = manifest.id.clone();
+        self.crawlers.write().unwrap().insert(id.clone(), manifest);
+        self.quarantined.write().unwrap().remove(&id);
         Ok(())
     }
 
-    /// Discovers manifests from an extensions/crawlers directory tree
-    /// (each subdir holds manifest.yaml).
-    pub fn discover(&self, dir: &Path) -> Result<Vec<String>, String> {
-        let mut loaded = Vec::new();
-        let mut errors = Vec::new();
+    /// Discovers manifests one-by-one. A bad manifest is quarantined only by
+    /// itself; later manifests continue to load (Part 24 §24.6, INV-30-12).
+    pub fn discover(&self, dir: &Path) -> Result<DiscoveryReport, String> {
+        let mut report = DiscoveryReport::default();
         if !dir.exists() {
-            return Ok(loaded);
+            return Ok(report);
         }
         let mut entries: Vec<_> = std::fs::read_dir(dir)
             .map_err(|e| e.to_string())?
@@ -64,16 +72,36 @@ impl CrawlerRegistry {
             if !manifest_path.exists() {
                 continue;
             }
-            let yaml = std::fs::read_to_string(&manifest_path).map_err(|e| e.to_string())?;
-            match CrawlerManifest::from_yaml(&yaml).and_then(|m| self.register(m).map(|_| ())) {
-                Ok(()) => loaded.push(entry.file_name().to_string_lossy().to_string()),
-                Err(e) => errors.push(format!("{}: {e}", entry.file_name().to_string_lossy())),
+            let label = entry.file_name().to_string_lossy().to_string();
+            let yaml = match std::fs::read_to_string(&manifest_path) {
+                Ok(y) => y,
+                Err(e) => {
+                    let error = format!("{label}: {e}");
+                    report.errors.push(error.clone());
+                    report.quarantined.push(label.clone());
+                    self.quarantined.write().unwrap().insert(label, error);
+                    continue;
+                }
+            };
+            match CrawlerManifest::from_yaml(&yaml) {
+                Ok(manifest) => match self.register(manifest.clone()) {
+                    Ok(()) => report.loaded.push(manifest.id),
+                    Err(e) => {
+                        let error = format!("{}: {e}", manifest.id);
+                        report.errors.push(error.clone());
+                        report.quarantined.push(manifest.id.clone());
+                        self.quarantined.write().unwrap().insert(manifest.id, error);
+                    }
+                },
+                Err(e) => {
+                    let error = format!("{label}: {e}");
+                    report.errors.push(error.clone());
+                    report.quarantined.push(label.clone());
+                    self.quarantined.write().unwrap().insert(label, error);
+                }
             }
         }
-        if !errors.is_empty() {
-            return Err(errors.join("; "));
-        }
-        Ok(loaded)
+        Ok(report)
     }
 
     /// Selects the executor for a URL host (RFC-010 10.4 priority).
@@ -129,6 +157,19 @@ impl CrawlerRegistry {
     /// Failure tracker access (record failures/successes, list failures).
     pub fn tracker(&self) -> &FailureTracker {
         &self.tracker
+    }
+
+    /// Quarantined manifests for diagnostics / CLI list views.
+    pub fn quarantined(&self) -> Vec<(String, String)> {
+        let mut v: Vec<(String, String)> = self
+            .quarantined
+            .read()
+            .unwrap()
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        v.sort();
+        v
     }
 
     /// Whether the registry is empty.
@@ -227,12 +268,34 @@ healthcheck:
         std::fs::create_dir_all(&gh_dir).unwrap();
         std::fs::write(gh_dir.join("manifest.yaml"), GH).unwrap();
         let r = CrawlerRegistry::new();
-        let loaded = r.discover(&dir).unwrap();
-        assert_eq!(loaded, vec!["github.com".to_string()]);
+        let report = r.discover(&dir).unwrap();
+        assert_eq!(report.loaded, vec!["crawler.github.com".to_string()]);
+        assert!(report.errors.is_empty());
         assert_eq!(r.list().len(), 1);
         let (m, status) = r.inspect("crawler.github.com").unwrap();
         assert_eq!(m.id, "crawler.github.com");
         assert_eq!(status, CrawlerStatus::Healthy);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn bad_manifest_quarantines_only_itself() {
+        let dir = std::env::temp_dir().join(format!(
+            "searchos-crawler-quarantine-{}",
+            std::process::id()
+        ));
+        let bad = dir.join("bad.example");
+        let good = dir.join("github.com");
+        std::fs::create_dir_all(&bad).unwrap();
+        std::fs::create_dir_all(&good).unwrap();
+        std::fs::write(bad.join("manifest.yaml"), "not: a: crawler").unwrap();
+        std::fs::write(good.join("manifest.yaml"), GH).unwrap();
+        let r = CrawlerRegistry::new();
+        let report = r.discover(&dir).unwrap();
+        assert!(report.loaded.contains(&"crawler.github.com".to_string()));
+        assert!(report.quarantined.iter().any(|q| q.contains("bad.example")));
+        assert_eq!(r.list().len(), 1, "good manifest still loaded");
+        assert!(!r.quarantined().is_empty());
         std::fs::remove_dir_all(&dir).ok();
     }
 

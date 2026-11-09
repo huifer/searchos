@@ -20,19 +20,23 @@ pub enum ContentCategory {
     News,
     /// 实时信息 — not cached / extremely short TTL.
     Realtime,
+    /// 用户自有本地知识（RFC-029）— 默认不因存放时间而 stale，除非显式覆盖 TTL。
+    Local,
 }
 
 impl ContentCategory {
     /// Default TTL in seconds per RFC-005 5.5.
     pub fn default_ttl_seconds(&self) -> Option<u64> {
-        Some(match self {
-            Self::StaticConcept => 180 * 24 * 3600,
-            Self::OfficialDocs => 30 * 24 * 3600,
-            Self::GithubRelease => 3 * 24 * 3600,
-            Self::ApiPricing => 24 * 3600,
-            Self::News => 60 * 60,
-            Self::Realtime => 0, // never cached
-        })
+        match self {
+            Self::StaticConcept => Some(180 * 24 * 3600),
+            Self::OfficialDocs => Some(30 * 24 * 3600),
+            Self::GithubRelease => Some(3 * 24 * 3600),
+            Self::ApiPricing => Some(24 * 3600),
+            Self::News => Some(60 * 60),
+            Self::Realtime => Some(0), // never cached
+            // RFC-029: user-owned local knowledge has no age-based TTL.
+            Self::Local => None,
+        }
     }
 
     /// Parses from snake_case name.
@@ -44,6 +48,7 @@ impl ContentCategory {
             "api_pricing" => Self::ApiPricing,
             "news" => Self::News,
             "realtime" => Self::Realtime,
+            "local" => Self::Local,
             _ => return None,
         })
     }
@@ -80,6 +85,11 @@ impl FreshnessPolicy {
 
     /// Whether content fetched at `age_seconds` is fresh for `category`.
     pub fn is_fresh(&self, category: ContentCategory, age_seconds: i64) -> bool {
+        // RFC-029 5.4: user-owned local knowledge does not decay by age
+        // unless the caller explicitly overrides its TTL.
+        if category == ContentCategory::Local && !self.ttl_overrides.contains_key("local") {
+            return true;
+        }
         match self.ttl_seconds(category) {
             None => false, // realtime: never fresh from cache
             Some(ttl) => {
@@ -105,6 +115,7 @@ fn category_name(c: ContentCategory) -> &'static str {
         ContentCategory::ApiPricing => "api_pricing",
         ContentCategory::News => "news",
         ContentCategory::Realtime => "realtime",
+        ContentCategory::Local => "local",
     }
 }
 
@@ -112,6 +123,10 @@ fn category_name(c: ContentCategory) -> &'static str {
 pub fn classify_content(url: &str, title: Option<&str>) -> ContentCategory {
     let u = url.to_lowercase();
     let t = title.unwrap_or("").to_lowercase();
+    // RFC-029: locally ingested sources are user-owned knowledge.
+    if u.starts_with("searchos-local://") {
+        return ContentCategory::Local;
+    }
     if u.contains("github.com")
         && (u.contains("/releases") || u.contains("release") || u.contains("/tags"))
     {
@@ -167,5 +182,22 @@ mod tests {
             classify_content("https://openai.com/pricing", None),
             ContentCategory::ApiPricing
         );
+    }
+
+    #[test]
+    fn local_ingest_is_classified_local_and_never_age_stale() {
+        // RFC-029 5.4: user-owned local knowledge is its own category.
+        assert_eq!(
+            classify_content("searchos-local://default/notes/alpha", Some("alpha")),
+            ContentCategory::Local
+        );
+        let p = FreshnessPolicy::default_policy();
+        assert_eq!(ContentCategory::Local.default_ttl_seconds(), None);
+        // Even far beyond the strict max age, local knowledge stays fresh.
+        assert!(p.is_fresh(ContentCategory::Local, 10 * 365 * 24 * 3600));
+        // An explicit override still wins.
+        let mut overridden = FreshnessPolicy::default_policy();
+        overridden.ttl_overrides.insert("local".to_string(), 3600);
+        assert!(!overridden.is_fresh(ContentCategory::Local, 2 * 3600));
     }
 }

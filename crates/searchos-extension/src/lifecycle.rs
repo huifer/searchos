@@ -39,6 +39,16 @@ pub struct ValidationError {
     pub message: String,
 }
 
+/// Result of one discovery pass. Per-manifest failures are isolated: one
+/// bad manifest never prevents later manifests from loading (Part 24 §24.6,
+/// INV-30-12).
+#[derive(Debug, Clone, Default)]
+pub struct DiscoveryReport {
+    pub loaded: Vec<String>,
+    pub quarantined: Vec<String>,
+    pub errors: Vec<String>,
+}
+
 /// A tracked extension.
 #[derive(Debug, Clone)]
 pub struct ExtensionRecord {
@@ -110,11 +120,23 @@ impl ExtensionRegistry {
         Ok(state)
     }
 
-    /// Discovers manifest.yaml files under a directory tree.
-    pub fn discover(&self, dir: &Path) -> Result<Vec<String>, String> {
-        let mut loaded = Vec::new();
+    /// Discovers manifest.yaml files with the permissive default runtime
+    /// policy (used by tests and tools).
+    pub fn discover(&self, dir: &Path) -> Result<DiscoveryReport, String> {
+        self.discover_with_policy(dir, true, true)
+    }
+
+    /// Discovers manifests one-by-one, quarantining only the failing entry.
+    /// `allow_native` / `wasm_enabled` are runtime config fields, not no-ops.
+    pub fn discover_with_policy(
+        &self,
+        dir: &Path,
+        allow_native: bool,
+        wasm_enabled: bool,
+    ) -> Result<DiscoveryReport, String> {
+        let mut report = DiscoveryReport::default();
         if !dir.exists() {
-            return Ok(loaded);
+            return Ok(report);
         }
         let mut entries: Vec<_> = std::fs::read_dir(dir)
             .map_err(|e| e.to_string())?
@@ -126,16 +148,82 @@ impl ExtensionRegistry {
             if !p.exists() {
                 continue;
             }
-            let yaml = std::fs::read_to_string(&p).map_err(|e| e.to_string())?;
-            match ExtensionManifest::from_yaml(&yaml) {
-                Ok(m) => match self.install(m.clone()) {
-                    Ok(_) => loaded.push(m.id),
-                    Err(ve) => return Err(format!("{}: {ve}", m.id)),
-                },
-                Err(e) => return Err(format!("{}: {e}", p.display())),
+            let label = e.file_name().to_string_lossy().to_string();
+            let yaml = match std::fs::read_to_string(&p) {
+                Ok(y) => y,
+                Err(err) => {
+                    let message = format!("{label}: {err}");
+                    report.errors.push(message.clone());
+                    report.quarantined.push(label.clone());
+                    self.quarantine_stub(&label, &message);
+                    continue;
+                }
+            };
+            let manifest = match ExtensionManifest::from_yaml(&yaml) {
+                Ok(m) => m,
+                Err(err) => {
+                    let message = format!("{label}: {err}");
+                    report.errors.push(message.clone());
+                    report.quarantined.push(label.clone());
+                    self.quarantine_stub(&label, &message);
+                    continue;
+                }
+            };
+            let policy_error = match manifest.runtime {
+                RuntimeKind::Native if !allow_native => Some("native extensions disabled"),
+                RuntimeKind::Wasm if !wasm_enabled => Some("wasm extensions disabled"),
+                _ => None,
+            };
+            if let Some(reason) = policy_error {
+                let message = format!("{}: {reason}", manifest.id);
+                report.errors.push(message.clone());
+                report.quarantined.push(manifest.id.clone());
+                self.quarantine_manifest(manifest, &message);
+                continue;
+            }
+            match self.install(manifest.clone()) {
+                Ok(_) => report.loaded.push(manifest.id),
+                Err(ve) => {
+                    let message = format!("{}: {ve}", manifest.id);
+                    report.errors.push(message.clone());
+                    report.quarantined.push(manifest.id.clone());
+                    self.quarantine_manifest(manifest, &message);
+                }
             }
         }
-        Ok(loaded)
+        Ok(report)
+    }
+
+    fn quarantine_stub(&self, label: &str, error: &str) {
+        let id = format!("ext.quarantined.{label}");
+        let manifest = ExtensionManifest {
+            id: id.clone(),
+            name: label.to_string(),
+            version: "0.0.0".into(),
+            kind: crate::manifest::ExtensionType::Intelligence,
+            runtime: RuntimeKind::Declarative,
+            entry: Some("quarantined.yaml".into()),
+            permissions: Default::default(),
+            requires_core: None,
+            healthcheck: Some(false),
+        };
+        self.insert_quarantined(manifest, error);
+    }
+
+    fn quarantine_manifest(&self, manifest: ExtensionManifest, error: &str) {
+        self.insert_quarantined(manifest, error);
+    }
+
+    fn insert_quarantined(&self, manifest: ExtensionManifest, error: &str) {
+        self.records.write().unwrap().insert(
+            manifest.id.clone(),
+            ExtensionRecord {
+                manifest,
+                state: ExtensionState::Quarantined,
+                loaded_at: None,
+                last_error: Some(error.to_string()),
+            },
+        );
     }
 
     /// Marks an extension active (post health check).
@@ -173,6 +261,14 @@ impl ExtensionRegistry {
     /// Looks up a record.
     pub fn get(&self, id: &str) -> Option<ExtensionRecord> {
         self.records.read().unwrap().get(id).cloned()
+    }
+
+    /// Quarantined records for `extension list --quarantined` / dashboard.
+    pub fn quarantined(&self) -> Vec<ExtensionRecord> {
+        self.list()
+            .into_iter()
+            .filter(|r| r.state == ExtensionState::Quarantined)
+            .collect()
     }
 
     /// Lists all records sorted by id (for `extension list`).
@@ -283,5 +379,44 @@ mod tests {
         assert!(version_lt("0.1.0", "1.0.0"));
         assert!(!version_lt("1.2.3", "1.2.2"));
         assert!(!version_lt("1.0.0", "1.0.0"));
+    }
+
+    /// Part 30 §30.11: one bad manifest quarantines only itself; later
+    /// manifests still load and failures are observable.
+    #[test]
+    fn bad_manifest_quarantines_only_itself() {
+        let dir = tempfile::tempdir().unwrap();
+        let bad = dir.path().join("bad");
+        let good = dir.path().join("good");
+        std::fs::create_dir_all(&bad).unwrap();
+        std::fs::create_dir_all(&good).unwrap();
+        std::fs::write(bad.join("manifest.yaml"), "this: is: not: an extension").unwrap();
+        std::fs::write(
+            good.join("manifest.yaml"),
+            r#"
+id: ext.good
+name: Good Extension
+version: 1.0.0
+type: search_provider
+runtime: native
+permissions:
+  network: []
+healthcheck: false
+"#,
+        )
+        .unwrap();
+        let registry = ExtensionRegistry::new();
+        let report = registry.discover(dir.path()).unwrap();
+        assert!(report.loaded.contains(&"ext.good".to_string()));
+        assert!(report.quarantined.iter().any(|q| q.contains("bad")));
+        assert!(!report.errors.is_empty());
+        assert_eq!(
+            registry.get("ext.good").unwrap().state,
+            ExtensionState::Active
+        );
+        assert!(registry
+            .quarantined()
+            .iter()
+            .any(|r| r.manifest.id.contains("bad")));
     }
 }

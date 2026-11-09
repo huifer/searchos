@@ -18,3 +18,4 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 regex = { workspace = true }
 searchos-provider = { workspace = true }
+searchos-observability = { workspace = true }

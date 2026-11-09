@@ -11,17 +11,32 @@ use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 use output::{print, Format};
+use searchos_application::ingest_service::{IngestBatchItem, IngestPayload, IngestRequest};
 use searchos_core::{SearchOsConfig, SearchOsRuntime};
 use searchos_domain::ids::{ProfileId, WorkspaceId};
-use searchos_domain::memory::MemoryNamespace;
+use searchos_domain::memory::{MemoryNamespace, SharingPolicy};
 use searchos_domain::request::{SearchMode, SearchRequest};
-use searchos_domain::SearchOsError;
+use searchos_domain::{SearchOsError, ValidationError};
 use searchos_evaluation::{runner::QueryResult as EvalQueryResult, EvaluationDataset};
 use searchos_storage_sqlite::repos;
 
-/// SearchOS — quality-first, cost-aware search infrastructure for agents.
+/// SearchOS — quality-first, cost-aware search infrastructure for AI agents.
+///
+/// The CLI runs in Local Mode: it calls the in-process runtime directly and
+/// never round-trips through localhost HTTP. `gateway start` is the exception
+/// — it runs the Gateway Mode HTTP server itself. Data lives in ~/.searchos
+/// unless --data-dir or SEARCHOS_DATA_DIR overrides it.
 #[derive(Parser)]
-#[command(name = "searchos", version, about, long_about = None)]
+#[command(
+    name = "searchos",
+    version,
+    about = "Quality-first, cost-aware search infrastructure for AI agents",
+    long_about = "SearchOS — quality-first, cost-aware search infrastructure for AI agents.\n\n\
+                  Local Mode is in-process: the CLI calls the runtime directly and never talks to a\n\
+                  local HTTP server. `gateway start` is the exception — it runs the Gateway Mode HTTP\n\
+                  server itself. Data lives in ~/.searchos unless --data-dir or SEARCHOS_DATA_DIR\n\
+                  overrides it. Every command accepts --format json|human|markdown."
+)]
 struct Cli {
     /// Config file override (env: SEARCHOS_CONFIG)
     #[arg(long, global = true, env = "SEARCHOS_CONFIG")]
@@ -29,12 +44,15 @@ struct Cli {
     /// Data directory override (env: SEARCHOS_DATA_DIR)
     #[arg(long, global = true, env = "SEARCHOS_DATA_DIR")]
     data_dir: Option<PathBuf>,
-    /// Output format
+    /// Output format for command results
     #[arg(long, global = true, value_enum, default_value = "human")]
     format: Format,
     /// Non-interactive (never prompt)
     #[arg(long, global = true, default_value_t = true)]
     non_interactive: bool,
+    /// Increase log verbosity: -v = info, -vv = debug, -vvv = trace (RUST_LOG overrides)
+    #[arg(long, short = 'v', global = true, action = clap::ArgAction::Count)]
+    verbose: u8,
     #[command(subcommand)]
     command: Command,
 }
@@ -47,29 +65,76 @@ enum Command {
     Doctor,
     /// Print version information
     Version,
-    /// Execute a search
+    /// Generate shell completion scripts
+    Completions {
+        /// Target shell: bash | zsh | fish | powershell | elvish
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
+    /// Execute a search (quality-gated, cost-aware)
     Search {
+        /// Search query text
         query: String,
+        /// Search profile: general | fast | deep | latest
         #[arg(long, default_value = "general")]
         profile: String,
         /// local_only | local_first | external_first | external_only | hybrid
         #[arg(long, default_value = "local_first")]
         mode: String,
+        /// Workspace that owns the search and its memory
         #[arg(long, default_value = "default")]
         workspace: String,
+        /// Cap on external search queries for this request
         #[arg(long)]
         max_external_queries: Option<u32>,
+        /// Cap on total estimated cost for this request (major units)
         #[arg(long)]
         max_cost: Option<f64>,
+        /// Maximum number of results returned after the quality gate
+        #[arg(long)]
+        max_results: Option<u32>,
         /// Client idempotency key (replaying it must not re-bill a search)
         #[arg(long)]
         request_id: Option<String>,
     },
-    /// Fetch and persist a URL
+    /// Fetch, extract and persist a URL
     Fetch {
+        /// URL to fetch and persist
         url: String,
+        /// Workspace that owns the document
         #[arg(long, default_value = "default")]
         workspace: String,
+    },
+    /// Import local data into the knowledge store (RFC-029)
+    #[command(group(clap::ArgGroup::new("source").required(true).args(["text", "file", "dir"])))]
+    Ingest {
+        /// Import a text string
+        #[arg(long, group = "source")]
+        text: Option<String>,
+        /// Import a single file
+        #[arg(long, group = "source")]
+        file: Option<PathBuf>,
+        /// Import a directory (one document per file)
+        #[arg(long, group = "source")]
+        dir: Option<PathBuf>,
+        /// Stable logical identity (recommended for files you will update)
+        #[arg(long)]
+        source_key: Option<String>,
+        /// Human title (defaults to the file name or first line)
+        #[arg(long)]
+        title: Option<String>,
+        /// Content type hint (sniffed when omitted)
+        #[arg(long)]
+        content_type: Option<String>,
+        /// Workspace that owns the document
+        #[arg(long, default_value = "default")]
+        workspace: String,
+        /// Recurse into subdirectories (--dir)
+        #[arg(long, default_value_t = false)]
+        recursive: bool,
+        /// Comma-separated extension allowlist (--dir)
+        #[arg(long, value_delimiter = ',')]
+        ext: Vec<String>,
     },
     /// Document operations
     Document {
@@ -101,10 +166,12 @@ enum Command {
         #[command(subcommand)]
         cmd: ConfigCmd,
     },
-    /// Data export (RFC-024 24.5)
+    /// Data export (RFC-024 24.5) — secrets are never exported
     Export {
+        /// Write the export to this file (default: stdout)
         #[arg(long)]
         out: Option<PathBuf>,
+        /// Workspace to export
         #[arg(long, default_value = "default")]
         workspace: String,
     },
@@ -154,59 +221,111 @@ enum Command {
 
 #[derive(Subcommand)]
 enum DocumentCmd {
+    /// List persisted documents (most recent first)
     List {
+        /// Maximum number of documents to return
         #[arg(long, default_value_t = 50)]
         limit: u32,
+        /// Filter by source type: web | local_text | local_file | local_directory
+        #[arg(long)]
+        source_type: Option<String>,
+        /// Filter by owning workspace
+        #[arg(long)]
+        workspace: Option<String>,
     },
+    /// Show a document and its current version
     Inspect {
+        /// Document ID (from `document list`)
         id: String,
     },
+    /// Re-fetch the document URL and store a new version
     Refresh {
+        /// Document ID to refresh
         id: String,
     },
+    /// Delete a document and all of its versions
     Delete {
+        /// Document ID to delete
         id: String,
     },
 }
 
 #[derive(Subcommand)]
 enum MemoryCmd {
+    /// Search namespaced search memory
     Search {
+        /// Free-text memory query
         query: String,
+        /// Workspace that owns the memory namespace
         #[arg(long, default_value = "default")]
         workspace: String,
+        /// Number of memory hits to return
         #[arg(long, default_value_t = 5)]
         top_k: usize,
     },
+    /// Memory storage statistics
     Stats,
+    /// Write a reusable memory entry (RFC-013 semantic memory)
+    Remember {
+        /// Short title
+        #[arg(long)]
+        title: String,
+        /// Memory body (distilled evidence, not a final answer)
+        #[arg(long)]
+        content: String,
+        /// Workspace that owns the memory namespace
+        #[arg(long, default_value = "default")]
+        workspace: String,
+        /// Sharing policy: private | workspace_shared | project_shared | global_public
+        #[arg(long, default_value = "workspace_shared")]
+        sharing: String,
+        /// Comma-separated labels
+        #[arg(long, value_delimiter = ',')]
+        tags: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]
 enum ProviderCmd {
+    /// List configured external search providers
     List,
-    Add { name: String },
+    /// Check a provider's API key in the environment (keys are never stored)
+    Add {
+        /// Provider name: tavily | brave
+        name: String,
+    },
+    /// Per-provider circuit state and rate-limit status
     Health,
 }
 
 #[derive(Subcommand)]
 enum ProfileCmd {
+    /// List built-in search profiles
     List,
-    Inspect { id: String },
+    /// Show a profile's versioned settings
+    Inspect {
+        /// Profile ID (e.g. general, fast, deep, latest)
+        id: String,
+    },
 }
 
 #[derive(Subcommand)]
 enum StatsCmd {
+    /// Retrieval / reuse rates and exact-cache counters
     Retrieval,
+    /// Cost savings, CPQPA and reuse views
     Savings,
 }
 
 #[derive(Subcommand)]
 enum ConfigCmd {
+    /// Validate the effective configuration (exit 2 on errors)
     Validate,
 }
 
 #[derive(Subcommand)]
 enum EvalCmd {
+    /// Run the labelled evaluation dataset through the real search service
     Run {
         /// Dataset JSONL path
         #[arg(long, default_value = "fixtures/evaluations/dataset-v1.jsonl")]
@@ -214,6 +333,7 @@ enum EvalCmd {
         /// Evaluate only the first N questions (0 = all)
         #[arg(long, default_value_t = 0)]
         limit: usize,
+        /// Write the full JSON report to this file
         #[arg(long)]
         out: Option<PathBuf>,
     },
@@ -221,12 +341,19 @@ enum EvalCmd {
 
 #[derive(Subcommand)]
 enum CostCmd {
+    /// Ledger summary (estimates; real bills arrive via reconcile)
     Summary,
+    /// Estimated cost grouped by agent
     Agents,
+    /// Estimated cost grouped by provider
     Providers,
+    /// Estimated cost grouped by operation
     Operations,
+    /// Savings, CPQPA and reuse views
     Savings,
+    /// Budget reserve → settle audit trail
     Reservations,
+    /// Import a real provider bill for a cost event (estimates stay unchanged)
     Reconcile {
         /// cost_events row id
         #[arg(long)]
@@ -234,10 +361,13 @@ enum CostCmd {
         /// Actual billed amount in major units
         #[arg(long)]
         actual: f64,
+        /// Billing source label
         #[arg(long, default_value = "provider_billing")]
         source: String,
     },
+    /// Write the ledger summary to a file (default: stdout)
     Export {
+        /// Output file path
         #[arg(long)]
         out: Option<PathBuf>,
     },
@@ -245,61 +375,117 @@ enum CostCmd {
 
 #[derive(Subcommand)]
 enum TraceCmd {
-    Show { trace_id: String },
+    /// Show a decision trace with structured stages
+    Show {
+        /// Trace ID (from a search response or `GET /traces`)
+        trace_id: String,
+    },
 }
 
 #[derive(Subcommand)]
 enum IndexCmd {
+    /// Index consistency between Tantivy and SQLite
     Status,
+    /// Alias of `index status`
     Stats,
+    /// Rebuild the search index from persisted documents
     Rebuild,
+    /// Verify consistency and exit non-zero when drifted
     Verify,
 }
 
 #[derive(Subcommand)]
 enum GatewayCmd {
+    /// Start the HTTP Gateway Mode server (Tavily-compatible)
     Start {
+        /// Port to bind
         #[arg(long, default_value_t = 8787)]
         port: u16,
+        /// Host / interface to bind
         #[arg(long, default_value = "127.0.0.1")]
         host: String,
     },
+    /// Show the configured gateway address (the server may be down)
     Status,
 }
 
 #[derive(Subcommand)]
 enum CrawlerCmd {
+    /// List registered site crawlers
     List,
-    Inspect { domain: String },
-    Test { url: String },
-    Preview { url: String },
+    /// Show which crawler handles a domain
+    Inspect {
+        /// Domain to inspect
+        domain: String,
+    },
+    /// Fetch a URL with the selected crawler and report success
+    Test {
+        /// URL to fetch
+        url: String,
+    },
+    /// Fetch a URL and print extracted title / text / markdown
+    Preview {
+        /// URL to preview
+        url: String,
+    },
+    /// Recent crawler failures
     Failures,
+    /// Per-crawler circuit status
     Status,
+    /// Validate all crawler manifests
     Validate,
 }
 
 #[derive(Subcommand)]
 enum ExtensionCmd {
-    List,
+    /// List loaded extensions and their state
+    List {
+        /// Show only quarantined manifests and their errors
+        #[arg(long, default_value_t = false)]
+        quarantined: bool,
+    },
+    /// Validate all extension manifests
     Validate,
-    Inspect { id: String },
+    /// Inspect one extension manifest
+    Inspect {
+        /// Extension ID
+        id: String,
+    },
 }
 
 #[derive(Subcommand)]
 enum BackupCmd {
+    /// Create a consistent backup (SQLite + redacted config + manifests)
     Create,
-    Restore { path: PathBuf },
+    /// Restore a backup after checksum and integrity verification
+    Restore {
+        /// Backup directory (or a legacy .db file)
+        path: PathBuf,
+    },
 }
 
 #[tokio::main]
 async fn main() {
+    // Bare `searchos` prints the full help and exits 0 instead of a usage error.
+    if std::env::args_os().len() == 1 {
+        use clap::CommandFactory;
+        Cli::command().print_help().expect("print help to stdout");
+        std::process::exit(0);
+    }
     let cli = Cli::parse();
-    searchos_observability::logging::init_with_default("warn");
+    let format = cli.format;
+    // -v raises the log level above the default; RUST_LOG still wins.
+    let level = match cli.verbose {
+        0 => "warn",
+        1 => "info",
+        2 => "debug",
+        _ => "trace",
+    };
+    searchos_observability::logging::init_with_default(level);
     let code = match run(cli).await {
         Ok(()) => 0,
         Err(e) => {
-            eprintln!("error: {e}");
-            match &e {
+            let code = match &e {
                 SearchOsError::Validation(_) => 2,
                 SearchOsError::Budget(_) => 3,
                 SearchOsError::Policy(_) | SearchOsError::Security(_) => 4,
@@ -307,7 +493,23 @@ async fn main() {
                 | SearchOsError::Retrieval(_)
                 | SearchOsError::Timeout(_) => 5,
                 _ => 1,
+            };
+            if format == Format::Json {
+                // Machine-readable errors on stderr so stdout stays parseable.
+                // `code` is the process exit code; `error_code` is the shared
+                // uppercase transport table (INV-30-19).
+                eprintln!(
+                    "{}",
+                    serde_json::json!({
+                        "error": e.to_string(),
+                        "code": code,
+                        "error_code": e.class().code,
+                    })
+                );
+            } else {
+                eprintln!("error: {e}");
             }
+            code
         }
     };
     std::process::exit(code);
@@ -321,6 +523,73 @@ fn load_config(cli: &Cli) -> SearchOsConfig {
     cfg
 }
 
+/// Walks a directory into batch ingest items (RFC-029 6.2 `--dir`).
+/// Dotfiles are skipped; the extension allowlist is applied when non-empty;
+/// each item's `source_key` is its path relative to `dir`.
+fn build_dir_items(
+    dir: &Path,
+    recursive: bool,
+    ext: &[String],
+    base_req: IngestRequest,
+) -> Result<Vec<IngestBatchItem>, SearchOsError> {
+    fn validation(field: &str, message: &str) -> SearchOsError {
+        SearchOsError::Validation(ValidationError {
+            field: field.to_string(),
+            message: message.to_string(),
+        })
+    }
+
+    let mut items = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        let entries = std::fs::read_dir(&current).map_err(|e| validation("dir", &e.to_string()))?;
+        for entry in entries {
+            let entry = entry.map_err(|e| validation("dir", &e.to_string()))?;
+            let path = entry.path();
+            let file_name = entry.file_name().to_string_lossy().to_string();
+            if file_name.starts_with('.') {
+                continue;
+            }
+            let Ok(ft) = entry.file_type() else {
+                continue;
+            };
+            if ft.is_dir() {
+                if recursive {
+                    stack.push(path);
+                }
+                continue;
+            }
+            if !ft.is_file() {
+                continue;
+            }
+            if !ext.is_empty() {
+                let matches = path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| ext.iter().any(|x| x.eq_ignore_ascii_case(e)))
+                    .unwrap_or(false);
+                if !matches {
+                    continue;
+                }
+            }
+            let rel = path
+                .strip_prefix(dir)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            let mut req = base_req.clone();
+            req.source_key = Some(rel);
+            req.title = Some(file_name);
+            items.push(IngestBatchItem {
+                request: req,
+                payload: IngestPayload::File(path),
+            });
+        }
+    }
+    items.sort_by(|a, b| a.request.source_key.cmp(&b.request.source_key));
+    Ok(items)
+}
+
 async fn runtime(cli: &Cli) -> Result<Arc<SearchOsRuntime>, SearchOsError> {
     let cfg = load_config(cli);
     SearchOsRuntime::init(cfg).await
@@ -328,14 +597,8 @@ async fn runtime(cli: &Cli) -> Result<Arc<SearchOsRuntime>, SearchOsError> {
 
 async fn run(cli: Cli) -> Result<(), SearchOsError> {
     let format = cli.format;
-    // Pre-load config before the match moves subcommand fields.
     let cli = &cli;
     let config_now = load_config(cli);
-    let config_for_later = config_now.clone();
-    let _ = config_for_later;
-    let cli_owned = cli;
-    let _ = cli_owned;
-    // Destructure the command by reference to avoid partial moves.
     let Cli { command, .. } = &cli;
     let cli_ref = cli;
     match command {
@@ -366,6 +629,8 @@ async fn run(cli: Cli) -> Result<(), SearchOsError> {
                     "database_ok": true,
                     "schema_version": rt.sqlite.schema_version()?,
                     "index": {
+                        "fulltext_backend": rt.fulltext_backend(),
+                        "fulltext_chunks": tantivy,
                         "tantivy_chunks": tantivy,
                         "sqlite_chunks": sqlite,
                         "consistent": tantivy == sqlite,
@@ -391,6 +656,12 @@ async fn run(cli: Cli) -> Result<(), SearchOsError> {
             );
             Ok(())
         }
+        Command::Completions { shell } => {
+            use clap::CommandFactory;
+            let mut cmd = Cli::command();
+            clap_complete::generate(*shell, &mut cmd, "searchos", &mut std::io::stdout());
+            Ok(())
+        }
         Command::Search {
             query,
             profile,
@@ -398,6 +669,7 @@ async fn run(cli: Cli) -> Result<(), SearchOsError> {
             workspace,
             max_external_queries,
             max_cost,
+            max_results,
             request_id,
         } => {
             let rt = runtime(cli_ref).await?;
@@ -417,7 +689,14 @@ async fn run(cli: Cli) -> Result<(), SearchOsError> {
             if let Some(rid) = request_id {
                 req = req.with_request_id(rid.clone());
             }
-            let resp = rt.application.search_service.search(req).await?;
+            if let Some(max) = max_results {
+                req = req.with_max_results(*max);
+            }
+            let mut resp = rt.application.search_service.search(req).await?;
+            if let Some(max) = max_results {
+                resp.results
+                    .truncate(searchos_domain::request::clamp_max_results(*max) as usize);
+            }
             print(&serde_json::to_value(&resp).unwrap_or_default(), format);
             Ok(())
         }
@@ -431,12 +710,48 @@ async fn run(cli: Cli) -> Result<(), SearchOsError> {
             print(&serde_json::to_value(&doc).unwrap_or_default(), format);
             Ok(())
         }
+        Command::Ingest {
+            text,
+            file,
+            dir,
+            source_key,
+            title,
+            content_type,
+            workspace,
+            recursive,
+            ext,
+        } => {
+            let rt = runtime(cli_ref).await?;
+            let ws = WorkspaceId::new(workspace.clone());
+            let mut req = IngestRequest::new(ws);
+            req.source_key = source_key.clone();
+            req.title = title.clone();
+            req.content_type = content_type.clone();
+
+            if let Some(t) = text {
+                let doc = rt.application.ingest_service.ingest_text(req, t).await?;
+                print(&serde_json::to_value(&doc).unwrap_or_default(), format);
+            } else if let Some(f) = file {
+                let doc = rt.application.ingest_service.ingest_file(req, f).await?;
+                print(&serde_json::to_value(&doc).unwrap_or_default(), format);
+            } else if let Some(d) = dir {
+                let items = build_dir_items(d, *recursive, ext, req)?;
+                let result = rt.application.ingest_service.ingest_batch(items).await?;
+                print(&serde_json::to_value(&result).unwrap_or_default(), format);
+            }
+            Ok(())
+        }
         Command::Document { cmd } => {
             let rt = runtime(cli_ref).await?;
             let repo = repos::DocumentRepo::new(&rt.sqlite);
             match cmd {
-                DocumentCmd::List { limit } => {
-                    let docs = repo.list(*limit)?;
+                DocumentCmd::List {
+                    limit,
+                    source_type,
+                    workspace,
+                } => {
+                    let docs =
+                        repo.list_filtered(*limit, source_type.as_deref(), workspace.as_deref())?;
                     print(&serde_json::to_value(&docs).unwrap_or_default(), format);
                 }
                 DocumentCmd::Inspect { id } => {
@@ -455,10 +770,13 @@ async fn run(cli: Cli) -> Result<(), SearchOsError> {
                     let doc = repo
                         .get(&doc_id)?
                         .ok_or_else(|| SearchOsError::Retrieval("document not found".into()))?;
+                    // Refresh keeps the document's owning workspace (RFC-017
+                    // isolation): a hard-coded default would move the new
+                    // version into another workspace and corrupt quotas.
                     let refreshed = rt
                         .application
                         .fetch_service
-                        .fetch_and_persist(&doc.canonical_url, &WorkspaceId::new("default"))
+                        .fetch_and_persist(&doc.canonical_url, &WorkspaceId::new(&doc.workspace_id))
                         .await?;
                     print(
                         &serde_json::to_value(&refreshed).unwrap_or_default(),
@@ -495,6 +813,37 @@ async fn run(cli: Cli) -> Result<(), SearchOsError> {
                 MemoryCmd::Stats => {
                     let stats = rt.application.memory_service.stats().await?;
                     print(&serde_json::to_value(stats).unwrap_or_default(), format);
+                }
+                MemoryCmd::Remember {
+                    title,
+                    content,
+                    workspace,
+                    sharing,
+                    tags,
+                } => {
+                    let sharing = match sharing.as_str() {
+                        "private" => SharingPolicy::Private,
+                        "workspace_shared" | "workspace" => SharingPolicy::WorkspaceShared,
+                        "project_shared" | "project" => SharingPolicy::ProjectShared,
+                        "global_public" | "global" => SharingPolicy::GlobalPublic,
+                        other => {
+                            return Err(SearchOsError::validation(
+                                "sharing",
+                                format!("unknown sharing policy {other}"),
+                            ))
+                        }
+                    };
+                    let namespace = MemoryNamespace {
+                        workspace: WorkspaceId::new(workspace.clone()),
+                        project: None,
+                        agent: None,
+                    };
+                    let entry = rt
+                        .application
+                        .memory_service
+                        .remember(namespace, sharing, title, content, None, tags)
+                        .await?;
+                    print(&serde_json::to_value(entry).unwrap_or_default(), format);
                 }
             }
             Ok(())
@@ -537,11 +886,27 @@ async fn run(cli: Cli) -> Result<(), SearchOsError> {
                             .provider_registry
                             .health(&id)
                             .unwrap_or((searchos_provider::circuit::CircuitState::Closed, false));
-                        out.push(serde_json::json!({
+                        let mut entry = serde_json::json!({
                             "provider_id": id,
                             "state": format!("{state:?}"),
                             "rate_limited": rate_limited,
-                        }));
+                        });
+                        // Per-key rotation status (RFC-009 9.7), masked.
+                        if let Some(p) = rt.provider_registry.get(&id) {
+                            if let Some(keys) = p.search.as_ref().and_then(|s| s.key_status()) {
+                                entry["keys"] = serde_json::json!(keys
+                                    .iter()
+                                    .map(|k| serde_json::json!({
+                                        "index": k.index,
+                                        "masked_key": k.masked_key,
+                                        "state": k.state,
+                                        "available_at": k.available_at,
+                                        "consecutive_failures": k.consecutive_failures,
+                                    }))
+                                    .collect::<Vec<_>>());
+                            }
+                        }
+                        out.push(entry);
                     }
                     print(&serde_json::json!({ "providers": out }), format);
                 }
@@ -596,7 +961,8 @@ async fn run(cli: Cli) -> Result<(), SearchOsError> {
         }
         Command::Config { cmd } => match cmd {
             ConfigCmd::Validate => {
-                let (cfg, errors) = searchos_core::load_config_report(cli.config.as_deref());
+                let (cfg, errors, warnings) =
+                    searchos_core::load_config_report_full(cli.config.as_deref());
                 let valid = errors.is_empty();
                 print(
                     &serde_json::json!({
@@ -604,6 +970,9 @@ async fn run(cli: Cli) -> Result<(), SearchOsError> {
                         "config_version": cfg.config_version,
                         "api_version": cfg.server.api_version,
                         "errors": errors,
+                        "warnings": warnings,
+                        "consumed_fields": searchos_core::CONSUMED_CONFIG_FIELDS,
+                        "deprecated_fields": searchos_core::DEPRECATED_CONFIG_FIELDS,
                     }),
                     format,
                 );
@@ -629,7 +998,12 @@ async fn run(cli: Cli) -> Result<(), SearchOsError> {
                 "config": rt.config.redacted(),
                 "documents": docs,
                 "cost_summary": cost,
-                "index": { "tantivy_chunks": tantivy_chunks, "sqlite_chunks": sqlite_chunks },
+                "index": {
+                    "fulltext_backend": rt.fulltext_backend(),
+                    "fulltext_chunks": tantivy_chunks,
+                    "tantivy_chunks": tantivy_chunks,
+                    "sqlite_chunks": sqlite_chunks
+                },
                 "search_history": "use `searchos cost export` for the ledger; task rows stay in SQLite",
                 "secrets": "[never exported]",
             });
@@ -842,26 +1216,30 @@ async fn run(cli: Cli) -> Result<(), SearchOsError> {
             let rt = runtime(cli_ref).await?;
             match cmd {
                 IndexCmd::Status => {
-                    let (tantivy, sqlite) = rt.index_consistency().await?;
+                    let (index_chunks, sqlite) = rt.index_consistency().await?;
                     print(
                         &serde_json::json!({
-                            "tantivy_version": rt.tantivy.version(),
-                            "tantivy_chunks": tantivy,
+                            "fulltext_backend": rt.fulltext_backend(),
+                            "fulltext_chunks": index_chunks,
+                            "tantivy_version": rt.tantivy.as_ref().map(|t| t.version()),
+                            "tantivy_chunks": index_chunks,
                             "sqlite_chunks": sqlite,
-                            "consistent": tantivy == sqlite,
+                            "consistent": index_chunks == sqlite,
                         }),
                         format,
                     );
                 }
                 IndexCmd::Stats => {
                     // Alias of `index status` (MVP §8.4).
-                    let (tantivy, sqlite) = rt.index_consistency().await?;
+                    let (index_chunks, sqlite) = rt.index_consistency().await?;
                     print(
                         &serde_json::json!({
-                            "tantivy_version": rt.tantivy.version(),
-                            "tantivy_chunks": tantivy,
+                            "fulltext_backend": rt.fulltext_backend(),
+                            "fulltext_chunks": index_chunks,
+                            "tantivy_version": rt.tantivy.as_ref().map(|t| t.version()),
+                            "tantivy_chunks": index_chunks,
                             "sqlite_chunks": sqlite,
-                            "consistent": tantivy == sqlite,
+                            "consistent": index_chunks == sqlite,
                         }),
                         format,
                     );
@@ -1009,10 +1387,23 @@ async fn run(cli: Cli) -> Result<(), SearchOsError> {
         Command::Extension { cmd } => {
             let rt = runtime(cli_ref).await?;
             match cmd {
-                ExtensionCmd::List => {
-                    let list: Vec<_> = rt.extensions.list().into_iter().map(|r| serde_json::json!({
-                        "id": r.manifest.id, "version": r.manifest.version, "state": format!("{:?}", r.state),
-                    })).collect();
+                ExtensionCmd::List { quarantined } => {
+                    let records = if *quarantined {
+                        rt.extensions.quarantined()
+                    } else {
+                        rt.extensions.list()
+                    };
+                    let list: Vec<_> = records
+                        .into_iter()
+                        .map(|r| {
+                            serde_json::json!({
+                                "id": r.manifest.id,
+                                "version": r.manifest.version,
+                                "state": format!("{:?}", r.state),
+                                "last_error": r.last_error,
+                            })
+                        })
+                        .collect();
                     print(&serde_json::json!({ "extensions": list }), format);
                 }
                 ExtensionCmd::Validate => {
@@ -1199,17 +1590,72 @@ async fn run(cli: Cli) -> Result<(), SearchOsError> {
 }
 
 fn parse_mode(s: &str) -> Result<SearchMode, SearchOsError> {
-    Ok(match s {
-        "local_only" | "local-only" => SearchMode::LocalOnly,
-        "local_first" | "local-first" => SearchMode::LocalFirst,
-        "external_first" | "external-first" => SearchMode::ExternalFirst,
-        "external_only" | "external-only" => SearchMode::ExternalOnly,
-        "hybrid" => SearchMode::Hybrid,
-        other => {
-            return Err(SearchOsError::validation(
-                "mode",
-                format!("unknown mode {other}; use local_only|local_first|external_first|external_only|hybrid"),
-            ))
+    SearchMode::parse(s).map_err(|message| SearchOsError::validation("mode", message))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    /// Every subcommand at every level must carry a description, so the
+    /// `help` output never renders an empty `Commands:` line.
+    #[test]
+    fn every_subcommand_has_a_description() {
+        fn assert_described(cmd: &mut clap::Command) {
+            let parent = cmd.get_name().to_string();
+            for sub in cmd.get_subcommands_mut() {
+                let about = sub.get_about().map(|s| s.to_string()).unwrap_or_default();
+                assert!(
+                    !about.trim().is_empty(),
+                    "subcommand '{}' of '{}' has no about",
+                    sub.get_name(),
+                    parent
+                );
+                assert_described(sub);
+            }
         }
-    })
+        assert_described(&mut Cli::command());
+    }
+
+    /// Every argument (positional or option) must carry help text.
+    #[test]
+    fn every_argument_has_help() {
+        fn assert_args(cmd: &mut clap::Command) {
+            for arg in cmd.get_arguments() {
+                let help = arg.get_help().map(|s| s.to_string()).unwrap_or_default();
+                assert!(
+                    !help.trim().is_empty(),
+                    "argument '{}' of '{}' has no help",
+                    arg.get_id().as_str(),
+                    cmd.get_name()
+                );
+            }
+            for sub in cmd.get_subcommands_mut() {
+                assert_args(sub);
+            }
+        }
+        assert_args(&mut Cli::command());
+    }
+
+    /// Completion scripts must be generated for every supported shell and
+    /// must reference the binary name.
+    #[test]
+    fn completions_generate_for_every_shell() {
+        for shell in [
+            clap_complete::Shell::Bash,
+            clap_complete::Shell::Zsh,
+            clap_complete::Shell::Fish,
+            clap_complete::Shell::PowerShell,
+            clap_complete::Shell::Elvish,
+        ] {
+            let mut out = Vec::new();
+            clap_complete::generate(shell, &mut Cli::command(), "searchos", &mut out);
+            let text = String::from_utf8(out).expect("utf-8 completion script");
+            assert!(
+                text.contains("searchos"),
+                "{shell:?} completion missing binary name"
+            );
+        }
+    }
 }

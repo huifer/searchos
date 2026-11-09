@@ -13,6 +13,8 @@ pub mod lifecycle;
 pub mod manifest;
 pub mod snapshot;
 
-pub use lifecycle::{ExtensionRecord, ExtensionRegistry, ExtensionState, ValidationError};
+pub use lifecycle::{
+    DiscoveryReport, ExtensionRecord, ExtensionRegistry, ExtensionState, ValidationError,
+};
 pub use manifest::{ExtensionManifest, ExtensionType, RuntimeKind};
 pub use snapshot::VersionSnapshot;

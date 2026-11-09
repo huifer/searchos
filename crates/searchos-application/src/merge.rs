@@ -4,6 +4,7 @@
 //! version awareness, independent-source accounting, and conflict retention.
 //! Conflicting evidence is never silently dropped or overwritten by "latest".
 
+use searchos_document::canonical::{canonical_url as canonical_document_url, source_host};
 use searchos_domain::evidence::Evidence;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -20,47 +21,12 @@ pub struct MergeReport {
     pub merged_count: usize,
 }
 
-/// Canonical URL form used for deduplication (RFC-006 9.2).
+/// Canonical URL form used for deduplication (Part 30 INV-30-15).
+///
+/// Fetch, ingest and index writes call the same `searchos-document`
+/// implementation; the raw URL stays on the evidence item for display.
 pub fn canonical_url(url: &str) -> String {
-    let mut s = url.trim().to_lowercase();
-    if let Some(pos) = s.find('#') {
-        s.truncate(pos);
-    }
-    s = s
-        .strip_prefix("https://")
-        .or_else(|| s.strip_prefix("http://"))
-        .unwrap_or(&s)
-        .to_string();
-    // Drop tracking parameters, keep meaningful query (e.g. docs ?v=2).
-    let (base, query) = match s.split_once('?') {
-        Some((b, q)) => (b.to_string(), Some(q)),
-        None => (s.clone(), None),
-    };
-    let mut base = base;
-    if base.ends_with('/') && base.len() > 1 {
-        base.pop();
-    }
-    let kept: Vec<&str> = query
-        .unwrap_or("")
-        .split('&')
-        .filter(|kv| {
-            let k = kv.split('=').next().unwrap_or("");
-            !kv.is_empty() && !k.starts_with("utm_") && k != "fbclid" && k != "gclid" && k != "ref"
-        })
-        .collect();
-    if kept.is_empty() {
-        base
-    } else {
-        format!("{base}?{}", kept.join("&"))
-    }
-}
-
-fn host_of(url: &str) -> String {
-    canonical_url(url)
-        .split('/')
-        .next()
-        .unwrap_or("")
-        .to_string()
+    canonical_document_url(url)
 }
 
 /// Whether two snippets are materially different (a conflict, not a version
@@ -127,7 +93,7 @@ pub fn merge_evidence(
         .iter()
         .filter_map(|k| by_canonical.get(k).cloned())
         .collect();
-    let hosts: HashSet<String> = merged.iter().map(|e| host_of(&e.url)).collect();
+    let hosts: HashSet<String> = merged.iter().map(|e| source_host(&e.url)).collect();
     report.independent_sources = hosts.len();
     report.merged_count = merged.len();
     (merged, report)
@@ -166,7 +132,7 @@ mod tests {
     fn canonicalization_strips_tracking_and_fragment() {
         assert_eq!(
             canonical_url("HTTPS://Example.com/docs/?utm_source=x&v=2#part"),
-            "example.com/docs?v=2"
+            "https://example.com/docs?v=2"
         );
     }
 

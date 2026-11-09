@@ -123,6 +123,8 @@ mod tests {
             fetched_at: Utc::now(),
             vector_score: None,
             bm25_score: None,
+            workspace_id: None,
+            language: None,
         }
     }
 

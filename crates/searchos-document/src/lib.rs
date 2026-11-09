@@ -5,11 +5,13 @@
 //! - [`lifecycle`] — version diff decisions (Unchanged / NewVersion).
 //! - [`outbox`] — transactional outbox event types (ADR-011).
 
+pub mod canonical;
 pub mod chunk;
 pub mod hash;
 pub mod lifecycle;
 pub mod outbox;
 
+pub use canonical::{canonical_url, source_host};
 pub use chunk::{chunk_text, ChunkingConfig};
 pub use hash::{content_hash, content_ref, CONTENT_REF_PREFIX};
 pub use lifecycle::decide_version_diff;

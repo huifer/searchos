@@ -118,6 +118,61 @@ impl CostModelConfig {
         }
     }
 
+    /// Validates every decimal price string. Misconfiguration must surface
+    /// through `config validate` and the estimator, never become silent zero.
+    pub fn validate_prices(&self) -> Vec<String> {
+        let mut errors = Vec::new();
+        let check = |label: String, raw: &str, errors: &mut Vec<String>| {
+            if searchos_domain::cost::Money::parse(raw, "USD").is_err() {
+                errors.push(format!("{label}: invalid decimal price '{raw}'"));
+            }
+        };
+        for p in &self.providers {
+            match &p.pricing {
+                PricingModel::RequestBased { unit_price } => check(
+                    format!("cost.providers.{}.request_based.unit_price", p.provider_id),
+                    unit_price,
+                    &mut errors,
+                ),
+                PricingModel::PerThousandUnits { unit_price_per_k } => check(
+                    format!(
+                        "cost.providers.{}.per_thousand_units.unit_price_per_k",
+                        p.provider_id
+                    ),
+                    unit_price_per_k,
+                    &mut errors,
+                ),
+                PricingModel::ResourceBased {
+                    electricity_cost_per_kwh,
+                    ..
+                } => check(
+                    format!(
+                        "cost.providers.{}.resource_based.electricity_cost_per_kwh",
+                        p.provider_id
+                    ),
+                    electricity_cost_per_kwh,
+                    &mut errors,
+                ),
+            }
+        }
+        check(
+            "cost.local.cost_per_cpu_second".into(),
+            &self.local.cost_per_cpu_second,
+            &mut errors,
+        );
+        check(
+            "cost.local.cost_per_gb_month".into(),
+            &self.local.cost_per_gb_month,
+            &mut errors,
+        );
+        check(
+            "cost.local.cost_per_gb_transfer".into(),
+            &self.local.cost_per_gb_transfer,
+            &mut errors,
+        );
+        errors
+    }
+
     /// Currency used by a provider (or local default).
     pub fn currency_for(&self, provider_id: Option<&str>) -> String {
         match provider_id.and_then(|p| self.provider(p)) {

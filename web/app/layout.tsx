@@ -29,7 +29,6 @@ export const metadata: Metadata = {
     type: "website",
     siteName: SITE.name,
     locale: SITE.locale,
-    alternateLocale: [SITE.alternateLocale],
     images: [
       {
         url: OG_IMAGES.en.url,

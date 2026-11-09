@@ -56,7 +56,9 @@ SearchOS 负责前两者及其成本优化，不在核心产品中重新实现�
 > RFC-026/027/028。上述 16 份是浓缩基线；附录 17–24 补齐数据库、CLI、ADR、
 > DoD、执行流程、最终决策、决策引擎工程基线、API / 安全 / 可靠性 / 治理基线；
 > 新增 RFC-026–028 定义可视化与分析层、Analytics Read Model、Dashboard API
-> 与前端集成。功能遗漏分析见 [`docs/gap-analysis.md`](../gap-analysis.md)。
+> 与前端集成。此后新增 RFC-029 定义本地数据导入（纯文本 / 文件 / 目录）与
+> 本地优先检索，复用同一套文档生命周期与索引端口。功能遗漏分析见
+> [`docs/gap-analysis.md`](../gap-analysis.md)。
 
 | 附录 | 名称 |
 | --- | --- |
@@ -71,6 +73,8 @@ SearchOS 负责前两者及其成本优化，不在核心产品中重新实现�
 | RFC-026 | Visualization & Analytics Architecture |
 | RFC-027 | Analytics Data Model & Aggregation |
 | RFC-028 | Dashboard API & Frontend Integration |
+| RFC-029 | Local Data Ingestion & Local-First Retrieval |
+| Part 30 | Search Execution Correctness Baseline (invariant-driven) |
 
 ## 0.2 RFC 规范
 
@@ -124,6 +128,6 @@ RFC 不允许仅描述功能目标而缺少可验证的接口、数据结构和�
 2. **跨 Agent 知识隔离**：默认 Workspace 隔离，显式授权后才共享，不应该默认全局共享。
 3. **质量评估边界**：SearchOS 验证证据质量，不保证上层 LLM 最终答案绝对正确。
 
-**RFC Suite Version:** 1.0 (+ Annexes 23/24, feature-completion pass)
-**Status:** Implemented Engineering Baseline
+**RFC Suite Version:** 1.0 (+ Annexes 23/24/30; Annex 30 is Implemented)
+**Status:** Implemented Engineering Baseline (Annex 30: Implemented — execution correctness invariants)
 **Next Step:** Keep RFC-004 v1.1 acceptance tests (Part 23) green on every change; revisit deferred distributed/WASM capabilities in v1.5+.

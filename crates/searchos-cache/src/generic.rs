@@ -146,6 +146,11 @@ impl RerankCache {
         hkey(&[&joined])
     }
 
+    /// Evicts everything (index / candidate-set change).
+    pub fn clear(&self) {
+        self.entries.write().unwrap().clear();
+    }
+
     /// Gets a cached rerank ordering.
     pub fn get(
         &self,
@@ -195,6 +200,8 @@ mod tests {
             fetched_at: Utc::now(),
             vector_score: None,
             bm25_score: None,
+            workspace_id: None,
+            language: None,
         }
     }
 

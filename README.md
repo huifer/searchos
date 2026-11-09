@@ -14,7 +14,7 @@
   <img src="https://img.shields.io/badge/rust-1.75%2B-orange?logo=rust" alt="rust" />
   <img src="https://img.shields.io/badge/next.js-16-black?logo=nextdotjs" alt="nextjs" />
   <img src="https://img.shields.io/badge/license-MIT-36f555" alt="license" />
-  <img src="https://img.shields.io/badge/tests-295%20passed-36f555" alt="tests" />
+  <img src="https://img.shields.io/badge/tests-CI%20green-36f555" alt="tests" />
 </p>
 
 <p align="center">
@@ -54,8 +54,8 @@ SearchOS fixes this with one unifying infrastructure.
   memory are first-class, durable assets.
 - **Hybrid retrieval** — BM25 + Vector + Metadata fused with Reciprocal Rank Fusion (RRF)
   and a pluggable reranker.
-- **Extension-first** — providers, site-specific crawlers, extractors, embeddings, and
-  rerankers are all loaded through a unified, fault-isolated extension system.
+- **Extensible core** — manifest lifecycle, permissions, fault-isolated discovery and
+  quarantine; native providers and site crawlers are compiled into the binary.
 - **Cost-aware routing** — a scoring model that balances quality, freshness, latency, cost,
   and availability; plus Singleflight request coalescing.
 - **Distributed-ready** — the data model and interfaces are designed for multi-node from
@@ -107,7 +107,7 @@ SEARCHOS_DATA_DIR=./data ./target/release/searchos gateway start --port 8787
 ```bash
 curl -s http://127.0.0.1:8787/search \
   -H 'content-type: application/json' \
-  -d '{"query":"What is Rust ownership?","mode":"local_first"}'
+  -d '{"query":"What is Rust ownership?","search_depth":"basic","max_results":5}'
 ```
 
 ### 4. Run the console
@@ -124,7 +124,7 @@ Model; `SEARCHOS_AUTH_TOKEN` stays server-side only. Production: `npm run build 
 ### MCP
 
 ```bash
-searchos mcp                    # stdio MCP server exposing all 7 RFC-021 tools
+searchos mcp                    # stdio MCP server: 7 RFC-021 tools + search_trace alias
 ```
 
 ## Architecture
@@ -149,6 +149,7 @@ searchos mcp                    # stdio MCP server exposing all 7 RFC-021 tools
 ┌──────────────────▼───────────────────────┐
 │            Infrastructure                │
 │  SQLite · Tantivy · LanceDB · File/Object  │
+│  + ES / Meili / PG / MySQL (selectable)   │
 │  Queue · Provider · Embedding · Browser    │
 └──────────────────────────────────────────┘
 ```
@@ -171,7 +172,7 @@ docs/                   architecture, RFC suite, API/CLI references, ADRs
 ## Development
 
 ```bash
-cargo test --workspace          # 295 tests across 57 suites
+cargo test --workspace          # all suites green (exact count tracked by CI)
 cargo clippy --workspace --all-targets
 cargo fmt --all -- --check
 
@@ -200,7 +201,7 @@ A phased, deliverable-driven plan (~16 weeks to v1.0). Full detail in
 ## Documentation
 
 - [Architecture](docs/architecture.md)
-- [Canonical RFC Suite (16 RFCs + annexes 17–24, RFC-026..028)](docs/rfc/README.md)
+- [Canonical RFC Suite (16 RFCs + annexes 17–24, RFC-026..029)](docs/rfc/README.md)
   - [RFC-001: Product Architecture](docs/rfc/rfc-001-product-architecture.md)
   - [RFC-004: Search Decision Engine](docs/rfc/rfc-004-search-decision-engine.md)
   - [Part 23: Decision Engine Engineering Baseline (RFC-004 v1.1)](docs/rfc/part-23-decision-engineering-baseline.md)
@@ -208,7 +209,9 @@ A phased, deliverable-driven plan (~16 weeks to v1.0). Full detail in
   - [RFC-026: Visualization & Analytics Architecture](docs/rfc/rfc-026-visualization-analytics-architecture.md)
   - [RFC-027: Analytics Data Model](docs/rfc/rfc-027-analytics-data-model.md)
   - [RFC-028: Dashboard API & Frontend](docs/rfc/rfc-028-dashboard-api-frontend.md)
+  - [RFC-029: Local Data Ingestion & Local-First Retrieval](docs/rfc/rfc-029-local-data-ingestion.md)
 - [Feature Gap Analysis: source design vs. implementation](docs/gap-analysis.md)
+- [RFC Implementation Gap Register](docs/rfc-implementation-gaps.md)
 - [Visual Console (Next.js / React)](docs/ui.md) · [web/README.md](web/README.md)
 - [HTTP API](docs/api/http.md) · [CLI Reference](docs/api/cli.md)
 - [Extension & Crawler System](docs/extensions.md)

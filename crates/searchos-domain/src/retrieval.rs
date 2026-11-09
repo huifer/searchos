@@ -22,6 +22,9 @@ pub struct IndexedDocument {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RetrievalQuery {
     pub text: String,
+    /// Requesting workspace. Implementations should ALSO include the global
+    /// `*` namespace so shared knowledge stays retrievable (RFC-013 8.7:
+    /// default isolation, explicit sharing).
     pub workspace_id: Option<String>,
     pub language: Option<String>,
     /// Maximum number of candidates to return.
@@ -78,14 +81,27 @@ pub struct RetrievalCandidate {
     pub vector_score: Option<f32>,
     /// BM25 score when available.
     pub bm25_score: Option<f32>,
+    /// Owning workspace when the adapter can recover it. `None` means the
+    /// adapter relies on URL-based inference / engine-side filtering.
+    #[serde(default)]
+    pub workspace_id: Option<String>,
+    /// Stored document language when the adapter can recover it.
+    #[serde(default)]
+    pub language: Option<String>,
 }
 
-/// Cache key composition (RFC-007 7.3).
+/// Cache key composition (RFC-007 7.3, Part 30 INV-30-04).
 ///
-/// `fingerprint = SHA256(normalized_query + language + profile_version +
-/// freshness_policy + source_policy + workspace_scope)` (RFC-003 3.4):
-/// requests with different quality constraints must never merge into the
-/// same cache entry.
+/// The fingerprint hashes query, language, policy versions, workspace, mode
+/// and effective freshness. Mode/freshness are repeated explicitly so an old
+/// or externally acquired entry can never satisfy a LocalOnly / strict path.
+/// `key_version` makes pre-fix entries structurally unreachable.
+pub const CACHE_KEY_VERSION: &str = "v2";
+
+fn default_cache_key_version() -> String {
+    CACHE_KEY_VERSION.into()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SearchCacheKey {
     pub query_fingerprint: String,
@@ -94,19 +110,44 @@ pub struct SearchCacheKey {
     pub source_policy_version: String,
     pub language: String,
     pub workspace_scope: String,
+    #[serde(default)]
+    pub mode: String,
+    #[serde(default)]
+    pub freshness_requirement: String,
+    #[serde(default = "default_cache_key_version")]
+    pub key_version: String,
+}
+
+impl Default for SearchCacheKey {
+    fn default() -> Self {
+        Self {
+            query_fingerprint: String::new(),
+            profile_version: String::new(),
+            freshness_policy_version: String::new(),
+            source_policy_version: String::new(),
+            language: String::new(),
+            workspace_scope: String::new(),
+            mode: String::new(),
+            freshness_requirement: String::new(),
+            key_version: CACHE_KEY_VERSION.into(),
+        }
+    }
 }
 
 impl SearchCacheKey {
     /// Composes the full cache key string used by storage backends.
     pub fn cache_key(&self) -> String {
         format!(
-            "{}|{}|{}|{}|{}|{}",
+            "{}|{}|{}|{}|{}|{}|{}|{}|{}",
+            self.key_version,
             self.query_fingerprint,
             self.profile_version,
             self.freshness_policy_version,
             self.source_policy_version,
             self.language,
             self.workspace_scope,
+            self.mode,
+            self.freshness_requirement,
         )
     }
 }
@@ -124,7 +165,10 @@ mod tests {
             source_policy_version: "1".into(),
             language: "en".into(),
             workspace_scope: "ws_1".into(),
+            mode: "local_only".into(),
+            freshness_requirement: "recent".into(),
+            key_version: CACHE_KEY_VERSION.into(),
         };
-        assert_eq!(k.cache_key(), "abc|1.0.0|1|1|en|ws_1");
+        assert_eq!(k.cache_key(), "v2|abc|1.0.0|1|1|en|ws_1|local_only|recent");
     }
 }

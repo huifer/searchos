@@ -1,50 +1,78 @@
-//! Cost estimation per operation (RFC-008 8.2/8.4).
+//! Cost estimation per operation (RFC-008 8.2/8.4, Part 30 INV-30-13).
+//!
+//! The estimator dispatches on the declared `PricingModel`: request-based
+//! prices scale with requests, per-thousand-unit prices scale with actual
+//! units / 1000, and parse failures are reported instead of silently becoming
+//! zero.
 
 use searchos_domain::cost::{CostOperation, Money};
 use std::collections::HashMap;
 
-use crate::model::{PricingModel, ResourceRates};
+use crate::model::{CostModelConfig, PricingModel, ResourceRates};
 
 /// Estimates costs for operations using the configured pricing models.
 #[derive(Debug, Clone)]
 pub struct CostEstimator {
-    /// provider_id → estimated per-request cost in micros.
-    provider_request_micros: HashMap<String, (i64, String)>,
+    /// provider_id → (declared pricing model, currency).
+    providers: HashMap<String, (PricingModel, String)>,
     rates: ResourceRates,
+    /// Misconfigured prices are observable through `parse_errors()` and
+    /// `CostModelConfig::validate_prices()`, never silent zeroes.
+    parse_errors: Vec<String>,
 }
 
 impl CostEstimator {
     /// Builds an estimator from a cost model config.
-    pub fn from_config(config: &crate::model::CostModelConfig) -> Self {
-        let mut map = HashMap::new();
+    pub fn from_config(config: &CostModelConfig) -> Self {
+        let mut providers = HashMap::new();
         for p in &config.providers {
-            let micros = match &p.pricing {
-                PricingModel::RequestBased { unit_price } => Money::parse(unit_price, &p.currency)
-                    .map(|m| m.amount_micros)
-                    .unwrap_or(0),
-                PricingModel::PerThousandUnits { unit_price_per_k } => {
-                    Money::parse(unit_price_per_k, &p.currency)
-                        .map(|m| m.amount_micros)
-                        .unwrap_or(0)
-                }
-                PricingModel::ResourceBased { .. } => 0,
-            };
-            map.insert(p.provider_id.clone(), (micros, p.currency.clone()));
+            providers.insert(
+                p.provider_id.clone(),
+                (p.pricing.clone(), p.currency.clone()),
+            );
+        }
+        let parse_errors = config.validate_prices();
+        for e in &parse_errors {
+            tracing::warn!(error = %e, "cost pricing parse failure");
         }
         Self {
-            provider_request_micros: map,
+            providers,
             rates: config.local.clone(),
+            parse_errors,
         }
     }
 
-    /// Estimates one external request for a provider.
+    /// Pricing errors found while loading the model (never swallowed).
+    pub fn parse_errors(&self) -> &[String] {
+        &self.parse_errors
+    }
+
+    /// Estimates one external request for a provider (one unit).
     pub fn estimate_request(&self, provider_id: &str) -> Money {
-        match self.provider_request_micros.get(provider_id) {
-            Some((micros, currency)) => Money {
-                amount_micros: *micros,
-                currency: currency.clone(),
-            },
-            None => Money::zero(&self.rates.currency),
+        self.estimate_request_with_units(provider_id, 1)
+    }
+
+    /// Estimates `units` requests / tokens / pages / chunks for a provider.
+    pub fn estimate_request_with_units(&self, provider_id: &str, units: u64) -> Money {
+        let Some((model, currency)) = self.providers.get(provider_id) else {
+            return Money::zero(&self.rates.currency);
+        };
+        let micros = match model {
+            PricingModel::RequestBased { unit_price } => {
+                let per = parse_micros(unit_price, provider_id, &mut Vec::new());
+                per.saturating_mul(units.max(1) as i64)
+            }
+            PricingModel::PerThousandUnits { unit_price_per_k } => {
+                let per_k = parse_micros(unit_price_per_k, provider_id, &mut Vec::new());
+                // Ceiling division: any partial 1k-unit block is billable.
+                let amount = (per_k as i128 * units.max(1) as i128 + 999) / 1000;
+                amount.clamp(0, i64::MAX as i128) as i64
+            }
+            PricingModel::ResourceBased { .. } => 0,
+        };
+        Money {
+            amount_micros: micros,
+            currency: currency.clone(),
         }
     }
 
@@ -57,34 +85,43 @@ impl CostEstimator {
         output_units: u64,
     ) -> Money {
         let currency = self
-            .provider_request_micros
+            .providers
             .get(provider_id.unwrap_or(""))
             .map(|(_, c)| c.clone())
             .unwrap_or_else(|| self.rates.currency.clone());
+        let units = input_units.saturating_add(output_units);
         match operation {
             CostOperation::WebSearch
             | CostOperation::WebFetch
             | CostOperation::WebCrawl
-            | CostOperation::Reranking => {
+            | CostOperation::Reranking
+            | CostOperation::Embedding
+            | CostOperation::QueryInference => {
                 let per = provider_id
-                    .and_then(|p| self.provider_request_micros.get(p))
-                    .map(|(m, _)| *m)
-                    .unwrap_or(0);
-                let units = input_units.saturating_add(output_units).max(1);
+                    .and_then(|p| self.providers.get(p))
+                    .map(|(model, _)| model.clone())
+                    .unwrap_or(PricingModel::ResourceBased {
+                        electricity_cost_per_kwh: "0".into(),
+                        amortization_enabled: false,
+                    });
+                let micros = match per {
+                    PricingModel::RequestBased { unit_price } => {
+                        parse_micros(&unit_price, provider_id.unwrap_or(""), &mut Vec::new())
+                            .saturating_mul(units.max(1) as i64)
+                    }
+                    PricingModel::PerThousandUnits { unit_price_per_k } => {
+                        let per_k = parse_micros(
+                            &unit_price_per_k,
+                            provider_id.unwrap_or(""),
+                            &mut Vec::new(),
+                        );
+                        ((per_k as i128 * units.max(1) as i128 + 999) / 1000)
+                            .clamp(0, i64::MAX as i128) as i64
+                    }
+                    PricingModel::ResourceBased { .. } => 0,
+                };
                 Money {
-                    amount_micros: per.saturating_mul(units as i64),
-                    currency,
-                }
-            }
-            CostOperation::Embedding => {
-                // per-1k-token style pricing if configured, else zero.
-                let per_k = provider_id
-                    .and_then(|p| self.provider_request_micros.get(p))
-                    .map(|(m, _)| *m)
-                    .unwrap_or(0);
-                let k = (input_units / 1000).max(if input_units > 0 { 1 } else { 0 });
-                Money {
-                    amount_micros: per_k.saturating_mul(k as i64),
+                    amount_micros: micros,
                     currency,
                 }
             }
@@ -99,27 +136,20 @@ impl CostEstimator {
             CostOperation::IndexMaintenance => self.estimate_cpu_millis(input_units),
             CostOperation::NetworkTransfer => {
                 // input_units interpreted as bytes transferred (both ways).
-                self.estimate_transfer_bytes(input_units.saturating_add(output_units))
+                self.estimate_transfer_bytes(units)
             }
-            CostOperation::QueryInference => {
-                let per = provider_id
-                    .and_then(|p| self.provider_request_micros.get(p))
-                    .map(|(m, _)| *m)
-                    .unwrap_or(0);
-                Money {
-                    amount_micros: per.saturating_mul(input_units.max(1) as i64),
-                    currency,
-                }
-            }
+            CostOperation::ProviderAttempt => Money::zero(&currency),
         }
     }
 
     /// CPU-milliseconds → money via cost_per_cpu_second.
     pub fn estimate_cpu_millis(&self, cpu_millis: u64) -> Money {
-        let per_second = Money::parse(&self.rates.cost_per_cpu_second, &self.rates.currency)
-            .map(|m| m.amount_micros)
-            .unwrap_or(0);
-        let micros = ((per_second as u128 * cpu_millis as u128 + 500) / 1000) as i64; // round to nearest micro
+        let per_second = parse_micros(
+            &self.rates.cost_per_cpu_second,
+            "local.cost_per_cpu_second",
+            &mut Vec::new(),
+        );
+        let micros = ((per_second as u128 * cpu_millis as u128 + 500) / 1000) as i64;
         Money {
             amount_micros: micros,
             currency: self.rates.currency.clone(),
@@ -128,9 +158,11 @@ impl CostEstimator {
 
     /// Bytes stored → money via cost_per_gb_month (1 month amortization).
     pub fn estimate_storage_bytes(&self, bytes: u64) -> Money {
-        let per_gb = Money::parse(&self.rates.cost_per_gb_month, &self.rates.currency)
-            .map(|m| m.amount_micros)
-            .unwrap_or(0);
+        let per_gb = parse_micros(
+            &self.rates.cost_per_gb_month,
+            "local.cost_per_gb_month",
+            &mut Vec::new(),
+        );
         let micros = (per_gb as u128 * bytes as u128 / (1024 * 1024 * 1024)) as i64;
         Money {
             amount_micros: micros,
@@ -140,9 +172,11 @@ impl CostEstimator {
 
     /// Bytes transferred → money via cost_per_gb_transfer.
     pub fn estimate_transfer_bytes(&self, bytes: u64) -> Money {
-        let per_gb = Money::parse(&self.rates.cost_per_gb_transfer, &self.rates.currency)
-            .map(|m| m.amount_micros)
-            .unwrap_or(0);
+        let per_gb = parse_micros(
+            &self.rates.cost_per_gb_transfer,
+            "local.cost_per_gb_transfer",
+            &mut Vec::new(),
+        );
         let micros = (per_gb as u128 * bytes as u128 / (1024 * 1024 * 1024)) as i64;
         Money {
             amount_micros: micros,
@@ -156,10 +190,20 @@ impl CostEstimator {
     }
 }
 
+fn parse_micros(raw: &str, field: &str, errors: &mut Vec<String>) -> i64 {
+    match Money::parse(raw, "USD") {
+        Ok(m) => m.amount_micros,
+        Err(e) => {
+            errors.push(format!("{field}: {e}"));
+            0
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::CostModelConfig;
+    use crate::model::ProviderPricing;
 
     #[test]
     fn tavily_estimate_is_5_000_micros() {
@@ -183,8 +227,56 @@ mod tests {
 
     #[test]
     fn local_never_free() {
-        // RFC-008 8.6: 不能把本地成本记为零 — configured rate > 0 yields > 0.
         let e = CostEstimator::from_config(&CostModelConfig::default_config());
         assert!(e.estimate_cpu_millis(5000).amount_micros > 0);
+    }
+
+    /// Part 30 §30.11: PerThousandUnits must use unit counts, not per-request.
+    #[test]
+    fn per_thousand_units_pricing_uses_unit_counts() {
+        let mut config = CostModelConfig::default_config();
+        config.upsert_provider(ProviderPricing {
+            provider_id: "token_api".into(),
+            currency: "USD".into(),
+            pricing: PricingModel::PerThousandUnits {
+                unit_price_per_k: "0.010".into(), // 10_000 micros / 1k units
+            },
+            version: 1,
+            from_real_bill: false,
+        });
+        let e = CostEstimator::from_config(&config);
+        assert_eq!(
+            e.estimate_request_with_units("token_api", 1).amount_micros,
+            10
+        );
+        assert_eq!(
+            e.estimate_request_with_units("token_api", 2_000)
+                .amount_micros,
+            20_000
+        );
+        assert_eq!(
+            e.estimate(CostOperation::WebSearch, Some("token_api"), 3_000, 0)
+                .amount_micros,
+            30_000
+        );
+    }
+
+    /// Part 30 §30.11: a malformed price must be visible, never silently zero.
+    #[test]
+    fn cost_parse_failure_is_reported() {
+        let mut config = CostModelConfig::default_config();
+        config.upsert_provider(ProviderPricing {
+            provider_id: "broken".into(),
+            currency: "USD".into(),
+            pricing: PricingModel::RequestBased {
+                unit_price: "not-a-price".into(),
+            },
+            version: 1,
+            from_real_bill: false,
+        });
+        let errors = config.validate_prices();
+        assert!(errors.iter().any(|e| e.contains("broken")));
+        let e = CostEstimator::from_config(&config);
+        assert!(e.parse_errors().iter().any(|x| x.contains("broken")));
     }
 }

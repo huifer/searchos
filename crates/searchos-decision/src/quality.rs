@@ -209,9 +209,16 @@ impl QualityGate {
             failed.push("freshness_failed".into());
         }
 
-        // Hard check 2: source policy (required/excluded domains).
-        if !self.source.allows(&ev.url) {
-            failed.push("required_domain_missing".into());
+        // Hard check 2: source policy (required/excluded domains). The
+        // failure reason names the constraint actually violated (INV-30-20).
+        match self.source.violation(&ev.url) {
+            Some(searchos_policy::SourceViolation::ExcludedDomain) => {
+                failed.push("excluded_domain_violation".into())
+            }
+            Some(searchos_policy::SourceViolation::RequiredDomainMissing) => {
+                failed.push("required_domain_missing".into())
+            }
+            None => {}
         }
 
         // Hard check 3: provenance present when required (ADR-021).
@@ -287,7 +294,7 @@ impl QualityGate {
                 // Sub-question covered when the majority of its content
                 // tokens (stopwords stripped) appear in title/URL/snippet.
                 let hits = tokens.iter().filter(|t| text.contains(t.as_str())).count();
-                tokens.is_empty() || hits * 2 >= tokens.len()
+                tokens.is_empty() || hits * 2 > tokens.len()
             });
             covered[i] = hit;
             if !hit {
@@ -329,12 +336,12 @@ fn host_of(url: &str) -> Option<&str> {
     rest.split(['/', '?', '#']).next()
 }
 
-/// Detects unresolved contradictions: same sub-question covered by two or
-/// more official/primary sources whose content differs and whose published
-/// dates disagree (RFC-005 5.7 — do not disguise as passed).
+/// Detects unresolved contradictions: the same subject/claim covered by
+/// official/primary sources with contradictory values (RFC-005 5.7).
+/// Two ordinary pages on one host are NOT a conflict (INV-30-20).
 fn detect_conflicts(evidence: &[Evidence], accepted: &[usize]) -> Vec<String> {
     use std::collections::HashMap;
-    let mut by_host_class: HashMap<String, Vec<usize>> = HashMap::new();
+    let mut by_claim: HashMap<String, Vec<usize>> = HashMap::new();
     for &i in accepted {
         let ev = &evidence[i];
         if matches!(
@@ -342,28 +349,58 @@ fn detect_conflicts(evidence: &[Evidence], accepted: &[usize]) -> Vec<String> {
             searchos_domain::evidence::ReliabilityLevel::Official
                 | searchos_domain::evidence::ReliabilityLevel::Primary
         ) {
-            let host = host_of(&ev.url).unwrap_or("").to_string();
-            by_host_class.entry(host).or_default().push(i);
+            by_claim.entry(claim_key(ev)).or_default().push(i);
         }
     }
     let mut conflicts = Vec::new();
-    for (host, idxs) in by_host_class {
-        if idxs.len() >= 2 {
-            let dates: Vec<_> = idxs
-                .iter()
-                .filter_map(|&i| evidence[i].published_at)
-                .collect();
-            let diverged = dates.len() >= 2 && dates.iter().any(|d| *d != dates[0]);
-            let hashes_differ = idxs.len() >= 2
-                && evidence[idxs[0]].document_version_id.is_some()
-                && evidence[idxs[1]].document_version_id.is_some()
-                && evidence[idxs[0]].document_version_id != evidence[idxs[1]].document_version_id;
-            if diverged || hashes_differ {
-                conflicts.push(format!("conflicting_official_sources:{host}"));
+    for (claim, idxs) in by_claim {
+        if idxs.len() < 2 {
+            continue;
+        }
+        let mut contradiction = false;
+        for i in 0..idxs.len() {
+            for j in (i + 1)..idxs.len() {
+                if contradictory_values(
+                    evidence[idxs[i]].snippet.as_deref(),
+                    evidence[idxs[j]].snippet.as_deref(),
+                ) {
+                    contradiction = true;
+                }
             }
+        }
+        if contradiction {
+            conflicts.push(format!("conflicting_official_sources:{claim}"));
         }
     }
     conflicts
+}
+
+/// A subject/claim key derived from the canonical page path (or title when
+/// the URL has no meaningful path segment). Paths are case-sensitive.
+fn claim_key(ev: &Evidence) -> String {
+    let without_scheme = ev.url.split("://").nth(1).unwrap_or(ev.url.as_str());
+    let path = without_scheme.split(['?', '#']).next().unwrap_or("");
+    let last = path.split('/').rfind(|s| !s.is_empty()).unwrap_or("");
+    if !last.is_empty() && last != "index.html" {
+        last.to_string()
+    } else {
+        ev.title.as_deref().unwrap_or("").to_lowercase()
+    }
+}
+
+/// Numeric claims are the contradiction signal: same subject/claim but
+/// disjoint numeric values (e.g. version 1.20 vs 1.21, $10 vs $12).
+fn contradictory_values(a: Option<&str>, b: Option<&str>) -> bool {
+    fn numbers(s: &str) -> Vec<String> {
+        s.split(|c: char| !c.is_ascii_alphanumeric() && c != '.' && c != '-')
+            .filter(|t| t.chars().any(|c| c.is_ascii_digit()) && t.len() <= 20)
+            .map(|t| t.to_ascii_lowercase())
+            .collect()
+    }
+    let (a, b) = (a.unwrap_or(""), b.unwrap_or(""));
+    let na = numbers(a);
+    let nb = numbers(b);
+    !na.is_empty() && !nb.is_empty() && na.iter().all(|n| !nb.contains(n))
 }
 
 #[cfg(test)]
@@ -460,8 +497,64 @@ mod tests {
         assert!(v
             .failed_constraints
             .iter()
+            .any(|f| f == "excluded_domain_violation"));
+        assert!(!v
+            .failed_constraints
+            .iter()
             .any(|f| f == "required_domain_missing"));
         assert_eq!(v.status, QualityStatus::Failed);
+    }
+
+    /// Part 30 §30.11: an excluded domain must be reported as an exclusion
+    /// violation, not as a missing required domain.
+    #[test]
+    fn excluded_domain_reason_is_correct() {
+        let g = QualityGate::new(
+            Default::default(),
+            FreshnessPolicy::default_policy(),
+            SourcePolicy::default_policy().with_constraints(&[], &["blocked.com".to_string()]),
+        );
+        let ev = evidence(
+            "https://blocked.com/x",
+            "Blocked",
+            10,
+            ReliabilityLevel::Official,
+            None,
+        );
+        let eval = g.evaluate_one(&ev, 0.9);
+        assert!(eval
+            .failed_constraints
+            .iter()
+            .any(|f| f == "excluded_domain_violation"));
+        assert!(!eval
+            .failed_constraints
+            .iter()
+            .any(|f| f == "required_domain_missing"));
+    }
+
+    /// Part 30 §30.11: two official pages on one host are not a conflict.
+    #[test]
+    fn two_pages_on_same_official_host_are_not_a_conflict() {
+        let g = gate();
+        let ev = vec![
+            evidence(
+                "https://docs.example.com/page-one",
+                "Tokio guide",
+                3600,
+                ReliabilityLevel::Official,
+                None,
+            ),
+            evidence(
+                "https://docs.example.com/page-two",
+                "Axum guide",
+                3600,
+                ReliabilityLevel::Official,
+                None,
+            ),
+        ];
+        let v = g.evaluate_set(&ev, &[0.9, 0.9], &[]);
+        assert!(v.conflicts.is_empty(), "same host alone is not a conflict");
+        assert_eq!(v.status, QualityStatus::Passed);
     }
 
     #[test]
@@ -469,7 +562,7 @@ mod tests {
         let g = gate();
         let ev = vec![evidence(
             "https://tokio.rs/tokio",
-            "Tokio overview",
+            "Tokio features overview",
             100,
             ReliabilityLevel::Official,
             None,

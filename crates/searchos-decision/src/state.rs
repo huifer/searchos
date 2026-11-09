@@ -189,6 +189,9 @@ pub struct DecisionStateMachine {
     state: DecisionState,
     stages: Vec<DecisionStageTrace>,
     started_ms: u64,
+    /// Monotonic-ish wall clock of the current stage's own start. Stage
+    /// durations are measured between records, not copied from the collector.
+    last_stage_started_ms: u64,
 }
 
 impl Default for DecisionStateMachine {
@@ -200,10 +203,12 @@ impl Default for DecisionStateMachine {
 impl DecisionStateMachine {
     /// New machine in `Received`.
     pub fn new() -> Self {
+        let started_ms = now_ms();
         Self {
             state: DecisionState::Received,
             stages: Vec::new(),
-            started_ms: now_ms(),
+            started_ms,
+            last_stage_started_ms: started_ms,
         }
     }
 
@@ -224,8 +229,9 @@ impl DecisionStateMachine {
         Ok(())
     }
 
-    /// Records one structured stage. `duration_ms` is explicit so tests are
-    /// deterministic; production passes measured values.
+    /// Records one structured stage with its own real start timestamp.
+    /// An explicit non-zero duration remains authoritative for deterministic
+    /// tests; zero means "measure it from this stage's wall-clock start".
     pub fn record(
         &mut self,
         stage: DecisionStage,
@@ -235,15 +241,32 @@ impl DecisionStateMachine {
         output_summary: impl Into<String>,
         reasons: Vec<String>,
     ) {
+        let now = now_ms();
+        if let Some(previous) = self.stages.last_mut() {
+            let measured = now.saturating_sub(self.last_stage_started_ms);
+            previous.duration_ms = previous.duration_ms.max(measured);
+        }
+        self.last_stage_started_ms = now;
         self.stages.push(DecisionStageTrace {
             stage: stage.as_str().into(),
             status: status.as_str().into(),
-            started_at_ms: self.started_ms,
+            started_at_ms: now,
             duration_ms,
             input_summary: input_summary.into(),
             output_summary: output_summary.into(),
             reasons,
         });
+    }
+
+    /// Closes the final stage's measured duration. Call before exporting.
+    pub fn finish_stages(&mut self) {
+        let now = now_ms();
+        debug_assert!(now >= self.started_ms, "wall clock moved backwards");
+        if let Some(last) = self.stages.last_mut() {
+            let measured = now.saturating_sub(self.last_stage_started_ms);
+            last.duration_ms = last.duration_ms.max(measured);
+        }
+        self.last_stage_started_ms = now;
     }
 
     /// The immutable stage records produced so far.
@@ -252,7 +275,8 @@ impl DecisionStateMachine {
     }
 
     /// Consumes the machine into its stage records.
-    pub fn into_stages(self) -> Vec<DecisionStageTrace> {
+    pub fn into_stages(mut self) -> Vec<DecisionStageTrace> {
+        self.finish_stages();
         self.stages
     }
 }
@@ -333,6 +357,38 @@ mod tests {
         assert_eq!(s[0].stage, "validation");
         assert_eq!(s[1].status, "partial");
         assert_eq!(s[1].reasons, vec!["freshness_failed".to_string()]);
+    }
+
+    /// Part 30 §30.11: stage timestamps are per-stage and durations are
+    /// measured, not copied from the collector's start time.
+    #[test]
+    fn stage_trace_records_real_timestamps_and_duration() {
+        let mut m = DecisionStateMachine::new();
+        let collector_start = m.started_ms;
+        m.record(
+            DecisionStage::Validation,
+            StageStatus::Completed,
+            0,
+            "request",
+            "valid",
+            vec![],
+        );
+        std::thread::sleep(std::time::Duration::from_millis(3));
+        m.record(
+            DecisionStage::QualityGate,
+            StageStatus::Completed,
+            0,
+            "evidence",
+            "passed",
+            vec![],
+        );
+        m.finish_stages();
+        let stages = m.stages();
+        assert_eq!(stages.len(), 2);
+        assert!(stages[0].started_at_ms >= collector_start);
+        assert!(stages[1].started_at_ms > stages[0].started_at_ms);
+        assert!(stages[0].duration_ms > 0, "first duration was measured");
+        assert!(stages[1].duration_ms <= stages[0].duration_ms + 3_000);
     }
 
     #[test]

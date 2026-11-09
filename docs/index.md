@@ -42,16 +42,19 @@ The canonical specification is the **RFC Suite v1.0** under [`docs/rfc/`](rfc/).
 - [RFC-026: Visualization & Analytics Architecture](rfc/rfc-026-visualization-analytics-architecture.md)
 - [RFC-027: Analytics Data Model & Aggregation](rfc/rfc-027-analytics-data-model.md)
 - [RFC-028: Dashboard API & Frontend Integration](rfc/rfc-028-dashboard-api-frontend.md)
+- [RFC-029: Local Data Ingestion & Local-First Retrieval](rfc/rfc-029-local-data-ingestion.md)
+- [Part 30: Search Execution Correctness Baseline](rfc/part-30-execution-correctness-baseline.md) — 执行侧正确性不变量（INV-30-01…21）与验收测试映射（已实现） |
 
 ## Gap Analysis
 
 - [Feature Gap Analysis: source conversation vs. implementation](gap-analysis.md) — 源对话功能遗漏分析与补强清单。
+- [RFC Implementation Gap Register](rfc-implementation-gaps.md) — RFC / Part 30 缺口登记（已全部修复，含验收测试映射）。
 
 ## Guides & References
 
 - [Architecture](architecture.md) — layered architecture, dual runtime, storage, providers.
 - [Visual Console](ui.md) — Next.js + Tailwind + shadcn/ui operator console over the Analytics Read Model.
-- [Extension & Crawler System](extensions.md) — the extension-first crawler architecture.
+- [Extension & Crawler System](extensions.md) — versioned extension registry, manifest discovery/quarantine, native providers/crawlers, and the declarative/WASM roadmap.
 - [Roadmap & ADRs](roadmap.md) — phased plan, version strategy, architecture decisions.
 - [ADR Index](adr/index.md) — all Architecture Decision Records.
 
@@ -68,6 +71,7 @@ The canonical specification is the **RFC Suite v1.0** under [`docs/rfc/`](rfc/).
 - [CLI Reference](api/cli.md)
 - [Visual Console (Next.js)](ui.md) — browser UI under `web/`
 - [Feature Gap Analysis](gap-analysis.md)
+- [RFC Implementation Gap Register](rfc-implementation-gaps.md)
 - [Development Guide](development/README.md)
 
 > The RFC suite describes the *spec*; the `crates/` workspace implements it.

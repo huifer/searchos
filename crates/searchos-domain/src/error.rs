@@ -7,6 +7,33 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+/// Stable transport error-code table shared by CLI, HTTP and MCP
+/// (Part 30 INV-30-19). All codes are upper snake case; JSON-RPC numeric
+/// codes remain in their own field.
+pub const TRANSPORT_ERROR_CODES: &[&str] = &[
+    "VALIDATION_FAILED",
+    "POLICY_VIOLATION",
+    "BUDGET_EXCEEDED",
+    "PROVIDER_FAILURE",
+    "RETRIEVAL_FAILURE",
+    "STORAGE_FAILURE",
+    "EXTENSION_FAILURE",
+    "QUALITY_GATE_FAILED",
+    "SECURITY_BLOCKED",
+    "TIMEOUT",
+    "INTERNAL_ERROR",
+    "UNAUTHORIZED",
+    "WORKSPACE_ACCESS_DENIED",
+    "RATE_LIMITED",
+    "NOT_FOUND",
+    "INVALID_MULTIPART",
+    "EMPTY_CONTENT",
+    "CONTENT_TOO_LARGE",
+    "INVALID_ENCODING",
+    "UNSUPPORTED_CONTENT_TYPE",
+    "SOURCE_KEY_CONFLICT",
+];
+
 /// Static classification attached to every [`SearchOsError`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ErrorClass {
@@ -165,6 +192,28 @@ impl From<serde_json::Error> for SearchOsError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transport_error_code_table_is_consistent() {
+        let mut seen = std::collections::BTreeSet::new();
+        for code in TRANSPORT_ERROR_CODES {
+            assert!(seen.insert(*code), "duplicate transport code {code}");
+            assert_eq!(
+                code.to_ascii_uppercase(),
+                *code,
+                "transport codes are upper snake case: {code}"
+            );
+            assert!(!code.contains('-'));
+        }
+        for code in [
+            SearchOsError::validation("x", "y").class().code,
+            SearchOsError::Budget("x".into()).class().code,
+            SearchOsError::Provider("x".into()).class().code,
+            SearchOsError::Internal("x".into()).class().code,
+        ] {
+            assert!(TRANSPORT_ERROR_CODES.contains(&code), "missing {code}");
+        }
+    }
 
     #[test]
     fn error_classes_have_stable_codes() {

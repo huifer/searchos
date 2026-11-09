@@ -15,6 +15,7 @@ use searchos_domain::decision::{
     RequirementStatus, SearchDecision,
 };
 use searchos_domain::request::{FreshnessRequirement, SearchBudget, SearchMode};
+use searchos_domain::response::CoverageStatus;
 use searchos_domain::retrieval::RetrievalCandidate;
 use searchos_domain::{DocumentId, Money, SearchOsError, TaskId, TraceId};
 use searchos_policy::SearchProfile;
@@ -40,11 +41,13 @@ pub struct LocalCandidateEval {
 /// adapter over retrieval + document store).
 #[async_trait]
 pub trait LocalKnowledgePort: Send + Sync {
-    /// Local retrieval for a text query.
+    /// Local retrieval for a text query, scoped to the requesting workspace
+    /// plus the global `*` namespace (RFC-013 8.7).
     async fn retrieve(
         &self,
         text: &str,
         top_k: usize,
+        workspace_id: Option<&str>,
     ) -> Result<Vec<RetrievalCandidate>, SearchOsError>;
     /// Document ids that are stale and would need refresh.
     async fn stale_document_ids(
@@ -251,7 +254,19 @@ impl DefaultDecisionEngine {
                     status: StageStatus,
                     output: &str,
                     reasons: Vec<String>| {
-            m.transition(to).expect("canonical decision path");
+            // A leader panic must not be manufactured by an `.expect` on a
+            // state-machine jump; record the illegal transition as skipped.
+            if m.transition(to).is_err() {
+                m.record(
+                    stage,
+                    StageStatus::Skipped,
+                    0,
+                    stage.as_str(),
+                    "illegal_transition",
+                    vec!["illegal_transition".into()],
+                );
+                return;
+            }
             m.record(
                 stage,
                 if used { status } else { StageStatus::Skipped },
@@ -346,7 +361,7 @@ impl DefaultDecisionEngine {
             },
         );
         if budget_rejected {
-            m.transition(DecisionState::BudgetExceeded).unwrap();
+            let _ = m.transition(DecisionState::BudgetExceeded);
             return m.into_stages();
         }
         step(
@@ -394,7 +409,7 @@ impl DefaultDecisionEngine {
             "knowledge persisted",
             vec![],
         );
-        m.transition(DecisionState::Completed).unwrap();
+        let _ = m.transition(DecisionState::Completed);
         m.into_stages()
     }
 }
@@ -718,6 +733,17 @@ impl DecisionEngine for DefaultDecisionEngine {
 }
 
 impl DefaultDecisionEngine {
+    /// Coverage is a status, never the numeric count of sub-questions.
+    fn trace_coverage_status(input: &DecisionInput) -> CoverageStatus {
+        if input.local_candidates.is_empty() {
+            CoverageStatus::Insufficient
+        } else if input.hard_passing().len() >= input.required_subquestions.len().max(1) {
+            CoverageStatus::Sufficient
+        } else {
+            CoverageStatus::Partial
+        }
+    }
+
     fn build_trace(
         &self,
         trace_id: &TraceId,
@@ -735,14 +761,17 @@ impl DefaultDecisionEngine {
             local_candidates: input.local_candidates.len(),
             accepted_candidates: accepted,
             freshness_status: format!("{:?}", Self::effective_freshness(input)).to_lowercase(),
-            coverage_status: format!("{:?}", input.required_subquestions.len()).to_string(),
+            coverage_status: Self::trace_coverage_status(input).as_str().into(),
             source_status: if Self::explicit_source(input) {
                 "explicit".into()
             } else {
                 "open".into()
             },
             selected_path: decision.path_name().into(),
-            rejection_reasons: vec![decision.reason().code().into()],
+            rejection_reasons: match decision {
+                SearchDecision::Reject { reason } => vec![reason.code().into()],
+                _ => Vec::new(),
+            },
             estimated_cost: estimated_cost.clone(),
             actual_cost: None,
             decision_at: chrono::Utc::now(),
@@ -790,6 +819,8 @@ mod tests {
                 },
                 vector_score: None,
                 bm25_score: Some(5.0),
+                workspace_id: None,
+                language: None,
             },
             relevance: 0.9,
             freshness_ok: fresh,
@@ -956,11 +987,48 @@ mod tests {
         // build_trace is private; verify via decide (mode forced external).
         let rt = tokio::runtime::Runtime::new().unwrap();
         let (_, t) = rt.block_on(engine().decide(inp)).unwrap();
-        assert_eq!(
-            t.rejection_reasons,
-            vec!["mode_forces_external".to_string()]
+        assert!(
+            t.rejection_reasons.is_empty(),
+            "successful decisions carry no rejection reasons"
         );
         assert_eq!(t.selected_path, "external");
+    }
+
+    /// Part 30 §30.11: coverage_status is an enum wire name, not a number.
+    #[test]
+    fn coverage_status_is_a_status_not_a_number() {
+        let inp = input(
+            "what is tokio async runtime",
+            "general",
+            SearchMode::LocalOnly,
+            vec![candidate("https://tokio.rs", "Tokio", true)],
+        );
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let (_, t) = rt.block_on(engine().decide(inp)).unwrap();
+        assert!(matches!(
+            t.coverage_status.as_str(),
+            "sufficient" | "partial" | "insufficient"
+        ));
+        assert!(t.coverage_status.parse::<usize>().is_err());
+    }
+
+    /// Part 30 §30.11: rejection_reasons only on Reject.
+    #[test]
+    fn successful_decision_has_no_rejection_reasons() {
+        let inp = input(
+            "what is tokio async runtime",
+            "general",
+            SearchMode::LocalOnly,
+            vec![candidate("https://tokio.rs", "Tokio", true)],
+        );
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let (decision, trace) = rt.block_on(engine().decide(inp)).unwrap();
+        assert!(matches!(decision, SearchDecision::LocalOnly { .. }));
+        assert!(trace.rejection_reasons.is_empty());
+        let mut rejected = input("x", "general", SearchMode::LocalFirst, vec![]);
+        rejected.estimated_external_cost_micros = 500_000;
+        let (_, reject_trace) = rt.block_on(engine().decide(rejected)).unwrap();
+        assert_eq!(reject_trace.rejection_reasons, vec!["budget_exceeded"]);
     }
 
     #[test]

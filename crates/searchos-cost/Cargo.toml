@@ -9,6 +9,7 @@ description = "Cost estimation, append-only ledger logic, attribution and cost m
 [dependencies]
 serde = { workspace = true }
 chrono = { workspace = true }
+tracing = { workspace = true }
 searchos-domain = { workspace = true }
 
 [dev-dependencies]

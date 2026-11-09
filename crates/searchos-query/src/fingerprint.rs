@@ -3,7 +3,7 @@
 //! ```text
 //! fingerprint = SHA256(
 //!   normalized_query + language + profile_version + freshness_policy +
-//!   source_policy + workspace_scope
+//!   source_policy + workspace_scope + mode + freshness_requirement
 //! )
 //! ```
 //!
@@ -21,6 +21,13 @@ pub struct QueryFingerprintParts {
     pub freshness_policy: String,
     pub source_policy: String,
     pub workspace_scope: String,
+    /// Search mode is part of cache identity: a LocalOnly request must never
+    /// merge with an external-capable execution (INV-30-04).
+    #[serde(default)]
+    pub mode: String,
+    /// Effective freshness requirement (request constraint + profile).
+    #[serde(default)]
+    pub freshness_requirement: String,
 }
 
 impl QueryFingerprintParts {
@@ -28,13 +35,15 @@ impl QueryFingerprintParts {
     fn encoded(&self) -> String {
         let f = |s: &str| format!("{:06}{}", s.len(), s);
         format!(
-            "{}{}{}{}{}{}",
+            "{}{}{}{}{}{}{}{}",
             f(&self.normalized_query),
             f(&self.language),
             f(&self.profile_version),
             f(&self.freshness_policy),
             f(&self.source_policy),
             f(&self.workspace_scope),
+            f(&self.mode),
+            f(&self.freshness_requirement),
         )
     }
 }
@@ -58,6 +67,8 @@ mod tests {
             freshness_policy: fresh.into(),
             source_policy: "trusted".into(),
             workspace_scope: ws.into(),
+            mode: "local_first".into(),
+            freshness_requirement: fresh.into(),
         }
     }
 
@@ -82,6 +93,16 @@ mod tests {
         let a = fingerprint(&parts("rust tokio", "en", "recent", "ws_1"));
         let b = fingerprint(&parts("rust tokio", "en", "recent", "ws_2"));
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn mode_and_freshness_are_part_of_identity() {
+        let base = parts("rust tokio", "en", "recent", "ws_1");
+        let mut local = base.clone();
+        local.mode = "local_only".into();
+        assert_ne!(fingerprint(&base), fingerprint(&local));
+        let strict = parts("rust tokio", "en", "strict", "ws_1");
+        assert_ne!(fingerprint(&base), fingerprint(&strict));
     }
 
     #[test]
