@@ -126,7 +126,7 @@ impl HttpFetcher {
             // Redirects are handled manually so every hop is re-validated.
             .redirect(reqwest::redirect::Policy::none())
             .timeout(self.limits.timeout)
-            .user_agent("searchos/0.1 (+https://github.com/searchos/searchos)");
+            .user_agent("searchos/0.1 (+https://github.com/huifer/searchos)");
         if let (Some(addrs), Ok(parsed)) = (pinned, url::Url::parse(url)) {
             if let Some(host) = parsed.host_str() {
                 // Connect ONLY to addresses that passed DNS validation; the

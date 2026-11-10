@@ -129,7 +129,7 @@ validation errors. See [`docs/observability.md`](../observability.md).
 
 A **second** signal forces an immediate exit, so a wedged process can always be
 recovered. Because every request is handled inline, MCP cancellation is not a
-shutdown concern (see [`docs/mcp.md`](mcp.md)); SSE is the only long-lived
+shutdown concern (see [`docs/mcp.md`](../mcp.md)); SSE is the only long-lived
 connection and it is wired to the shutdown signal.
 
 ## POST /search

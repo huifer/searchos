@@ -37,7 +37,7 @@ members = [
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/searchos/searchos"
+repository = "https://github.com/huifer/searchos"
 
 [workspace.dependencies]
 # Internal crates (single source of truth for intra-workspace deps)

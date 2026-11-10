@@ -13,7 +13,14 @@ multi-arch images, and attaches the matching section of this file.
 
 ## [Unreleased]
 
-Nothing yet — all shipped work is recorded under `[0.1.0]`.
+### Fixed
+
+- Corrected the only broken local documentation link (`docs/api/http.md` now
+  points at `../mcp.md`).
+- Aligned the workspace `repository` URL and every crawler / provider
+  User-Agent contact URL with the real remote (`github.com/huifer/searchos`);
+  the Python SDK already used it.
+- Added the Keep a Changelog link references below.
 
 ## [0.1.0] - 2026-11-10
 
@@ -102,3 +109,6 @@ in-process as a Local Mode and over HTTP as a Gateway Mode, sharing one core.
   as a job-level env var and uses `if: env.REGISTRY_TOKEN != ''` plus
   `$REGISTRY_TOKEN` in shell steps. Both workflows pass `actionlint`, now
   enforced by the `workflow-lint` CI job.
+
+[Unreleased]: https://github.com/huifer/searchos/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/huifer/searchos/releases/tag/v0.1.0

@@ -1,6 +1,6 @@
 # Generic crawler strategy (RFC-010 10.5)
 strategy:
-  user_agent: "searchos/0.1 (+https://github.com/searchos/searchos)"
+  user_agent: "searchos/0.1 (+https://github.com/huifer/searchos)"
   max_redirects: 5
   timeout_ms: 15000
   max_response_bytes: 5242880

@@ -23,7 +23,7 @@ impl BraveProvider {
             api_key: api_key.into(),
             http: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(30))
-                .user_agent("searchos/0.1 (+https://github.com/searchos/searchos)")
+                .user_agent("searchos/0.1 (+https://github.com/huifer/searchos)")
                 .build()
                 .expect("reqwest client"),
             base_url: "https://api.search.brave.com/res".into(),
