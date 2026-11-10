@@ -92,6 +92,11 @@ in-process as a Local Mode and over HTTP as a Gateway Mode, sharing one core.
   `protobuf-compiler` **and** `libprotobuf-dev` (the well-known `.proto` includes
   are only a Recommends of the former) on every Rust job, including the release
   `verify` and `artifacts` jobs.
+- **OTLP export test was environment-dependent**: `logging::init_with_otlp`
+  applies `EnvFilter::try_from_default_env()` and CI sets `RUST_LOG=warn`, which
+  filtered out the test's info-level span so `/v1/traces` never arrived. The
+  smoke span and event are now ERROR-level; the test passes with `RUST_LOG`
+  unset, `warn` and `error`.
 - **release workflow rejected at parse time**: the `secrets` context is not
   allowed in a step-level `if:`. The `images` job now exposes the registry token
   as a job-level env var and uses `if: env.REGISTRY_TOKEN != ''` plus

@@ -122,10 +122,13 @@ async fn otlp_exports_traces_and_metrics_over_http() {
     assert!(guard.is_enabled());
 
     // One tracing span becomes one OTel span; the in-process registry has at
-    // least one metric to observe.
+    // least one metric to observe. Use ERROR level deliberately:
+    // `logging::init_with_otlp` applies `EnvFilter::try_from_default_env()`, and
+    // CI sets `RUST_LOG=warn` globally, which silently filtered out the old
+    // info-level span and made this assertion fail only on GitHub runners.
     searchos_observability::MetricsRegistry::global().inc_cache_hit();
-    tracing::info_span!("otlp_smoke_span", component = "compatibility").in_scope(|| {
-        tracing::info!("hello from the OTLP export test");
+    tracing::error_span!("otlp_smoke_span", component = "compatibility").in_scope(|| {
+        tracing::error!("hello from the OTLP export test");
     });
 
     guard.force_flush().expect("force_flush must succeed");
