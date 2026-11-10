@@ -33,16 +33,26 @@ async function handle(req: NextRequest, ctx: Context): Promise<NextResponse> {
   }
 
   const target = `${baseUrl()}/${path.map(encodeURIComponent).join("/")}${req.nextUrl.search}`;
+  // A multipart upload must keep its exact content type (boundary included) and
+  // its raw bytes; everything else stays JSON.
+  const incomingType = req.headers.get("content-type") ?? "";
+  const isMultipart = incomingType.toLowerCase().startsWith("multipart/");
   const headers = new Headers();
-  headers.set("content-type", "application/json");
+  if (isMultipart) {
+    if (incomingType) headers.set("content-type", incomingType);
+  } else {
+    headers.set("content-type", "application/json");
+  }
   const token = process.env.SEARCHOS_AUTH_TOKEN?.trim();
   if (token) {
     headers.set("authorization", `Bearer ${token}`);
   }
 
-  let body: string | undefined;
+  let body: BodyInit | undefined;
   if (["POST", "PUT", "PATCH", "DELETE"].includes(req.method)) {
-    body = await req.text();
+    body = isMultipart
+      ? Buffer.from(await req.arrayBuffer())
+      : await req.text();
   }
 
   // SSE must not be cut by the proxy timeout (RFC-028 6.2).

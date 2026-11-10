@@ -183,7 +183,95 @@ export type DocumentRecord = {
   status?: string;
   created_at?: string;
 };
-export type DocumentList = { documents: DocumentRecord[] };
+
+/** Console-facing document summary: lifecycle status + version / chunk counts. */
+export type DocumentSummary = {
+  id: string;
+  source_id?: string;
+  canonical_url: string;
+  current_version_id?: string | null;
+  title?: string | null;
+  content_type?: string;
+  language?: string | null;
+  source_type?: string;
+  status?: string;
+  workspace_id?: string;
+  version_count?: number;
+  chunk_count?: number;
+  created_at?: string;
+  updated_at?: string;
+};
+export type DocumentList = { documents: DocumentSummary[] };
+
+/** One immutable content version of a document. */
+export type DocumentVersion = {
+  id: string;
+  document_id: string;
+  content_hash: string;
+  raw_content_ref?: string;
+  markdown_ref?: string | null;
+  published_at?: string | null;
+  fetched_at?: string;
+  extractor_version?: string;
+  crawler_version?: string | null;
+};
+
+export type DocumentDetail = {
+  document?: DocumentRecord & Record<string, unknown>;
+  summary?: DocumentSummary;
+  current_version?: DocumentVersion | null;
+  versions?: DocumentVersion[];
+};
+
+/** Result of one local ingest call (text / file / batch item). */
+export type IngestedDocument = {
+  document_id: string;
+  version_id?: string;
+  canonical_url?: string;
+  source_type?: string;
+  content_hash?: string;
+  changed?: boolean;
+  title?: string | null;
+  chunk_count?: number;
+  status?: string;
+};
+
+export type IngestFailure = { source_key?: string; error?: string };
+
+export type IngestBatchResult = {
+  job_id?: string;
+  state?: string;
+  total_items?: number;
+  ok_items?: number;
+  failed_items?: number;
+  documents?: IngestedDocument[];
+  failures?: IngestFailure[];
+};
+
+export type IngestJobItem = {
+  id: string;
+  job_id: string;
+  source_key?: string;
+  state?: string;
+  document_id?: string | null;
+  error_detail?: string | null;
+};
+
+export type IngestJob = {
+  job?: {
+    id: string;
+    workspace_id?: string;
+    source_type?: string;
+    state?: string;
+    total_items?: number;
+    ok_items?: number;
+    failed_items?: number;
+    error_detail?: string | null;
+    created_at?: string;
+    finished_at?: string | null;
+  };
+  items?: IngestJobItem[];
+};
 
 export type MemoryHit = {
   entry?: { id?: string; title?: string; content?: string; url?: string | null };

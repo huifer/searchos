@@ -41,6 +41,19 @@ export async function apiPost<T>(path: string, body: unknown): Promise<T> {
   );
 }
 
+/** DELETE with no body. Returns the gateway's JSON envelope. */
+export async function apiDelete<T>(path: string): Promise<T> {
+  return parse<T>(await fetch(apiPath(path), { method: "DELETE", cache: "no-store" }));
+}
+
+/**
+ * Multipart upload. The browser sets the boundary-carrying content type
+ * itself, so no explicit header is sent here.
+ */
+export async function apiUpload<T>(path: string, form: FormData): Promise<T> {
+  return parse<T>(await fetch(apiPath(path), { method: "POST", body: form, cache: "no-store" }));
+}
+
 export type ApiState<T> = {
   data: T | null;
   error: string | null;

@@ -38,3 +38,4 @@ single, reversible-with-effort commitment.
 | ADR-029 | Multi-Key Rotation for Upstream Providers |
 | ADR-028 | Local Data Ingestion |
 | ADR-030 | Execution Correctness Baseline (Part 30) |
+| ADR-031 | MCP Transport: stdio-only in v1 |

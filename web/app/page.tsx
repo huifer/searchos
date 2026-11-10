@@ -1,5 +1,7 @@
 "use client";
 
+import { useI18n } from "@/lib/i18n";
+
 import { useCallback, useMemo, useState } from "react";
 import Link from "next/link";
 import dynamic from "next/dynamic";
@@ -39,6 +41,7 @@ import {
 import { count, micros, pct } from "@/lib/client";
 
 export default function OverviewPage() {
+  const { t } = useI18n();
   const [range, setRange] = useState("all");
   const [interval, setInterval] = useState("day");
   const params = useMemo(() => {
@@ -85,22 +88,22 @@ export default function OverviewPage() {
         <div className="flex flex-wrap items-center gap-2">
           <Select name="time-range" value={range} onValueChange={setRange}>
             <SelectTrigger id="time-range" name="time-range" className="w-[150px]" aria-label="Time range">
-              <SelectValue placeholder="Time range" />
+              <SelectValue placeholder={t("Time range")} />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="7">Last 7 days</SelectItem>
-              <SelectItem value="30">Last 30 days</SelectItem>
-              <SelectItem value="all">All history</SelectItem>
+              <SelectItem value="7">{t("Last 7 days")}</SelectItem>
+              <SelectItem value="30">{t("Last 30 days")}</SelectItem>
+              <SelectItem value="all">{t("All history")}</SelectItem>
             </SelectContent>
           </Select>
           <Select name="interval" value={interval} onValueChange={setInterval}>
             <SelectTrigger id="interval" name="interval" className="w-[130px]" aria-label="Interval">
-              <SelectValue placeholder="Interval" />
+              <SelectValue placeholder={t("Interval")} />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="hour">Hour</SelectItem>
-              <SelectItem value="day">Day</SelectItem>
-              <SelectItem value="week">Week</SelectItem>
+              <SelectItem value="hour">{t("Hour")}</SelectItem>
+              <SelectItem value="day">{t("Day")}</SelectItem>
+              <SelectItem value="week">{t("Week")}</SelectItem>
             </SelectContent>
           </Select>
           <Badge variant="outline">Aggregation v{meta?.aggregation_version ?? "--"}</Badge>
@@ -109,7 +112,7 @@ export default function OverviewPage() {
           </Badge>
         </div>
         <div className="flex items-center gap-2">
-          <Button onClick={reloadAll}>Refresh</Button>
+          <Button onClick={reloadAll}>{t("Refresh")}</Button>
           <a href="/api/searchos/api/v1/dashboard/export?format=csv" download>
             <Button variant="outline">
               <Download className="size-3.5" /> CSV
@@ -152,14 +155,14 @@ export default function OverviewPage() {
                 timeRange={range === "all" ? "all available history" : `last ${range} days`}
                 stacked
               />
-              <Panel title="Recent search requests" meta={<Link href="/analytics" className="inline-link">Analytics</Link>}>
+              <Panel title="Recent search requests" meta={<Link href="/analytics" className="inline-link">{t("Analytics")}</Link>}>
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead>Query</TableHead>
-                      <TableHead>Mode</TableHead>
-                      <TableHead>Strategy</TableHead>
-                      <TableHead>Status</TableHead>
+                      <TableHead>{t("Query")}</TableHead>
+                      <TableHead>{t("Mode")}</TableHead>
+                      <TableHead>{t("Strategy")}</TableHead>
+                      <TableHead>{t("Status")}</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -174,7 +177,7 @@ export default function OverviewPage() {
                   </TableBody>
                 </Table>
                 {(requests.data?.data?.items?.length ?? 0) === 0 ? (
-                  <p className="mt-3 font-mono text-[11px] text-muted-foreground">No search requests recorded yet.</p>
+                  <p className="mt-3 font-mono text-[11px] text-muted-foreground">{t("No search requests recorded yet.")}</p>
                 ) : null}
               </Panel>
             </div>
@@ -188,13 +191,13 @@ export default function OverviewPage() {
               <Panel title="Metric definitions and sources">
                 <Tabs defaultValue="quality">
                   <TabsList>
-                    <TabsTrigger value="quality">Quality</TabsTrigger>
-                    <TabsTrigger value="cost">Cost</TabsTrigger>
-                    <TabsTrigger value="meta">Meta</TabsTrigger>
+                    <TabsTrigger value="quality">{t("Quality")}</TabsTrigger>
+                    <TabsTrigger value="cost">{t("Cost")}</TabsTrigger>
+                    <TabsTrigger value="meta">{t("Meta")}</TabsTrigger>
                   </TabsList>
                   <TabsContent value="quality" className="pt-3">
                     <Table>
-                      <TableHeader><TableRow><TableHead>Dimension</TableHead><TableHead>Count</TableHead></TableRow></TableHeader>
+                      <TableHeader><TableRow><TableHead>{t("Dimension")}</TableHead><TableHead>{t("Count")}</TableHead></TableRow></TableHeader>
                       <TableBody>
                         {(quality.data?.data?.freshness ?? []).map(([k, v]) => (
                           <TableRow key={k}><TableCell>freshness: {k}</TableCell><TableCell>{v}</TableCell></TableRow>
@@ -204,7 +207,7 @@ export default function OverviewPage() {
                   </TabsContent>
                   <TabsContent value="cost" className="pt-3">
                     <Table>
-                      <TableHeader><TableRow><TableHead>Operation</TableHead><TableHead>Events</TableHead><TableHead>Micros</TableHead></TableRow></TableHeader>
+                      <TableHeader><TableRow><TableHead>{t("Operation")}</TableHead><TableHead>{t("Events")}</TableHead><TableHead>{t("Micros")}</TableHead></TableRow></TableHeader>
                       <TableBody>
                         {(cost.data?.data?.by_operation ?? []).slice(0, 8).map(([k, n, m]) => (
                           <TableRow key={k}><TableCell>{k}</TableCell><TableCell>{n}</TableCell><TableCell>{m}</TableCell></TableRow>
@@ -214,11 +217,11 @@ export default function OverviewPage() {
                   </TabsContent>
                   <TabsContent value="meta" className="pt-3">
                     <div className="stack">
-                      <div className="kv"><dt>Generated at</dt><dd className="mono">{meta?.generated_at ?? "--"}</dd></div>
-                      <div className="kv"><dt>Timezone</dt><dd className="mono">{meta?.time_range?.timezone ?? "UTC"}</dd></div>
-                      <div className="kv"><dt>Interval</dt><dd className="mono">{meta?.interval ?? "--"}</dd></div>
-                      <div className="kv"><dt>Workspace scope</dt><dd className="mono">{meta?.workspace_scope ?? "*"}</dd></div>
-                      <div className="kv"><dt>Freshness</dt><dd className="mono">{meta?.data_freshness ?? "--"}</dd></div>
+                      <div className="kv"><dt>{t("Generated at")}</dt><dd className="mono">{meta?.generated_at ?? "--"}</dd></div>
+                      <div className="kv"><dt>{t("Timezone")}</dt><dd className="mono">{meta?.time_range?.timezone ?? "UTC"}</dd></div>
+                      <div className="kv"><dt>{t("Interval")}</dt><dd className="mono">{meta?.interval ?? "--"}</dd></div>
+                      <div className="kv"><dt>{t("Workspace scope")}</dt><dd className="mono">{meta?.workspace_scope ?? "*"}</dd></div>
+                      <div className="kv"><dt>{t("Freshness")}</dt><dd className="mono">{meta?.data_freshness ?? "--"}</dd></div>
                       <Separator />
                       <p className="text-xs text-muted-foreground">Estimated values are not invoices. Missing resource metrics are shown as null, never as zero.</p>
                     </div>

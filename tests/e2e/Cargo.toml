@@ -9,3 +9,4 @@ description = "End-to-end CLI smoke tests (RFC-016 Phase 8)."
 [dependencies]
 serde_json = { workspace = true }
 tempfile = "3"
+libc = "0.2"

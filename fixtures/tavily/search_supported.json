@@ -1,0 +1,21 @@
+{
+  "case": "search_supported",
+  "method": "POST",
+  "path": "/search",
+  "body": {
+    "query": "kubernetes operators",
+    "topic": "general",
+    "search_depth": "basic",
+    "max_results": 3,
+    "days": 7,
+    "include_domains": ["kubernetes.io"],
+    "exclude_domains": ["spam.example"],
+    "workspace_id": "tavily"
+  },
+  "expect": {
+    "status": 200,
+    "json_fields": ["query", "results", "unsupported_features", "answer", "response_time"],
+    "absent_fields": [],
+    "unsupported_features_contains": ["search_depth"]
+  }
+}

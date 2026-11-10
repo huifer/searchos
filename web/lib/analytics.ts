@@ -11,6 +11,12 @@ export type DashboardMeta = {
   aggregation_version?: string;
   data_freshness?: string;
   workspace_scope?: string;
+  /** `sql` = the predicates were pushed into a live query; `precomputed` = the stored Read Model was reused. */
+  query_mode?: "sql" | "precomputed";
+  applied_filters?: string[];
+  ignored_filters?: { filter?: string; reason?: string }[];
+  refresh_skipped?: boolean;
+  model_age_seconds?: number | null;
 };
 
 export type DashboardEnvelope<T> = { data?: T; meta?: DashboardMeta };

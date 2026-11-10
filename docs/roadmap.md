@@ -2,6 +2,13 @@
 
 > Roadmap & ADRs
 
+> **STATUS (2026-11): HISTORICAL PLANNING ARTIFACT.** Everything below shipped
+> as **v0.1.0**; all Wave 0–4 items are closed and verified in
+> [`docs/feature-roadmap.md`](feature-roadmap.md), and the release is recorded in
+> [`CHANGELOG.md`](../CHANGELOG.md). These tables are retained for rationale and
+> phasing, **not** as a current status list. The authoritative design source
+> remains [`docs/rfc/`](rfc/README.md).
+
 ## Phased Roadmap (~16 weeks to v1.0)
 
 | Phase | Scope | Acceptance |
@@ -12,7 +19,7 @@
 | P3 | Local search & memory | Offline retrieval; memory survives restart; model-version rebuild |
 | P4 | Extension system | Add site crawler without touching core; disable/rollback; quarantine |
 | P5 | AI search intelligence | Similar-query reuse; no stale reuse; explainable routing; budget caps |
-| P6 | Agent integration | MCP stdio, Rust SDK, Codex/Claude Code/Pi integration |
+| P6 | Agent integration | MCP stdio, Rust workspace crates, Codex/Claude Code/Pi integration |
 | P7 | Production & release | Security/perf tests, backup/restore, Docker, v1.0 GA |
 
 ## Version Strategy

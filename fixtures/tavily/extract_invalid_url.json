@@ -1,0 +1,13 @@
+{
+  "case": "extract_invalid_url",
+  "method": "POST",
+  "path": "/extract",
+  "body": { "urls": ["not-a-valid-url"], "extract_depth": "advanced", "format": "markdown" },
+  "expect": {
+    "status": 200,
+    "json_fields": ["results", "failed_results", "unsupported_features", "response_time"],
+    "absent_fields": [],
+    "failed_results_min": 1,
+    "unsupported_features_contains": ["extract_depth", "format"]
+  }
+}

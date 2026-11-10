@@ -22,7 +22,7 @@ next-themes (Light / Dark)
 Geist Sans / Geist Mono (locally bundled)
 ```
 
-Backend: Rust Axum gateway, SQLite migration v3, `AnalyticsQueryService`,
+Backend: Rust Axum gateway, SQLite schema v5 (analytics tables added in v3), `AnalyticsQueryService`,
 `/api/v1/dashboard/*`, SSE events, CSV/JSON export.
 
 ### Pages
@@ -97,8 +97,30 @@ change: `python3 web/scripts/generate-og.py [--lang en|zh]`. Set
 ```bash
 npm run typecheck
 npm run build
+npm test                     # Vitest + Testing Library
 curl -s http://localhost:3100/api/searchos/api/v1/dashboard/overview
 ```
+
+The unit suite (`**/*.test.ts{,x}`) runs in jsdom and covers the API client
+(transport, error envelopes, `useApi`, formatters), the server-side proxy
+(nested paths, bearer token, multipart byte-for-byte forwarding, path traversal
+rejection), Analytics filter provenance (Live SQL / Precomputed and ignored
+filters), and the knowledge UI (text/file/batch ingest, strict UTF-8,
+document detail, re-index, delete confirmation, workspace/source filters).
+CI runs it in the `frontend-test` job.
+
+### Localization
+
+The console ships **English and Simplified Chinese**. Use the `EN / 中文` toggle
+in the top bar; the choice is stored in `localStorage` and mirrored to
+`<html lang>` (a `zh-*` browser language selects Chinese on the first visit).
+`lib/i18n.tsx` holds the dictionary: the English string is the key, so any
+untranslated copy falls back to English instead of rendering blank. Technical
+identifiers — API paths, field names, metric codes — deliberately stay in
+English so logs, screenshots and docs remain greppable. Page intros, panel
+titles, KPI/table labels, controls, tabs and empty/error states are translated
+through the shared primitives in `components/ui.tsx`; `npm test` covers the
+dictionary, fallback, persistence and the language toggle.
 
 ---
 
@@ -113,8 +135,20 @@ SQLite 业务表。
 带分母、定义与下钻，图表带 Tooltip 与时间范围，加载 / 空 / 错误态齐全；
 支持 Light / Dark、CSV / JSON 导出与 SSE 刷新提示。
 
-启动与验证命令见上方。视觉遵循 RFC-026：信息密度优先、单一强调色、直角、
-状态色不用于装饰、缺失数据不伪装为 0、估算值与实际值分离。
+启动与验证命令见上方。单元套件（`**/*.test.ts{,x}`）在 jsdom 中运行，覆盖 API
+client（传输、错误 envelope、`useApi`、格式化）、服务端代理（嵌套路径、bearer token、
+multipart 字节级转发、路径穿越拒绝）、Analytics 筛选溯源（Live SQL / Precomputed
+与忽略项提示），以及知识库 UI（文本/文件/批量导入、严格 UTF-8、文档详情、重新索引、
+删除确认、workspace/来源过滤）。CI 在 `frontend-test` job 中运行。
+
+### 本地化
+
+控制台内置**英文与简体中文**。顶栏的 `EN / 中文` 切换会把选择写入 `localStorage` 并同步到 `<html lang>`（浏览器语言为 `zh-*` 时首次访问默认中文）。
+`lib/i18n.tsx` 以英文原文作为字典键，未翻译文案自动回退英文，不会出现空白。API 路径、字段名、指标码等技术标识刻意保留英文，方便日志与文档对照检索。
+页面标题、面板标题、KPI / 表格标签、控件、Tab、空态与错误态都通过 `components/ui.tsx` 的共享组件翻译；`npm test` 覆盖字典、回退、持久化与语言切换。
+
+视觉遵循 RFC-026：信息密度优先、单一强调色、直角、状态色不用于装饰、
+缺失数据不伪装为 0、估算值与实际值分离。
 
 ### 社交预览图（OG image）
 

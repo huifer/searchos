@@ -1,0 +1,12 @@
+{
+  "case": "search_minimal",
+  "method": "POST",
+  "path": "/search",
+  "body": { "query": "rust tokio runtime", "search_depth": "basic" },
+  "expect": {
+    "status": 200,
+    "json_fields": ["query", "results", "unsupported_features", "answer", "response_time"],
+    "absent_fields": [],
+    "unsupported_features_contains": ["search_depth"]
+  }
+}

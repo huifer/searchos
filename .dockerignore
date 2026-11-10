@@ -1,0 +1,31 @@
+# Build context hygiene. Everything here is regenerable or irrelevant to the
+# images, and excluding it keeps `docker build` fast and reproducible.
+
+# VCS / CI
+.git
+.github
+
+# Rust build artifacts (the container builds its own)
+target
+**/target
+
+# Node build artifacts (the console stage installs its own)
+web/node_modules
+web/.next
+web/*.tsbuildinfo
+
+# Local memory / docs / SDKs are not needed inside the images
+.memory
+docs
+sdk
+
+# Local scratch
+*.log
+*.tmp
+.DS_Store
+
+# This file set itself; compose and deploy configs are host-side only
+Dockerfile
+docker-compose.yml
+docker-compose.override.yml
+deploy

@@ -358,6 +358,20 @@ impl MetricsRegistry {
                     0
                 }
             },
+            local_resolutions: locals,
+            external_searches: externals,
+            cache_hits: hits,
+            semantic_reuse: c.semantic_reuse.load(Ordering::Relaxed),
+            singleflight_merges: c.singleflight_merges.load(Ordering::Relaxed),
+            quality_partial: c.quality_partial.load(Ordering::Relaxed),
+            quality_failed: c.quality_failed.load(Ordering::Relaxed),
+            freshness_violations: c.freshness_violations.load(Ordering::Relaxed),
+            coverage_pass: c.coverage_pass.load(Ordering::Relaxed),
+            external_calls: c.external_calls.load(Ordering::Relaxed),
+            external_avoided: c.external_avoided.load(Ordering::Relaxed),
+            valid_local_resolutions: c.valid_local_resolutions.load(Ordering::Relaxed),
+            crawler_successes: c.crawler_successes.load(Ordering::Relaxed),
+            crawler_failures: c.crawler_failures.load(Ordering::Relaxed),
             invariant_metrics: self.invariant.lock().unwrap().clone(),
         }
     }
@@ -369,6 +383,354 @@ fn rate(part: u64, total: u64) -> f64 {
     } else {
         part as f64 / total as f64
     }
+}
+
+// ---------------------------------------------------------------------------
+// Prometheus text exposition (GET /metrics, RFC-015 15.2).
+// ---------------------------------------------------------------------------
+
+/// Server-level metrics that are not process-wide counters: uptime, live SSE
+/// streams, pending outbox rows and build/schema identity.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ServerMetrics {
+    pub uptime_seconds: f64,
+    pub sse_active: u64,
+    pub sse_connections_total: u64,
+    pub outbox_pending: u64,
+    pub version: &'static str,
+    pub schema_version: u64,
+}
+
+impl Default for ServerMetrics {
+    fn default() -> Self {
+        Self {
+            uptime_seconds: 0.0,
+            sse_active: 0,
+            sse_connections_total: 0,
+            outbox_pending: 0,
+            version: "unknown",
+            schema_version: 0,
+        }
+    }
+}
+
+/// Help text for the low-cardinality invariant metrics.
+fn invariant_help(name: &str) -> &'static str {
+    match name {
+        "search.evidence.stale_or_excluded_served_total" => {
+            "Stale or workspace-excluded candidates served (INV-30-01)"
+        }
+        "search.idempotency.claim_conflict_total" => {
+            "Idempotency claim conflicts rejected (INV-30-02)"
+        }
+        "budget.reservation.leaked_total" => "Budget reservations never settled (INV-30-03)",
+        "cache.cross_mode_hit_total" => "Cache hits across incompatible modes (INV-30-05)",
+        "cache.hit_without_claim_total" => "Cache hits without an idempotency claim (INV-30-06)",
+        "singleflight.follower_timeout_total" => {
+            "Singleflight followers that timed out (INV-30-07)"
+        }
+        "singleflight.duplicate_execution_total" => {
+            "Executions avoided by singleflight coalescing (INV-30-09)"
+        }
+        "cost.attribution_mismatch_total" => "Cost attribution mismatches (INV-30-10)",
+        "index.rebuild.provenance_mismatch_total" => {
+            "Rebuild rows whose provenance did not survive (INV-30-12)"
+        }
+        "index.delete.noop_total" => "Index deletes that did not exist (INV-30-08)",
+        "storage.migration.failure_total" => "Migration failures (INV-30-14)",
+        "storage.schema.version" => "Current schema (user_version)",
+        "auth.workspace_cross_read_total" => "Cross-workspace read attempts denied",
+        "fetch.ssrf.address_mismatch_total" => {
+            "Connections that did not use the validated address (INV-30-11)"
+        }
+        "extensions.load_failed_total" => "Extension manifests that failed to load",
+        "extensions.quarantined" => "Extensions currently quarantined",
+        "fetch.limit_exceeded_total" => "Fetches rejected by the configured limit",
+        "fetch.oversize_buffered_bytes" => "Bytes discarded from oversized responses",
+        "fetch.robots_disallowed_total" => "Fetches blocked by robots.txt",
+        "fetch.crawl_delay_waited_seconds" => "Seconds waited for Crawl-delay",
+        "transport.parity_violation_total" => "CLI/HTTP/MCP semantic mismatches (INV-30-19)",
+        "quality.conflict_declared_total" => "Unresolved evidence conflicts",
+        "metrics.sample_overflow_total" => "Latency samples dropped by the bounded ring",
+        "ratelimit.windows_evicted_total" => "Expired rate-limit windows evicted",
+        "document.canonical_divergence_total" => "Canonical URL divergences across paths",
+        "config.unconsumed_field_total" => "Declared config fields with no consumer",
+        "cost.pricing.parse_error_total" => "Pricing rows that failed to parse",
+        "cost.estimate.units_missing_total" => "Cost estimates without unit counts",
+        "trace.invalid_field_total" => "Trace fields rejected as semantically invalid",
+        "singleflight.leader_abandoned_total" => "Singleflight leaders abandoned by followers",
+        "budget.reservation.reserved_age_seconds" => "Age of the oldest reserved budget",
+        "cache.evicted_total" => "Cache entries evicted by the bounded capacity",
+        _ => "Invariant metric (Part 30)",
+    }
+}
+
+fn escape_label(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+}
+
+/// Prometheus text exposition format 0.0.4.
+///
+/// Every metric is prefixed with `searchos_`; latency percentiles and gauges
+/// are suffixed with their unit (`_seconds`). Status counts are the only
+/// labelled series.
+pub fn render_prometheus(snapshot: &MetricsSnapshot, server: &ServerMetrics) -> String {
+    #[derive(Default)]
+    struct PromBuilder {
+        out: String,
+    }
+    impl PromBuilder {
+        fn counter(&mut self, name: &str, help: &str, value: u64, labels: &str) {
+            self.out
+                .push_str(&format!("# HELP {name} {help}\n# TYPE {name} counter\n"));
+            if labels.is_empty() {
+                self.out.push_str(&format!("{name} {value}\n"));
+            } else {
+                self.out.push_str(&format!("{name}{{{labels}}} {value}\n"));
+            }
+        }
+        fn gauge(&mut self, name: &str, help: &str, value: f64) {
+            self.out.push_str(&format!(
+                "# HELP {name} {help}\n# TYPE {name} gauge\n{name} {value}\n"
+            ));
+        }
+    }
+    let mut builder = PromBuilder {
+        out: String::with_capacity(8192),
+    };
+
+    builder.counter(
+        "searchos_search_requests_total",
+        "Total search requests received",
+        snapshot.search_requests,
+        "",
+    );
+    builder.counter(
+        "searchos_search_local_resolutions_total",
+        "Search tasks served by local knowledge",
+        snapshot.local_resolutions,
+        "",
+    );
+    builder.counter(
+        "searchos_search_external_total",
+        "Search tasks with an external acquisition path",
+        snapshot.external_searches,
+        "",
+    );
+    builder.counter(
+        "searchos_cache_hits_total",
+        "Cache hits",
+        snapshot.cache_hits,
+        "",
+    );
+    builder.counter(
+        "searchos_semantic_reuse_total",
+        "Semantic cache reuse hits",
+        snapshot.semantic_reuse,
+        "",
+    );
+    builder.counter(
+        "searchos_singleflight_merges_total",
+        "Executions coalesced by singleflight",
+        snapshot.singleflight_merges,
+        "",
+    );
+    builder.counter(
+        "searchos_quality_pass_total",
+        "Responses that passed the final quality gate",
+        snapshot.quality_pass_count,
+        "",
+    );
+    builder.counter(
+        "searchos_quality_partial_total",
+        "Responses with partial coverage",
+        snapshot.quality_partial,
+        "",
+    );
+    builder.counter(
+        "searchos_quality_failed_total",
+        "Responses that failed the quality gate",
+        snapshot.quality_failed,
+        "",
+    );
+    builder.counter(
+        "searchos_freshness_violations_total",
+        "Responses that served stale local knowledge",
+        snapshot.freshness_violations,
+        "",
+    );
+    builder.counter(
+        "searchos_coverage_pass_total",
+        "Responses that passed the coverage gate",
+        snapshot.coverage_pass,
+        "",
+    );
+    builder.counter(
+        "searchos_conflicts_total",
+        "Responses with unresolved evidence conflicts",
+        snapshot.conflict_count,
+        "",
+    );
+    builder.counter(
+        "searchos_provider_failures_total",
+        "Provider calls that failed",
+        snapshot.provider_failure_count,
+        "",
+    );
+    builder.counter(
+        "searchos_external_calls_total",
+        "External provider calls made",
+        snapshot.external_calls,
+        "",
+    );
+    builder.counter(
+        "searchos_external_avoided_total",
+        "External calls avoided by local reuse",
+        snapshot.external_avoided,
+        "",
+    );
+    builder.counter(
+        "searchos_valid_local_resolutions_total",
+        "Quality-valid local resolutions",
+        snapshot.valid_local_resolutions,
+        "",
+    );
+    builder.counter(
+        "searchos_cost_micros_total",
+        "Estimated cost in microseconds (can be negative for refunds)",
+        snapshot.cost_micros_total.unsigned_abs(),
+        "",
+    );
+    builder.counter(
+        "searchos_crawler_success_total",
+        "Successful crawler runs",
+        snapshot.crawler_successes,
+        "",
+    );
+    builder.counter(
+        "searchos_crawler_failed_total",
+        "Failed crawler runs",
+        snapshot.crawler_failures,
+        "",
+    );
+    builder.counter(
+        "searchos_index_outbox_processed_total",
+        "Outbox rows processed into the index",
+        snapshot.index_outbox_processed,
+        "",
+    );
+    builder.counter(
+        "searchos_index_outbox_dead_total",
+        "Outbox rows moved to the dead-letter state",
+        snapshot.index_outbox_dead,
+        "",
+    );
+    builder.counter(
+        "searchos_rate_limit_windows_evicted_total",
+        "Expired rate-limit windows evicted",
+        snapshot
+            .invariant_metrics
+            .get("ratelimit.windows_evicted_total")
+            .copied()
+            .unwrap_or(0),
+        "",
+    );
+
+    builder.gauge(
+        "searchos_search_latency_p50_seconds",
+        "P50 search latency in seconds",
+        snapshot.search_latency.p50 / 1000.0,
+    );
+    builder.gauge(
+        "searchos_search_latency_p95_seconds",
+        "P95 search latency in seconds",
+        snapshot.search_latency.p95 / 1000.0,
+    );
+    builder.gauge(
+        "searchos_search_latency_p99_seconds",
+        "P99 search latency in seconds",
+        snapshot.search_latency.p99 / 1000.0,
+    );
+    builder.gauge(
+        "searchos_quality_pass_rate",
+        "Share of responses that passed the quality gate",
+        snapshot.quality_pass_rate,
+    );
+    builder.gauge(
+        "searchos_cache_hit_rate",
+        "Cache hit rate",
+        snapshot.cache_hit_rate,
+    );
+    builder.gauge(
+        "searchos_cost_micros_per_quality_pass",
+        "Estimated cost per quality-passing answer, in microseconds",
+        snapshot.cost_per_quality_passing_answer_micros as f64,
+    );
+
+    // Status counts are the only labelled series: the label set is bounded
+    // by the status vocabulary, never by user input.
+    let mut statuses: Vec<(&String, &u64)> = snapshot.status_counts.iter().collect();
+    statuses.sort_by(|a, b| a.0.cmp(b.0));
+    for (status, count) in statuses {
+        builder.counter(
+            "searchos_search_status_total",
+            "Search responses by terminal status",
+            *count,
+            &format!("status=\"{}\"", escape_label(status)),
+        );
+    }
+
+    // Low-cardinality invariant counters / gauges (Part 30).
+    let mut invariants: Vec<(&String, &u64)> = snapshot.invariant_metrics.iter().collect();
+    invariants.sort_by(|a, b| a.0.cmp(b.0));
+    for (name, value) in invariants {
+        let metric = format!("searchos_invariant_{}", name.replace(['.', '/'], "_"));
+        builder.counter(&metric, invariant_help(name), *value, "");
+    }
+
+    // Server-level metrics.
+    builder.gauge(
+        "searchos_uptime_seconds",
+        "Seconds since the process started",
+        server.uptime_seconds,
+    );
+    builder.gauge(
+        "searchos_sse_active",
+        "Currently open SSE dashboard streams",
+        server.sse_active as f64,
+    );
+    builder.counter(
+        "searchos_sse_connections_total",
+        "SSE dashboard streams opened since start",
+        server.sse_connections_total,
+        "",
+    );
+    builder.gauge(
+        "searchos_index_outbox_pending",
+        "Outbox rows still waiting for the index",
+        server.outbox_pending as f64,
+    );
+    builder.gauge(
+        "searchos_schema_version",
+        "Current schema (user_version)",
+        server.schema_version as f64,
+    );
+    builder.gauge("searchos_build_info", "Build identity (always 1)", 1.0);
+    // Replace the unlabelled build_info line with a labelled form so the
+    // version and schema are visible in the scrape.
+    let labelled = format!(
+        "# HELP searchos_build_info Build identity (always 1)\n# TYPE searchos_build_info gauge\nsearchos_build_info{{version=\"{}\",schema_version=\"{}\"}} 1\n",
+        escape_label(server.version),
+        server.schema_version
+    );
+    if let Some(start) = builder.out.rfind("# HELP searchos_build_info") {
+        builder.out.replace_range(start.., &labelled);
+    }
+
+    builder.out
 }
 
 /// JSON-exportable snapshot (feeds /stats/search).
@@ -395,6 +757,22 @@ pub struct MetricsSnapshot {
     pub external_avoidance_rate: f64,
     pub valid_local_resolution_rate: f64,
     pub cost_per_quality_passing_answer_micros: i64,
+    /// Raw counts behind the rates above, so an exporter does not have to
+    /// reconstruct them (and Prometheus counters stay monotonic).
+    pub local_resolutions: u64,
+    pub external_searches: u64,
+    pub cache_hits: u64,
+    pub semantic_reuse: u64,
+    pub singleflight_merges: u64,
+    pub quality_partial: u64,
+    pub quality_failed: u64,
+    pub freshness_violations: u64,
+    pub coverage_pass: u64,
+    pub external_calls: u64,
+    pub external_avoided: u64,
+    pub valid_local_resolutions: u64,
+    pub crawler_successes: u64,
+    pub crawler_failures: u64,
     /// Part 30 invariant counters / gauges, always low-cardinality.
     pub invariant_metrics: BTreeMap<String, u64>,
 }
@@ -437,5 +815,115 @@ mod tests {
                 "missing {name}"
             );
         }
+    }
+
+    fn sample_snapshot() -> MetricsSnapshot {
+        let m = MetricsRegistry::new();
+        for i in 1..=10 {
+            m.record_search(i as f64, if i % 2 == 0 { "local" } else { "external" });
+        }
+        m.record_quality("passed");
+        m.record_quality("partial");
+        m.record_quality("failed");
+        m.inc_provider_failure();
+        m.record_outbox(true, false);
+        m.inc_counter("auth.workspace_cross_read_total");
+        m.record_status("completed");
+        m.record_status("partial");
+        m.snapshot()
+    }
+
+    #[test]
+    fn prometheus_exports_counters_gauges_and_labels() {
+        let snapshot = sample_snapshot();
+        let server = ServerMetrics {
+            uptime_seconds: 12.5,
+            sse_active: 2,
+            sse_connections_total: 7,
+            outbox_pending: 3,
+            version: "0.1.0",
+            schema_version: 5,
+        };
+        let text = render_prometheus(&snapshot, &server);
+
+        // Content type contract: exposition format 0.0.4 (set by the handler).
+        for name in [
+            "searchos_search_requests_total",
+            "searchos_quality_pass_total",
+            "searchos_quality_partial_total",
+            "searchos_quality_failed_total",
+            "searchos_provider_failures_total",
+            "searchos_index_outbox_processed_total",
+            "searchos_invariant_auth_workspace_cross_read_total",
+        ] {
+            assert!(
+                text.contains(&format!("# TYPE {name} counter")),
+                "{name} must be a counter:\n{text}"
+            );
+        }
+        assert!(text.contains("searchos_search_requests_total 10"), "{text}");
+        assert!(text.contains("searchos_quality_pass_total 1"), "{text}");
+
+        // Latency is exported in seconds, not milliseconds.
+        assert!(
+            text.contains("# TYPE searchos_search_latency_p50_seconds gauge"),
+            "{text}"
+        );
+
+        // Labelled series use the bounded status vocabulary.
+        assert!(
+            text.contains("searchos_search_status_total{status=\"completed\"} 1"),
+            "{text}"
+        );
+        assert!(
+            text.contains("searchos_search_status_total{status=\"partial\"} 1"),
+            "{text}"
+        );
+
+        // Server metrics.
+        assert!(text.contains("searchos_uptime_seconds 12.5"), "{text}");
+        assert!(text.contains("searchos_sse_active 2"), "{text}");
+        assert!(text.contains("searchos_sse_connections_total 7"), "{text}");
+        assert!(text.contains("searchos_index_outbox_pending 3"), "{text}");
+        assert!(text.contains("searchos_schema_version 5"), "{text}");
+
+        // Build info is labelled, not bare.
+        assert!(
+            text.contains("searchos_build_info{version=\"0.1.0\",schema_version=\"5\"} 1"),
+            "{text}"
+        );
+
+        // Every invariant metric is present, namespaced and sanitized.
+        assert!(
+            text.contains("searchos_invariant_auth_workspace_cross_read_total"),
+            "{text}"
+        );
+        assert!(
+            text.contains("searchos_invariant_storage_schema_version"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn prometheus_label_values_are_escaped() {
+        let mut snapshot = sample_snapshot();
+        snapshot
+            .status_counts
+            .insert("weird\"status\nline".into(), 1);
+        let text = render_prometheus(&snapshot, &ServerMetrics::default());
+        assert!(
+            text.contains("status=\"weird\\\"status\\nline\""),
+            "label values must be escaped:\n{text}"
+        );
+    }
+
+    #[test]
+    fn prometheus_is_stable_for_the_same_snapshot() {
+        let snapshot = sample_snapshot();
+        let server = ServerMetrics::default();
+        assert_eq!(
+            render_prometheus(&snapshot, &server),
+            render_prometheus(&snapshot, &server)
+        );
     }
 }

@@ -105,3 +105,62 @@
 - 每密钥独立健康状态：429 → 限流至 Retry-After；401/403/配额 → 封禁（1800s/3600s）；
   超时/网络错误 → 连续失败计数。全部密钥不可用时返回 429 并附带最早恢复时间。
 - 路由、熔断器、成本账本不变：一个 Provider ID，内部多密钥；registry 与执行路径共享同一实例。
+
+## 19.5 ADR-031: MCP Transport — stdio-only in v1
+
+**Decision.** SearchOS v1 speaks MCP **only** over stdio. The gateway exposes
+**no** MCP route, no streamable HTTP transport and no MCP session state.
+
+**Why.**
+
+- Every agent host that supports remote MCP already speaks HTTP, so it can use
+  the REST / Tavily surface today. A second HTTP protocol surface would add
+  session, resumability, `Mcp-Session-Id`, per-stream SSE and Origin-validation
+  cost without adding capability.
+- A separate HTTP MCP listener would duplicate the gateway's auth, workspace
+  binding and rate-limit stack, and would have to re-derive the same rules.
+- The stdio server is in-process over the same `SearchOsRuntime` as the CLI
+  (ADR-004), so Local Mode keeps its "no HTTP loopback" guarantee.
+
+**Consequences.**
+
+- `searchos mcp` is the local agent entry point; the gateway is the remote one.
+  Both call the same application services, so behaviour is identical.
+- `notifications/cancelled` is acknowledged (counted + logged to stderr) rather
+  than silently dropped; the v1 server handles every request inline, so there is
+  no in-flight work to cancel. If long-running tools are added later,
+  cancellation must become real (progress + cancel).
+- The decision is enforced by `tests/compatibility/tests/mcp_transport.rs`:
+  declared transport, no HTTP server dependency in the MCP crate, no MCP route
+  on the gateway, cancellation counted, and no doc claiming a remote transport.
+
+**规范**：[`docs/mcp.md`](../mcp.md)。
+
+---
+
+## 19.5 ADR-031：MCP 传输——v1 仅 stdio
+
+**决定。** SearchOS v1 的 MCP **只**走 stdio。网关**不**暴露 MCP 路由、不提供
+streamable HTTP 传输、不保存 MCP session 状态。
+
+**理由。**
+
+- 支持 remote MCP 的 agent 宿主本身就能说 HTTP，今天即可使用 REST / Tavily 面。
+  再跑一套 HTTP 协议面会带来 session、可恢复性、`Mcp-Session-Id`、每流 SSE 与
+  Origin 校验的成本，却换不来新能力。
+- 独立的 HTTP MCP 监听会与网关的鉴权、工作区绑定、限流栈重复，并需要重新推导
+  同样的规则。
+- stdio 服务器与 CLI 共用同一个 `SearchOsRuntime`（ADR-004），Local Mode 的
+  “无 HTTP 回环”约束得以保持。
+
+**影响。**
+
+- `searchos mcp` 是本地 agent 入口，网关是远程入口；两者调用同一套应用服务，
+  行为一致。
+- `notifications/cancelled` 会被确认（计数 + stderr 日志）而不是静默丢弃；v1
+  服务器内联处理每个请求，没有可取消的在途工作。将来加入长时工具时，取消必须变成
+  真正的 progress + cancel。
+- 该决定由 `tests/compatibility/tests/mcp_transport.rs` 守住：传输声明、MCP crate
+  无 HTTP 服务端依赖、网关无 MCP 路由、取消被计数、文档不得宣称远程传输。
+
+**规范**：[`docs/mcp.md`](../mcp.md)。

@@ -131,6 +131,33 @@ pub enum VersionDiff {
     NewVersion,
 }
 
+/// Console-facing document summary (RFC-029 document lifecycle).
+///
+/// The [`Document`] model intentionally omits the lifecycle `status` column:
+/// the domain only cares about identity and provenance. An operator console
+/// does care, so the storage layer projects the row plus its version and
+/// chunk counts into this summary.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DocumentSummary {
+    pub id: DocumentId,
+    pub source_id: SourceId,
+    pub canonical_url: String,
+    pub current_version_id: Option<DocumentVersionId>,
+    pub title: Option<String>,
+    pub content_type: String,
+    pub language: Option<String>,
+    /// `web` for fetched URLs, `local_*` for ingested content.
+    pub source_type: String,
+    /// Lifecycle status column: `discovered` / `fetched` / `normalized` /
+    /// `indexed` / `deleted`.
+    pub status: String,
+    pub workspace_id: String,
+    pub version_count: i64,
+    pub chunk_count: i64,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

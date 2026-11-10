@@ -1,5 +1,7 @@
 "use client";
 
+import { useI18n } from "@/lib/i18n";
+
 import { useEffect, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -17,6 +19,7 @@ function stageTone(status: string): Tone {
 }
 
 export default function TracesPage() {
+  const { t } = useI18n();
   const list = useApi<TraceList>("traces?limit=25", 15_000);
   const [selected, setSelected] = useState<string | null>(null);
   const detail = useApi<DecisionTrace>(selected ? `trace/${encodeURIComponent(selected)}` : null);
@@ -43,7 +46,7 @@ export default function TracesPage() {
       <div className="trace-layout">
         <div>
           <div className="panel-head">
-            <h2 className="panel-title">Recent traces</h2>
+            <h2 className="panel-title">{t("Recent traces")}</h2>
             <span className="panel-meta">{list.data?.traces.length ?? 0} records</span>
           </div>
           {list.loading && !list.data ? <div className="p-4"><Skeleton lines={5} /></div> : null}
@@ -64,7 +67,7 @@ export default function TracesPage() {
 
         <div>
           <div className="panel-head">
-            <h2 className="panel-title">Trace detail</h2>
+            <h2 className="panel-title">{t("Trace detail")}</h2>
             <span className="panel-meta">GET /trace/{selected ?? "{id}"}</span>
           </div>
 
@@ -77,23 +80,23 @@ export default function TracesPage() {
           {detail.data ? (
             <div className="p-4">
               <div className="grid grid-3 mb-5">
-                <div className="metric"><div className="metric-label">Selected path</div><div className="metric-value" style={{ fontSize: 20 }}>{detail.data.selected_path ?? "--"}</div></div>
-                <div className="metric"><div className="metric-label">Final strategy</div><div className="metric-value" style={{ fontSize: 20 }}>{detail.data.final_strategy ?? "--"}</div></div>
-                <div className="metric"><div className="metric-label">Final outcome</div><div className="metric-value" style={{ fontSize: 20 }}>{detail.data.final_outcome ?? "--"}</div></div>
+                <div className="metric"><div className="metric-label">{t("Selected path")}</div><div className="metric-value" style={{ fontSize: 20 }}>{detail.data.selected_path ?? "--"}</div></div>
+                <div className="metric"><div className="metric-label">{t("Final strategy")}</div><div className="metric-value" style={{ fontSize: 20 }}>{detail.data.final_strategy ?? "--"}</div></div>
+                <div className="metric"><div className="metric-label">{t("Final outcome")}</div><div className="metric-value" style={{ fontSize: 20 }}>{detail.data.final_outcome ?? "--"}</div></div>
               </div>
 
               <Tabs defaultValue="stages">
                 <TabsList>
-                  <TabsTrigger value="stages">Stages</TabsTrigger>
-                  <TabsTrigger value="meta">Metadata</TabsTrigger>
-                  <TabsTrigger value="raw">Raw JSON</TabsTrigger>
+                  <TabsTrigger value="stages">{t("Stages")}</TabsTrigger>
+                  <TabsTrigger value="meta">{t("Metadata")}</TabsTrigger>
+                  <TabsTrigger value="raw">{t("Raw JSON")}</TabsTrigger>
                 </TabsList>
                 <TabsContent value="stages" className="pt-3">
                   {(detail.data.stages ?? []).length === 0 ? (
                     <Empty title="No stage records" body="This trace was written by an older build. New decisions always include structured stages." />
                   ) : (
                     <Table>
-                      <TableHeader><TableRow><TableHead>Stage</TableHead><TableHead>Output</TableHead><TableHead>Status</TableHead></TableRow></TableHeader>
+                      <TableHeader><TableRow><TableHead>{t("Stage")}</TableHead><TableHead>{t("Output")}</TableHead><TableHead>{t("Status")}</TableHead></TableRow></TableHeader>
                       <TableBody>
                         {(detail.data.stages ?? []).map((stage, i) => (
                           <TableRow key={`${stage.stage}-${i}`}>
@@ -111,13 +114,13 @@ export default function TracesPage() {
                 </TabsContent>
                 <TabsContent value="meta" className="pt-3">
                   <div className="stack">
-                    <Kv label="Trace id" value={detail.data.trace_id ?? "--"} />
-                    <Kv label="Task id" value={detail.data.task_id ?? "--"} />
-                    <Kv label="Profile version" value={detail.data.profile_version ?? "--"} />
-                    <Kv label="Local candidates" value={`${detail.data.local_candidates ?? 0} / accepted ${detail.data.accepted_candidates ?? 0}`} />
-                    <Kv label="Estimated cost" value={`${micros(detail.data.estimated_cost?.amount_micros)} ${detail.data.estimated_cost?.currency ?? "USD"}`} />
-                    <Kv label="Actual cost" value={detail.data.actual_cost ? `${micros(detail.data.actual_cost.amount_micros)} ${detail.data.actual_cost.currency}` : "not reconciled"} />
-                    <Kv label="Rejection reasons" value={(detail.data.rejection_reasons ?? []).join(" / ") || "none"} />
+                    <Kv label={t("Trace id")} value={detail.data.trace_id ?? "--"} />
+                    <Kv label={t("Task id")} value={detail.data.task_id ?? "--"} />
+                    <Kv label={t("Profile version")} value={detail.data.profile_version ?? "--"} />
+                    <Kv label={t("Local candidates")} value={`${detail.data.local_candidates ?? 0} / accepted ${detail.data.accepted_candidates ?? 0}`} />
+                    <Kv label={t("Estimated cost")} value={`${micros(detail.data.estimated_cost?.amount_micros)} ${detail.data.estimated_cost?.currency ?? "USD"}`} />
+                    <Kv label={t("Actual cost")} value={detail.data.actual_cost ? `${micros(detail.data.actual_cost.amount_micros)} ${detail.data.actual_cost.currency}` : "not reconciled"} />
+                    <Kv label={t("Rejection reasons")} value={(detail.data.rejection_reasons ?? []).join(" / ") || "none"} />
                   </div>
                   <Separator className="my-4" />
                   <p className="text-xs text-muted-foreground">Estimated and actual costs are separate. Replaying a request id never creates a second bill.</p>

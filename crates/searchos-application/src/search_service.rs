@@ -475,13 +475,15 @@ async fn embed_text(deps: &SearchDependencies, text: &str) -> Result<Vec<f32>, S
     Ok(vector)
 }
 
-/// Computes a semantic bucket from the configured embedding provider.
-async fn query_embedding_bucket(
+/// Computes the semantic bucket and the query embedding from the
+/// configured provider. Both are returned because the bucket alone is only
+/// a coarse recall hint — the similarity gate needs the vector.
+async fn query_embedding_and_bucket(
     deps: &SearchDependencies,
     text: &str,
-) -> Result<String, SearchOsError> {
+) -> Result<(String, Vec<f32>), SearchOsError> {
     let vector = embed_text(deps, text).await?;
-    Ok(vector_bucket(&vector))
+    Ok((vector_bucket(&vector), vector))
 }
 
 /// Retrieval chain: Canonical / Semantic / Retrieval caches → BM25 + Vector
@@ -503,14 +505,16 @@ async fn retrieve_local_candidates(
     );
     let compatibility =
         semantic_compatibility(deps, req, analysis, source_policy, &freshness_label);
-    let bucket = query_embedding_bucket(deps, &analysis.normalized).await?;
+    let (bucket, query_vector) = query_embedding_and_bucket(deps, &analysis.normalized).await?;
     let semantic_key = format!("{bucket}|{}|{}", req.mode.as_str(), freshness_label);
 
     if deps.semantic_dedup {
-        if let Some(cached) =
-            deps.semantic_cache
-                .get(&semantic_key, &compatibility, &policy_version)
-        {
+        if let Some(cached) = deps.semantic_cache.get(
+            &semantic_key,
+            &compatibility,
+            &policy_version,
+            &query_vector,
+        ) {
             metrics.inc_semantic_reuse();
             return Ok(cached);
         }
@@ -577,6 +581,7 @@ async fn retrieve_local_candidates(
         candidates.clone(),
         compatibility,
         &policy_version,
+        query_vector,
     );
     if deps.incremental {
         deps.retrieval_cache

@@ -1,0 +1,30 @@
+# Minimal OpenTelemetry Collector for a local SearchOS deployment.
+#
+# Receives OTLP/HTTP on 4318, logs the received signals, and exposes the
+# collector's own Prometheus metrics on 8889. See docs/observability.md.
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 5s
+
+exporters:
+  debug:
+    verbosity: basic
+  prometheus:
+    endpoint: 0.0.0.0:8889
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [debug]
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [debug, prometheus]

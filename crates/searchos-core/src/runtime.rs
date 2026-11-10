@@ -795,6 +795,49 @@ impl SearchOsRuntime {
             .await
     }
 
+    /// Soft-deletes a document and removes it from the full-text index.
+    ///
+    /// The metadata row is soft-deleted, its chunks are dropped and the index
+    /// deletes are enqueued as outbox rows (chunk-id space, INV-30-08). The
+    /// outbox is drained immediately so the deletion is observable right
+    /// after the call — the console's "delete then verify" flow depends on it.
+    pub async fn delete_document(
+        &self,
+        document_id: &searchos_domain::ids::DocumentId,
+    ) -> Result<(), SearchOsError> {
+        let repo = repos::DocumentRepo::new(&self.sqlite);
+        repo.delete(document_id)?;
+        self.process_outbox(256).await?;
+        self.invalidate_caches().await;
+        Ok(())
+    }
+
+    /// Re-indexes a document's current version into the full-text index.
+    ///
+    /// Returns the number of chunk payloads written. Reindexing never
+    /// rewrites the metadata: the version and its chunks are already there,
+    /// only the index entries are (re)written.
+    pub async fn reindex_document(
+        &self,
+        document_id: &searchos_domain::ids::DocumentId,
+        workspace_id: &searchos_domain::ids::WorkspaceId,
+    ) -> Result<usize, SearchOsError> {
+        let payloads = self
+            .application
+            .fetch_service
+            .reindex_current_version(document_id, workspace_id)
+            .await?;
+        let mut written = 0usize;
+        for payload in payloads {
+            if self.fulltext.index(payload).await.is_ok() {
+                written += 1;
+            }
+        }
+        self.fulltext.commit().await?;
+        self.invalidate_caches().await;
+        Ok(written)
+    }
+
     /// Outbox drain against an explicit index (tests / backend parity).
     pub async fn process_outbox_with_index(
         &self,
@@ -1342,6 +1385,46 @@ struct SqliteAnalyticsService {
     baseline_per_query_micros: i64,
 }
 
+/// Read Models the Dashboard can ask for. A key outside this list is a
+/// validation error, not a silent `null` payload.
+const ANALYTICS_MODELS: &[&str] = &[
+    "overview",
+    "search_requests",
+    "search_timeseries",
+    "search_strategies",
+    "cost_breakdown",
+    "quality_dimensions",
+    "knowledge_growth",
+    "knowledge_freshness",
+    "providers",
+    "crawlers_summary",
+    "infrastructure_summary",
+];
+
+/// How a Read Model payload was produced. Reported in `meta` so the console
+/// can tell a live, filtered SQL query from the precomputed fast path.
+struct DatasetProvenance {
+    query_mode: &'static str,
+    applied_filters: Vec<String>,
+    ignored_filters: Vec<(String, String)>,
+    refresh_skipped: bool,
+    model_age_seconds: Option<i64>,
+}
+
+fn analytics_filters(query: &AnalyticsQuery) -> repos::AnalyticsFilters {
+    repos::AnalyticsFilters {
+        workspace_id: query.workspace_id.clone(),
+        agent_id: query.agent_id.clone(),
+        provider_id: query.provider_id.clone(),
+        search_mode: query.search_mode.clone(),
+        quality_status: query.quality_status.clone(),
+        project_id: query.project_id.clone(),
+        from: query.from.clone(),
+        to: query.to.clone(),
+        interval: query.interval.clone(),
+    }
+}
+
 #[async_trait::async_trait]
 impl AnalyticsQueryService for SqliteAnalyticsService {
     async fn refresh(&self) -> Result<(), SearchOsError> {
@@ -1354,25 +1437,79 @@ impl AnalyticsQueryService for SqliteAnalyticsService {
         query: &AnalyticsQuery,
     ) -> Result<serde_json::Value, SearchOsError> {
         query.validate()?;
-        // Refresh on read so a fresh gateway always serves complete data.
-        // A refresh failure is reported in meta, never as a fake zero.
-        let refresh_ok = self.refresh().await.is_ok();
-        // `local_resolution` in the Overview must be quality-valid. A local
-        // decision that did not pass the final gate is not a valid reuse.
-        if model_key == "overview" {
-            self.constrain_local_resolution_to_quality_passed().await?;
+        if !ANALYTICS_MODELS.contains(&model_key) {
+            return Err(SearchOsError::validation(
+                "model_key",
+                "unknown analytics read model",
+            ));
         }
+        let filters = analytics_filters(query);
         let repo = repos::AnalyticsRepo::new(&self.store);
-        let data = match model_key {
-            "overview" => repo
-                .read_model("overview")?
-                .unwrap_or(serde_json::Value::Null),
-            "search_timeseries" => {
-                serde_json::json!({ "items": repo.read_series(model_key, 90)? })
+
+        // Fast path: no predicate and the requested bucket granularity is the
+        // precomputed one. Reuse the stored payload while it is fresh.
+        let (data, provenance) = if filters.is_unfiltered() && !filters.needs_live_buckets() {
+            let age = self.model_age_seconds(model_key);
+            // Skip the rebuild only when the stored payload provably describes
+            // the current operational rows.
+            let rebuild_needed = repo.needs_rebuild();
+            let refresh_skipped = !rebuild_needed;
+            if rebuild_needed && self.refresh().await.is_err() {
+                tracing::warn!(
+                    "analytics read model rebuild failed; serving the previous snapshot"
+                );
             }
-            key => repo.read_model(key)?.unwrap_or(serde_json::Value::Null),
+            // `local_resolution` in the Overview must be quality-valid. A
+            // local decision that did not pass the final gate is not reuse.
+            if model_key == "overview" {
+                self.constrain_local_resolution_to_quality_passed().await?;
+            }
+            let data = match model_key {
+                "overview" => repo
+                    .read_model("overview")?
+                    .unwrap_or(serde_json::Value::Null),
+                "search_timeseries" => {
+                    serde_json::json!({ "items": repo.read_series(model_key, 90)? })
+                }
+                key => repo.read_model(key)?.unwrap_or(serde_json::Value::Null),
+            };
+            (
+                data,
+                DatasetProvenance {
+                    query_mode: "precomputed",
+                    applied_filters: Vec::new(),
+                    ignored_filters: Vec::new(),
+                    refresh_skipped,
+                    model_age_seconds: age,
+                },
+            )
+        } else {
+            // Live path: every applicable predicate is pushed into SQL.
+            let dataset = repo.query_dataset(
+                model_key,
+                &filters,
+                self.baseline_per_query_micros,
+                query.limit.unwrap_or(90),
+                query.cursor.as_deref(),
+            )?;
+            let ignored = filters
+                .present()
+                .into_iter()
+                .filter(|name| !dataset.applied.contains(name))
+                .map(|name| (name.to_string(), repos::ignore_reason(name).to_string()))
+                .collect();
+            (
+                dataset.data,
+                DatasetProvenance {
+                    query_mode: "sql",
+                    applied_filters: dataset.applied.iter().map(|s| s.to_string()).collect(),
+                    ignored_filters: ignored,
+                    refresh_skipped: false,
+                    model_age_seconds: None,
+                },
+            )
         };
-        Ok(dashboard_envelope(data, query, refresh_ok))
+        Ok(dashboard_envelope(data, query, provenance))
     }
 
     async fn overview(&self, query: &AnalyticsQuery) -> Result<serde_json::Value, SearchOsError> {
@@ -1402,6 +1539,36 @@ impl AnalyticsQueryService for SqliteAnalyticsService {
 }
 
 impl SqliteAnalyticsService {
+    /// Age of the newest precomputed row for `key`, in seconds.
+    fn model_age_seconds(&self, key: &str) -> Option<i64> {
+        self.store
+            .with_conn(|c| -> Result<Option<i64>, SearchOsError> {
+                let mut stmt = c
+                    .prepare(
+                        "SELECT strftime('%s','now') - strftime('%s', updated_at)
+                         FROM analytics_read_models
+                         WHERE model_key = ?1 AND workspace_id = '*'
+                         ORDER BY bucket_start DESC LIMIT 1",
+                    )
+                    .map_err(|e| SearchOsError::Storage(e.to_string()))?;
+                let mut rows = stmt
+                    .query(rusqlite::params![key])
+                    .map_err(|e| SearchOsError::Storage(e.to_string()))?;
+                match rows
+                    .next()
+                    .map_err(|e| SearchOsError::Storage(e.to_string()))?
+                {
+                    Some(row) => Ok(Some(
+                        row.get::<_, i64>(0)
+                            .map_err(|e| SearchOsError::Storage(e.to_string()))?,
+                    )),
+                    None => Ok(None),
+                }
+            })
+            .ok()
+            .flatten()
+    }
+
     /// Recomputes the quality-valid local count inside the Overview Read Model.
     async fn constrain_local_resolution_to_quality_passed(&self) -> Result<(), SearchOsError> {
         let valid: i64 = self.store.with_conn(|c| {
@@ -1435,8 +1602,13 @@ impl SqliteAnalyticsService {
 fn dashboard_envelope(
     data: serde_json::Value,
     query: &AnalyticsQuery,
-    refresh_ok: bool,
+    provenance: DatasetProvenance,
 ) -> serde_json::Value {
+    let ignored_filters: Vec<serde_json::Value> = provenance
+        .ignored_filters
+        .iter()
+        .map(|(filter, reason)| serde_json::json!({ "filter": filter, "reason": reason }))
+        .collect();
     serde_json::json!({
         "data": data,
         "meta": {
@@ -1448,7 +1620,16 @@ fn dashboard_envelope(
             },
             "interval": query.interval.clone().unwrap_or_else(|| "day".into()),
             "aggregation_version": "1",
-            "data_freshness": if refresh_ok { "complete" } else { "stale" },
+            "data_freshness": match provenance.query_mode {
+                "sql" => "live",
+                _ if provenance.refresh_skipped => "fresh",
+                _ => "complete",
+            },
+            "query_mode": provenance.query_mode,
+            "applied_filters": provenance.applied_filters,
+            "ignored_filters": ignored_filters,
+            "refresh_skipped": provenance.refresh_skipped,
+            "model_age_seconds": provenance.model_age_seconds,
             "workspace_scope": query.workspace_id.clone().unwrap_or_else(|| "*".into()),
         }
     })

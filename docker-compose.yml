@@ -1,0 +1,112 @@
+# SearchOS local deployment: gateway + console, with an optional Prometheus
+# scrape (`docker compose --profile observability up`).
+#
+# Persistence: everything SearchOS writes (SQLite, Tantivy, LanceDB, objects,
+# extensions) lives under SEARCHOS_DATA_DIR=/data, so a single named volume
+# keeps state across restarts. Back it up with
+# `docker compose exec gateway searchos backup create` (see docs/api/cli.md).
+#
+# Auth: set SEARCHOS_AUTH_TOKEN before `up` and the console picks it up
+# server-side; the browser never sees it. Leaving it empty keeps local dev
+# unauthenticated.
+#
+# MCP note (ADR-031): MCP is stdio-only, so there is deliberately no MCP
+# container. Remote agents use the gateway REST/Tavily surface.
+
+name: searchos
+
+services:
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: gateway
+    image: searchos/gateway:0.1.0
+    container_name: searchos-gateway
+    restart: unless-stopped
+    # 0.0.0.0 inside the container; publish only on loopback by default so a
+    # local gateway is not reachable from the network without opting in.
+    ports:
+      - "127.0.0.1:8787:8787"
+    environment:
+      SEARCHOS_DATA_DIR: /data
+      SEARCHOS_AUTH_TOKEN: ${SEARCHOS_AUTH_TOKEN:-}
+      RUST_LOG: ${RUST_LOG:-info}
+      # Provider keys are env-only (never in the config file).
+      TAVILY_API_KEYS: ${TAVILY_API_KEYS:-}
+      BRAVE_API_KEYS: ${BRAVE_API_KEYS:-}
+      # Opt-in OTLP/HTTP export. Set SEARCHOS_OTLP_ENABLED=true and point the
+      # endpoint at a collector (see the `otel` profile below).
+      SEARCHOS_OTLP_ENABLED: ${SEARCHOS_OTLP_ENABLED:-false}
+      SEARCHOS_OTLP_ENDPOINT: ${SEARCHOS_OTLP_ENDPOINT:-http://otel-collector:4318}
+      SEARCHOS_OTLP_SERVICE_NAME: ${SEARCHOS_OTLP_SERVICE_NAME:-searchos-gateway}
+      SEARCHOS_OTLP_HEADERS: ${SEARCHOS_OTLP_HEADERS:-}
+    volumes:
+      - gateway-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8787/health || exit 1"]
+      interval: 30s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
+    stop_grace_period: 30s
+
+  console:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: console
+    image: searchos/console:0.1.0
+    container_name: searchos-console
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3100:3100"
+    environment:
+      NODE_ENV: production
+      NEXT_TELEMETRY_DISABLED: "1"
+      # Server-side proxy target: the compose service name, not localhost.
+      SEARCHOS_GATEWAY_URL: http://gateway:8787
+      SEARCHOS_AUTH_TOKEN: ${SEARCHOS_AUTH_TOKEN:-}
+      NEXT_PUBLIC_SITE_URL: ${NEXT_PUBLIC_SITE_URL:-}
+    depends_on:
+      gateway:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3100/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+  # Optional: `docker compose --profile observability up -d` also starts
+  # Prometheus scraping the gateway's /metrics.
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: searchos-prometheus
+    profiles: ["observability"]
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    depends_on:
+      gateway:
+        condition: service_healthy
+
+  # Optional: `docker compose --profile otel up -d` starts an OpenTelemetry
+  # collector. Enable export on the gateway with SEARCHOS_OTLP_ENABLED=true.
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.115.1
+    container_name: searchos-otel-collector
+    profiles: ["otel"]
+    restart: unless-stopped
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ./deploy/otel-collector.yml:/etc/otelcol-contrib/config.yaml:ro
+    ports:
+      - "127.0.0.1:4318:4318"
+
+volumes:
+  gateway-data:
+  prometheus-data:

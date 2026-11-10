@@ -31,6 +31,21 @@ Visualization & Analytics Layer.
 - Rust Analytics layer: migration v3 tables `analytics_events` and
   `analytics_read_models`; `AnalyticsRepo::rebuild`; best-effort
   `TaskRecorder::record_search_completed`; `data_freshness` in `meta`.
+- **Analytics filter pushdown (2026-11):** the dashboard's time range,
+  interval, workspace, agent, mode, provider and quality filters are pushed
+  into SQL by `AnalyticsRepo::query_dataset`, not applied to a precomputed
+  global payload. Unfiltered + `interval=day` reuses the stored Read Model
+  and rebuilds only when the operational source watermark (max rowid of
+  search_tasks/cost_events/documents/document_chunks/embeddings) moves.
+  Any predicate or a non-`day` interval runs live SQL. `meta` reports
+  `query_mode` (`precomputed`|`sql`), `data_freshness`
+  (`complete`|`fresh`|`live`), `applied_filters`, `ignored_filters`
+  (each with a reason), `refresh_skipped`, `model_age_seconds`. The
+  `/analytics` page shows a Live SQL / Precomputed badge plus a line listing
+  any filter a view cannot apply; `DashboardMeta` in `web/lib/analytics.ts`
+  carries the new fields.
+- MCP is stdio-only in v1 (ADR-031): the gateway exposes no MCP route, so nothing MCP-related
+  belongs in the console; remote agents use REST/Tavily. See docs/mcp.md.
 - Design: tactical-telemetry / industrial-grid (`industrial-brutalist-ui`),
   Light/Dark via next-themes, one hazard-red accent, a single green
   connectivity indicator, square corners (`--radius: 0rem`), monospace
@@ -72,5 +87,15 @@ Visualization & Analytics Layer.
   requester workspace, and tantivy matches `[requester OR global *]` only.
 - `TantivyIndex::num_docs()` is the authoritative count;
   `index_consistency` uses it so restarts no longer report false drift.
+- **Bilingual EN/中文 console UI (2026-11):** `web/lib/i18n.tsx` (English string as
+  dictionary key, fallback to English, `localStorage` persistence, `<html lang>` sync),
+  `components/language-toggle.tsx` in the top bar, shared primitives translate all page
+  intros / panel titles / KPI and table labels / controls / tabs / empty and error states;
+  8 i18n tests in `web/lib/i18n.test.tsx`. Technical identifiers stay in English on purpose.
+- **Knowledge page ingest + document lifecycle (2026-11):** text/file import, batch
+  job polling with per-item failure detail, workspace-scoped document library,
+  version history, re-index and soft delete. The document list hides
+  soft-deleted rows unless `status=deleted` is requested (audit trail), and a
+  soft-deleted document is `404` on every read path.
 
 **Related:** [[searchos-project]], [[searchos-verification]], [[searchos-decision-red-lines]], docs/ui.md

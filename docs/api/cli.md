@@ -104,10 +104,16 @@ searchos backup restore <backup-dir | legacy .db>   # checksum + integrity check
 searchos mcp    # JSON-RPC 2.0 over stdio: initialize, tools/list, tools/call
 ```
 
-Tools: `search`, `fetch`, `extract`, `memory_search`, `document_search`,
-`cost_summary`, `trace_inspect` (`search_trace` alias) — 7 RFC-021 tools plus
+**Transport: stdio only (ADR-031).** There is no HTTP MCP listener and the
+gateway exposes no MCP route; remote agents use the REST/Tavily surface. See
+[`docs/mcp.md`](../mcp.md).
+
+Tools: `search`, `fetch`, `extract`, `ingest_text`, `ingest_file`,
+`memory_search`, `document_search`, `cost_summary`, `trace_inspect`
+(`search_trace` alias) — RFC-021's tools plus the two RFC-029 ingest tools and
 one documented compatibility alias. Each has an explicit parameter schema
-(RFC-012 12.8, RFC-021 21.5). `search` accepts snake_case or kebab-case
+(RFC-012 12.8, RFC-021 21.5). `notifications/cancelled` is acknowledged
+(counted + logged) rather than silently dropped. `search` accepts snake_case or kebab-case
 mode names, rejects unknown modes with -32602, supports a `request_id`
 idempotency key and a `max_results` output cap, and describes `local_only`
 vs external-capable modes.

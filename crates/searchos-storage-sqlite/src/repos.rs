@@ -5,7 +5,7 @@ use searchos_domain::cost::{
     CostAttemptStatus, CostEvent, CostOperation, CostQuery, CostSummary, Money,
 };
 use searchos_domain::decision::DecisionTrace;
-use searchos_domain::document::{Document, DocumentVersion};
+use searchos_domain::document::{Document, DocumentSummary, DocumentVersion};
 use searchos_domain::ids::{DocumentId, DocumentVersionId, SourceId, WorkspaceId};
 use searchos_domain::retrieval::{IndexedDocument, RetrievalCandidate, SearchCacheKey};
 use searchos_domain::SearchOsError;
@@ -665,6 +665,53 @@ impl<'a> DocumentRepo<'a> {
         Ok(docs)
     }
 
+    /// Searches documents by URL / title and returns lifecycle summaries
+    /// (status + version/chunk counts), so the console table and the list
+    /// endpoint share one shape.
+    pub fn search_summaries(
+        &self,
+        query: &str,
+        limit: u32,
+        workspace: Option<&str>,
+    ) -> Result<Vec<DocumentSummary>, SearchOsError> {
+        let trimmed = query.trim();
+        let pattern = format!(
+            "%{}%",
+            trimmed
+                .to_lowercase()
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_")
+        );
+        let limit = limit.clamp(1, 100);
+        self.store.with_conn(|c| {
+            let mut stmt = c
+                .prepare(
+                    "SELECT d.id, d.source_id, d.canonical_url, d.current_version_id, d.language,
+                            d.content_type, d.status, d.created_at, d.updated_at, d.source_type, d.title,
+                            d.workspace_id,
+                            (SELECT count(*) FROM document_versions dv WHERE dv.document_id = d.id),
+                            (SELECT count(*) FROM document_chunks dc WHERE dc.document_id = d.id)
+                     FROM documents d
+                     WHERE d.status != 'deleted'
+                       AND (?3 IS NULL OR d.workspace_id = ?3 OR d.workspace_id = '*')
+                       AND (lower(coalesce(d.canonical_url, '')) LIKE ?1 ESCAPE '\\'
+                            OR lower(coalesce(d.title, '')) LIKE ?1 ESCAPE '\\')
+                     ORDER BY d.updated_at DESC
+                     LIMIT ?2",
+                )
+                .map_err(e)?;
+            let rows = stmt
+                .query_map(params![pattern, limit, workspace], summary_row)
+                .map_err(e)?;
+            let mut out = Vec::new();
+            for row in rows {
+                out.push(row.map_err(e)?);
+            }
+            Ok(out)
+        })
+    }
+
     /// Returns the chunk rows belonging to one version, in chunk order.
     pub fn list_chunks(
         &self,
@@ -728,6 +775,141 @@ impl<'a> DocumentRepo<'a> {
             tx.commit().map_err(e)
         })
     }
+
+    /// Lists a document's versions, newest first (RFC-006 6.3/6.4).
+    ///
+    /// The version history is what the console shows as the document
+    /// lifecycle: every content change is an immutable version.
+    pub fn list_versions(&self, id: &DocumentId) -> Result<Vec<DocumentVersion>, SearchOsError> {
+        self.store.with_conn(|c| {
+            let mut stmt = c
+                .prepare(
+                    "SELECT id, document_id, content_hash, raw_content_ref, markdown_ref,
+                            published_at, fetched_at, extractor_version, crawler_version
+                     FROM document_versions WHERE document_id = ?1
+                     ORDER BY created_at DESC, id DESC",
+                )
+                .map_err(e)?;
+            let rows = stmt
+                .query_map(params![id.as_str()], |r| {
+                    Ok(DocumentVersion {
+                        id: DocumentVersionId::new(r.get::<_, String>(0)?),
+                        document_id: DocumentId::new(r.get::<_, String>(1)?),
+                        content_hash: r.get::<_, String>(2)?,
+                        raw_content_ref: r.get::<_, String>(3)?,
+                        markdown_ref: r.get::<_, Option<String>>(4)?,
+                        published_at: r.get::<_, Option<String>>(5)?.map(|s| parse_time(&s)),
+                        fetched_at: parse_time(&r.get::<_, String>(6)?),
+                        extractor_version: r.get::<_, String>(7)?,
+                        crawler_version: r.get::<_, Option<String>>(8)?,
+                    })
+                })
+                .map_err(e)?;
+            let mut out = Vec::new();
+            for row in rows {
+                out.push(row.map_err(e)?);
+            }
+            Ok(out)
+        })
+    }
+
+    /// Lists documents for the console: workspace-scoped, optionally
+    /// filtered by `source_type` and lifecycle `status`.
+    ///
+    /// Without an explicit `status`, soft-deleted rows are hidden (the live
+    /// set); `status=deleted` exposes the audit trail explicitly.
+    pub fn list_summaries(
+        &self,
+        limit: u32,
+        source_type: Option<&str>,
+        status: Option<&str>,
+        workspace: Option<&str>,
+    ) -> Result<Vec<DocumentSummary>, SearchOsError> {
+        let limit = limit.clamp(1, 500);
+        let mut sql = String::from(
+            "SELECT d.id, d.source_id, d.canonical_url, d.current_version_id, d.language,
+                    d.content_type, d.status, d.created_at, d.updated_at, d.source_type, d.title,
+                    d.workspace_id,
+                    (SELECT count(*) FROM document_versions dv WHERE dv.document_id = d.id),
+                    (SELECT count(*) FROM document_chunks dc WHERE dc.document_id = d.id)
+             FROM documents d WHERE 1 = 1",
+        );
+        let mut binds: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+        if let Some(source_type) = source_type {
+            if source_type.eq_ignore_ascii_case("local") {
+                sql.push_str(" AND d.source_type LIKE 'local_%'");
+            } else {
+                sql.push_str(" AND d.source_type = ?");
+                binds.push(Box::new(source_type.to_string()));
+            }
+        }
+        if let Some(status) = status {
+            sql.push_str(" AND d.status = ?");
+            binds.push(Box::new(status.to_string()));
+        } else {
+            sql.push_str(" AND d.status != 'deleted'");
+        }
+        if let Some(ws) = workspace {
+            sql.push_str(" AND (d.workspace_id = ? OR d.workspace_id = '*')");
+            binds.push(Box::new(ws.to_string()));
+        }
+        sql.push_str(" ORDER BY d.updated_at DESC LIMIT ?");
+        binds.push(Box::new(limit as i64));
+        let params: Vec<&dyn rusqlite::ToSql> = binds.iter().map(|b| b.as_ref()).collect();
+        self.store.with_conn(|c| {
+            let mut stmt = c.prepare(&sql).map_err(e)?;
+            let rows = stmt.query_map(params.as_slice(), summary_row).map_err(e)?;
+            let mut out = Vec::new();
+            for row in rows {
+                out.push(row.map_err(e)?);
+            }
+            Ok(out)
+        })
+    }
+
+    /// One document summary with its version / chunk counts.
+    pub fn get_summary(&self, id: &DocumentId) -> Result<Option<DocumentSummary>, SearchOsError> {
+        self.store.with_conn(|c| {
+            c.query_row(
+                "SELECT d.id, d.source_id, d.canonical_url, d.current_version_id, d.language,
+                        d.content_type, d.status, d.created_at, d.updated_at, d.source_type, d.title,
+                        d.workspace_id,
+                        (SELECT count(*) FROM document_versions dv WHERE dv.document_id = d.id),
+                        (SELECT count(*) FROM document_chunks dc WHERE dc.document_id = d.id)
+                 FROM documents d WHERE d.id = ?1",
+                params![id.as_str()],
+                summary_row,
+            )
+            .optional()
+            .map_err(e)
+        })
+    }
+}
+
+/// Maps one `documents` row (plus version / chunk counts) into a summary.
+fn summary_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<DocumentSummary> {
+    Ok(DocumentSummary {
+        id: DocumentId::new(r.get::<_, String>(0)?),
+        source_id: SourceId::new(r.get::<_, String>(1)?),
+        canonical_url: r.get(2)?,
+        current_version_id: r.get::<_, Option<String>>(3)?.map(DocumentVersionId::new),
+        language: r.get(4)?,
+        content_type: r
+            .get::<_, Option<String>>(5)?
+            .unwrap_or_else(|| "text/html".into()),
+        status: r.get::<_, String>(6)?,
+        created_at: parse_time(&r.get::<_, String>(7)?),
+        updated_at: parse_time(&r.get::<_, String>(8)?),
+        source_type: r
+            .get::<_, Option<String>>(9)?
+            .unwrap_or_else(|| "web".into()),
+        title: r.get(10)?,
+        workspace_id: r
+            .get::<_, Option<String>>(11)?
+            .unwrap_or_else(|| "default".into()),
+        version_count: r.get(12)?,
+        chunk_count: r.get(13)?,
+    })
 }
 
 /// Cost ledger repository (append-only, RFC-008 8.7).
@@ -2523,8 +2705,61 @@ impl<'a> AnalyticsRepo<'a> {
             for row in rs { requests.push(row.map_err(e)?); }
             put("search_requests", &today, &serde_json::json!({ "items": requests, "limit": 200 }))?;
 
+            // Source watermark: the highest rowid of every operational table
+            // the Read Models are built from. A precomputed payload is reused
+            // only while this fingerprint is unchanged, so a new search, cost
+            // event or document triggers a rebuild without a clock heuristic.
+            let watermark = serde_json::json!({
+                "search_tasks": scalar("SELECT COALESCE(max(rowid),0) FROM search_tasks")?,
+                "cost_events": scalar("SELECT COALESCE(max(rowid),0) FROM cost_events")?,
+                "documents": scalar("SELECT COALESCE(max(rowid),0) FROM documents")?,
+                "document_chunks": scalar("SELECT COALESCE(max(rowid),0) FROM document_chunks")?,
+                "embeddings": scalar("SELECT COALESCE(max(rowid),0) FROM embeddings")?,
+            });
+            c.execute(
+                "INSERT OR REPLACE INTO analytics_read_models
+                 (model_key, workspace_id, bucket_start, payload_json, aggregation_version, updated_at)
+                 VALUES ('_watermark', '*', 'watermark', ?1, '1', ?2)",
+                params![watermark.to_string(), now],
+            ).map_err(e)?;
+
             Ok(())
         })
+    }
+
+    /// The source watermark the precomputed payloads were built from.
+    pub fn stored_watermark(&self) -> Result<Option<serde_json::Value>, SearchOsError> {
+        self.read_model("_watermark")
+    }
+
+    /// The current highest rowid of every operational source table.
+    pub fn current_watermark(&self) -> Result<serde_json::Value, SearchOsError> {
+        self.store.with_conn(|c| {
+            let max = |table: &str| -> Result<i64, SearchOsError> {
+                c.query_row(
+                    &format!("SELECT COALESCE(max(rowid),0) FROM {table}"),
+                    [],
+                    |r| r.get(0),
+                )
+                .map_err(e)
+            };
+            Ok(serde_json::json!({
+                "search_tasks": max("search_tasks")?,
+                "cost_events": max("cost_events")?,
+                "documents": max("documents")?,
+                "document_chunks": max("document_chunks")?,
+                "embeddings": max("embeddings")?,
+            }))
+        })
+    }
+
+    /// True when at least one operational row was added since the last
+    /// rebuild, so the precomputed payloads no longer describe the data.
+    pub fn needs_rebuild(&self) -> bool {
+        match (self.stored_watermark(), self.current_watermark()) {
+            (Ok(Some(stored)), Ok(current)) => stored != current,
+            _ => true,
+        }
     }
 
     /// Reads one aggregate Read Model payload.
@@ -2591,12 +2826,1058 @@ impl<'a> AnalyticsRepo<'a> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Filtered Read Model queries (RFC-028 5).
+//
+// The precomputed `analytics_read_models` rows are the fast path for an
+// unfiltered dashboard. As soon as a client sends a real filter (time range,
+// interval, workspace, agent, mode, provider, quality), the aggregates are
+// computed by SQL with the predicates pushed into the WHERE clause — never
+// by filtering a precomputed global payload after the fact.
+//
+// Every filtered response reports which filters were applied and which are
+// not derivable from that dataset's schema, so a filter is never silently
+// dropped (the console's interval/range controls are real, not cosmetic).
+// ---------------------------------------------------------------------------
+
+/// Filter predicates pushed into SQL by the Read Model queries.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AnalyticsFilters {
+    pub workspace_id: Option<String>,
+    pub agent_id: Option<String>,
+    pub provider_id: Option<String>,
+    pub search_mode: Option<String>,
+    pub quality_status: Option<String>,
+    pub project_id: Option<String>,
+    pub from: Option<String>,
+    pub to: Option<String>,
+    pub interval: Option<String>,
+}
+
+impl AnalyticsFilters {
+    /// True when no predicate would change the result set.
+    ///
+    /// `interval` is deliberately excluded: it is a bucketing parameter, and
+    /// any value other than the precomputed `day` granularity requires a live
+    /// query anyway (see [`Self::needs_live_buckets`]).
+    pub fn is_unfiltered(&self) -> bool {
+        self.workspace_id.is_none()
+            && self.agent_id.is_none()
+            && self.provider_id.is_none()
+            && self.search_mode.is_none()
+            && self.quality_status.is_none()
+            && self.project_id.is_none()
+            && self.from.is_none()
+            && self.to.is_none()
+    }
+
+    /// True when the caller asked for a bucket interval other than the
+    /// precomputed `day` granularity, so the stored series cannot be reused.
+    pub fn needs_live_buckets(&self) -> bool {
+        !matches!(
+            self.interval
+                .as_deref()
+                .unwrap_or("day")
+                .to_lowercase()
+                .as_str(),
+            "day"
+        )
+    }
+
+    /// SQLite `strftime` format for the requested bucket interval.
+    pub fn bucket_format(&self) -> &'static str {
+        match self
+            .interval
+            .as_deref()
+            .unwrap_or("day")
+            .to_lowercase()
+            .as_str()
+        {
+            "minute" => "%Y-%m-%dT%H:%M",
+            "hour" => "%Y-%m-%dT%H",
+            "week" => "%Y-%W",
+            "month" => "%Y-%m",
+            _ => "%Y-%m-%d",
+        }
+    }
+
+    /// Bucket expression for one stored timestamp column.
+    pub fn bucket(&self, column: &str) -> String {
+        format!("strftime('{}', {})", self.bucket_format(), column)
+    }
+
+    /// Canonical UTC comparison form: fixed width, so string comparison stays
+    /// order-safe across `Z` / `+00:00` / variable fractional-second variants.
+    pub fn stamp(&self, column: &str) -> String {
+        format!("strftime('%Y-%m-%dT%H:%M:%f', {})", column)
+    }
+
+    /// Names of every filter the caller actually supplied.
+    pub fn present(&self) -> Vec<&'static str> {
+        let mut v = Vec::new();
+        if self.workspace_id.is_some() {
+            v.push("workspace_id");
+        }
+        if self.agent_id.is_some() {
+            v.push("agent_id");
+        }
+        if self.provider_id.is_some() {
+            v.push("provider_id");
+        }
+        if self.search_mode.is_some() {
+            v.push("search_mode");
+        }
+        if self.quality_status.is_some() {
+            v.push("quality_status");
+        }
+        if self.project_id.is_some() {
+            v.push("project_id");
+        }
+        if self.from.is_some() {
+            v.push("from");
+        }
+        if self.to.is_some() {
+            v.push("to");
+        }
+        v
+    }
+
+    /// Intersects the caller's filters with the ones this dataset can apply.
+    pub fn applied(&self, supported: &[&'static str]) -> Vec<&'static str> {
+        self.present()
+            .into_iter()
+            .filter(|name| supported.contains(name))
+            .collect()
+    }
+}
+
+/// Why a supplied filter cannot be applied to a dataset.
+pub fn ignore_reason(filter: &str) -> &'static str {
+    match filter {
+        "project_id" => "no project column exists in the analytics operational schema",
+        "provider_id" => "provider is only recorded on cost_events",
+        "search_mode" => {
+            "this dataset has no mode column; only search-task datasets can filter by mode"
+        }
+        "quality_status" => "the quality-gate outcome is only recorded per search task",
+        "agent_id" => "this dataset has no agent column",
+        "workspace_id" => "this dataset has no workspace column",
+        "from" | "to" => "this dataset has no time column",
+        _ => "filter is not applicable to this dataset",
+    }
+}
+
+/// A parameterized WHERE fragment plus its bound values.
+struct Scope {
+    clauses: Vec<String>,
+    binds: Vec<String>,
+}
+
+impl Scope {
+    fn new() -> Self {
+        Self {
+            clauses: Vec::new(),
+            binds: Vec::new(),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.clauses.is_empty()
+    }
+
+    fn eq(&mut self, column: &str, value: &str) {
+        self.clauses.push(format!("{column} = ?"));
+        self.binds.push(value.to_string());
+    }
+
+    /// Workspace predicate matching the rest of the schema: global `*` rows
+    /// stay visible, and a NULL workspace reads as `default`.
+    fn workspace(&mut self, column: &str, value: &str) {
+        self.clauses.push(format!(
+            "(COALESCE({column}, 'default') = ? OR {column} = '*')"
+        ));
+        self.binds.push(value.to_string());
+    }
+
+    fn not_null_eq(&mut self, column: &str, value: &str) {
+        self.clauses
+            .push(format!("{column} IS NOT NULL AND {column} = ?"));
+        self.binds.push(value.to_string());
+    }
+
+    fn after(&mut self, column: &str, bound: &str) {
+        self.clauses.push(format!(
+            "{} >= strftime('%Y-%m-%dT%H:%M:%f', ?)",
+            AnalyticsFilters::default().stamp(column)
+        ));
+        self.binds.push(bound.to_string());
+    }
+
+    fn before(&mut self, column: &str, bound: &str) {
+        self.clauses.push(format!(
+            "{} <= strftime('%Y-%m-%dT%H:%M:%f', ?)",
+            AnalyticsFilters::default().stamp(column)
+        ));
+        self.binds.push(bound.to_string());
+    }
+
+    /// Cursor watermark: rows strictly before the given timestamp.
+    fn before_cursor(&mut self, column: &str, bound: &str) {
+        self.clauses.push(format!(
+            "{} < strftime('%Y-%m-%dT%H:%M:%f', ?)",
+            AnalyticsFilters::default().stamp(column)
+        ));
+        self.binds.push(bound.to_string());
+    }
+
+    fn sql(&self) -> String {
+        if self.clauses.is_empty() {
+            "1 = 1".to_string()
+        } else {
+            self.clauses.join(" AND ")
+        }
+    }
+
+    fn params(&self) -> Vec<&dyn rusqlite::ToSql> {
+        self.binds
+            .iter()
+            .map(|b| b as &dyn rusqlite::ToSql)
+            .collect()
+    }
+
+    /// The scope's binds repeated `times`, for SQL that embeds the same
+    /// fragment in more than one subquery.
+    fn params_repeated(&self, times: usize) -> Vec<&dyn rusqlite::ToSql> {
+        let mut out = Vec::new();
+        for _ in 0..times {
+            out.extend(self.params());
+        }
+        out
+    }
+}
+
+/// Quality-gate values that can be derived from the operational schema.
+fn is_derivable_quality(value: &str) -> bool {
+    matches!(
+        value.to_lowercase().as_str(),
+        "passed" | "failed" | "partial"
+    )
+}
+
+/// Quality-gate predicate on the quality-gate audit trail.
+///
+/// Only `passed` / `failed` (gate outcome) and `partial` (task status) are
+/// derivable; anything else is reported as an ignored filter.
+fn apply_quality(scope: &mut Scope, value: &str) {
+    match value.to_lowercase().as_str() {
+        "passed" => scope.clauses.push(
+            "EXISTS (SELECT 1 FROM audit_events ae WHERE ae.action = 'task_passed' AND ae.target = st.id)"
+                .into(),
+        ),
+        "failed" => scope.clauses.push(
+            "NOT EXISTS (SELECT 1 FROM audit_events ae WHERE ae.action = 'task_passed' AND ae.target = st.id)"
+                .into(),
+        ),
+        "partial" => scope.eq("st.status", "partial"),
+        _ => {}
+    }
+}
+
+/// Predicates on `search_tasks st`.
+fn task_scope(f: &AnalyticsFilters) -> Scope {
+    let mut s = Scope::new();
+    if let Some(w) = &f.workspace_id {
+        s.workspace("st.workspace_id", w);
+    }
+    if let Some(a) = &f.agent_id {
+        s.not_null_eq("st.agent_id", a);
+    }
+    if let Some(m) = &f.search_mode {
+        s.eq("st.mode", m);
+    }
+    if let Some(q) = &f.quality_status {
+        apply_quality(&mut s, q);
+    }
+    if let Some(from) = &f.from {
+        s.after("st.started_at", from);
+    }
+    if let Some(to) = &f.to {
+        s.before("st.started_at", to);
+    }
+    s
+}
+
+/// Subquery selecting the task ids a caller may see, or `None` when the
+/// task-level filters are empty.
+struct TaskSubquery {
+    sql: String,
+    binds: Vec<String>,
+}
+
+fn task_subquery(f: &AnalyticsFilters) -> Option<TaskSubquery> {
+    let s = task_scope(f);
+    if s.is_empty() {
+        None
+    } else {
+        Some(TaskSubquery {
+            sql: format!("SELECT id FROM search_tasks st WHERE {}", s.sql()),
+            binds: s.binds,
+        })
+    }
+}
+
+/// Predicates on `cost_events ce`. Mode and quality are task properties, so
+/// they are applied through the task subquery rather than duplicated here.
+fn cost_scope(f: &AnalyticsFilters) -> Scope {
+    let mut s = Scope::new();
+    if let Some(w) = &f.workspace_id {
+        s.workspace("ce.workspace_id", w);
+    }
+    if let Some(a) = &f.agent_id {
+        s.not_null_eq("ce.agent_id", a);
+    }
+    if let Some(p) = &f.provider_id {
+        s.eq("ce.provider_id", p);
+    }
+    if let Some(from) = &f.from {
+        s.after("ce.occurred_at", from);
+    }
+    if let Some(to) = &f.to {
+        s.before("ce.occurred_at", to);
+    }
+    if f.search_mode.is_some() || f.quality_status.is_some() {
+        if let Some(sub) = task_subquery(f) {
+            s.clauses.push(format!("ce.task_id IN ({})", sub.sql));
+            s.binds.extend(sub.binds);
+        }
+    }
+    s
+}
+
+/// Predicates on `documents d`.
+fn document_scope(f: &AnalyticsFilters) -> Scope {
+    let mut s = Scope::new();
+    if let Some(w) = &f.workspace_id {
+        s.workspace("d.workspace_id", w);
+    }
+    if let Some(from) = &f.from {
+        s.after("d.created_at", from);
+    }
+    if let Some(to) = &f.to {
+        s.before("d.created_at", to);
+    }
+    s
+}
+
+/// Time-only predicates for tables without a workspace column.
+fn time_scope(f: &AnalyticsFilters, column: &str) -> Scope {
+    let mut s = Scope::new();
+    if let Some(from) = &f.from {
+        s.after(column, from);
+    }
+    if let Some(to) = &f.to {
+        s.before(column, to);
+    }
+    s
+}
+
+/// One filtered Read Model payload plus the filters its SQL consumed.
+pub struct FilteredDataset {
+    pub data: serde_json::Value,
+    pub applied: Vec<&'static str>,
+}
+
+impl<'a> AnalyticsRepo<'a> {
+    /// Computes one Read Model with the filters pushed into SQL.
+    ///
+    /// `limit` / `cursor` only affect the tabular `search_requests` dataset.
+    #[allow(clippy::too_many_arguments)]
+    pub fn query_dataset(
+        &self,
+        key: &str,
+        f: &AnalyticsFilters,
+        baseline_per_query_micros: i64,
+        limit: u32,
+        cursor: Option<&str>,
+    ) -> Result<FilteredDataset, SearchOsError> {
+        let supported: &[&'static str] = match key {
+            "overview" => &[
+                "workspace_id",
+                "agent_id",
+                "search_mode",
+                "quality_status",
+                "from",
+                "to",
+            ],
+            "search_timeseries" => &[
+                "workspace_id",
+                "agent_id",
+                "search_mode",
+                "quality_status",
+                "from",
+                "to",
+            ],
+            "search_strategies" => &[
+                "workspace_id",
+                "agent_id",
+                "search_mode",
+                "quality_status",
+                "from",
+                "to",
+            ],
+            "search_requests" => &[
+                "workspace_id",
+                "agent_id",
+                "search_mode",
+                "quality_status",
+                "from",
+                "to",
+            ],
+            "cost_breakdown" => &[
+                "workspace_id",
+                "agent_id",
+                "provider_id",
+                "search_mode",
+                "quality_status",
+                "from",
+                "to",
+            ],
+            "quality_dimensions" => &[
+                "workspace_id",
+                "agent_id",
+                "search_mode",
+                "quality_status",
+                "from",
+                "to",
+            ],
+            "knowledge_growth" => &["workspace_id", "from", "to"],
+            "knowledge_freshness" => &[],
+            "providers" => &[
+                "workspace_id",
+                "agent_id",
+                "provider_id",
+                "search_mode",
+                "quality_status",
+                "from",
+                "to",
+            ],
+            "crawlers_summary" => &["from", "to"],
+            "infrastructure_summary" => &["workspace_id", "from", "to"],
+            _ => {
+                return Err(SearchOsError::validation(
+                    "model_key",
+                    "unknown analytics read model",
+                ))
+            }
+        };
+        let mut applied = f.applied(supported);
+        // `quality_status` is only consumed when its value is derivable.
+        if f.quality_status.is_some()
+            && applied.contains(&"quality_status")
+            && !is_derivable_quality(f.quality_status.as_deref().unwrap_or(""))
+        {
+            applied.retain(|n| *n != "quality_status");
+        }
+
+        let data = match key {
+            "overview" => self.query_overview(f, baseline_per_query_micros)?,
+            "search_timeseries" => self.query_series(f, limit)?,
+            "search_strategies" => self.query_strategies(f)?,
+            "search_requests" => self.query_requests(f, limit, cursor)?,
+            "cost_breakdown" => self.query_cost_breakdown(f)?,
+            "quality_dimensions" => self.query_quality_dimensions(f)?,
+            "knowledge_growth" => self.query_knowledge_growth(f)?,
+            "knowledge_freshness" => self.query_knowledge_freshness(f)?,
+            "providers" => self.query_providers(f)?,
+            "crawlers_summary" => self.query_crawlers_summary(f)?,
+            "infrastructure_summary" => self.query_infrastructure_summary(f)?,
+            _ => unreachable!("supported keys are validated above"),
+        };
+        Ok(FilteredDataset { data, applied })
+    }
+
+    fn query_overview(
+        &self,
+        f: &AnalyticsFilters,
+        baseline_per_query_micros: i64,
+    ) -> Result<serde_json::Value, SearchOsError> {
+        let scope = task_scope(f);
+        let cost = cost_scope(f);
+        let docs = document_scope(f);
+        self.store.with_conn(|c| {
+            let (total, completed, failed, partial, local, external) = c
+                .query_row(
+                    &format!(
+                        "SELECT count(*) AS total,
+                                sum(CASE WHEN st.status = 'completed' THEN 1 ELSE 0 END) AS completed,
+                                sum(CASE WHEN st.status = 'failed' THEN 1 ELSE 0 END) AS failed,
+                                sum(CASE WHEN st.status = 'partial' THEN 1 ELSE 0 END) AS partial,
+                                sum(CASE WHEN dt.selected_path IN ('local','local_with_refresh')
+                                          AND EXISTS (SELECT 1 FROM audit_events ae
+                                                      WHERE ae.action = 'task_passed' AND ae.target = st.id)
+                                         THEN 1 ELSE 0 END) AS local,
+                                sum(CASE WHEN dt.selected_path IN ('hybrid','external') THEN 1 ELSE 0 END) AS external
+                         FROM search_tasks st LEFT JOIN decision_traces dt ON dt.task_id = st.id
+                         WHERE {}",
+                        scope.sql()
+                    ),
+                    scope.params().as_slice(),
+                    |r| {
+                        Ok((
+                            r.get::<_, i64>(0)?,
+                            r.get::<_, Option<i64>>(1)?.unwrap_or(0),
+                            r.get::<_, Option<i64>>(2)?.unwrap_or(0),
+                            r.get::<_, Option<i64>>(3)?.unwrap_or(0),
+                            r.get::<_, Option<i64>>(4)?.unwrap_or(0),
+                            r.get::<_, Option<i64>>(5)?.unwrap_or(0),
+                        ))
+                    },
+                )
+                .map_err(e)?;
+            let quality_passed = c
+                .query_row(
+                    &format!(
+                        "SELECT count(DISTINCT ae.target) FROM audit_events ae
+                         JOIN search_tasks st ON st.id = ae.target
+                         WHERE ae.action = 'task_passed' AND {}",
+                        scope.sql()
+                    ),
+                    scope.params().as_slice(),
+                    |r| r.get::<_, i64>(0),
+                )
+                .map_err(e)?;
+            let (cost_estimated, cost_actual_rows, cost_actual) = c
+                .query_row(
+                    &format!(
+                        "SELECT COALESCE(sum(ce.estimated_cost_micros), 0),
+                                count(ce.actual_cost_micros),
+                                COALESCE(sum(ce.actual_cost_micros), 0)
+                         FROM cost_events ce WHERE {}",
+                        cost.sql()
+                    ),
+                    cost.params().as_slice(),
+                    |r| {
+                        Ok((
+                            r.get::<_, i64>(0)?,
+                            r.get::<_, i64>(1)?,
+                            r.get::<_, i64>(2)?,
+                        ))
+                    },
+                )
+                .map_err(e)?;
+            let (documents, chunks, embeddings) = c
+                .query_row(
+                    &format!(
+                        "SELECT (SELECT count(*) FROM documents d WHERE d.status != 'deleted' AND {}),
+                                (SELECT count(*) FROM document_chunks dc
+                                  JOIN documents d ON d.id = dc.document_id WHERE {}),
+                                (SELECT count(*) FROM embeddings emb
+                                  JOIN document_chunks dc ON dc.id = emb.chunk_id
+                                  JOIN documents d ON d.id = dc.document_id WHERE {})",
+                        docs.sql(),
+                        docs.sql(),
+                        docs.sql()
+                    ),
+                    docs.params_repeated(3).as_slice(),
+                    |r| {
+                        Ok((
+                            r.get::<_, i64>(0)?,
+                            r.get::<_, i64>(1)?,
+                            r.get::<_, i64>(2)?,
+                        ))
+                    },
+                )
+                .map_err(e)?;
+
+            let rate = |part: i64, whole: i64| -> f64 {
+                if whole > 0 {
+                    part as f64 / whole as f64
+                } else {
+                    0.0
+                }
+            };
+            let baseline = total.saturating_mul(baseline_per_query_micros);
+            Ok(serde_json::json!({
+                "searches": { "total": total, "completed": completed, "failed": failed, "partial": partial },
+                "local_resolution": { "count": local, "rate": rate(local, total), "denominator": total,
+                    "definition": "quality-valid tasks served by local knowledge / all tasks", "drilldown": "/search?filter=local" },
+                "external_search": { "count": external, "rate": rate(external, total), "denominator": total,
+                    "definition": "tasks with an external acquisition path / all tasks", "drilldown": "/search?filter=external" },
+                "quality": { "passed": quality_passed, "partial": partial, "failed": failed,
+                    "pass_rate": rate(quality_passed, total), "denominator": total,
+                    "definition": "quality-gate passing tasks / all tasks", "drilldown": "/quality" },
+                "cost": { "estimated_micros": cost_estimated,
+                    "actual_micros": if cost_actual_rows > 0 { Some(cost_actual) } else { None },
+                    "estimated_savings_micros": baseline - cost_estimated, "baseline_micros": baseline, "currency": "USD",
+                    "is_estimate": cost_actual_rows == 0,
+                    "definition": "baseline minus full SearchOS cost; estimates are not invoices",
+                    "drilldown": "/cost" },
+                "knowledge": { "documents": documents, "chunks": chunks, "embeddings": embeddings,
+                    "definition": "active document / chunk / embedding rows", "drilldown": "/knowledge" },
+                "evidence_reuse_rate": rate(local, total),
+                "data_freshness": "live",
+                "aggregation_version": "1",
+                "metric_definitions_version": "1",
+            }))
+        })
+    }
+
+    fn query_series(
+        &self,
+        f: &AnalyticsFilters,
+        limit: u32,
+    ) -> Result<serde_json::Value, SearchOsError> {
+        let scope = task_scope(f);
+        let bucket = f.bucket("st.started_at");
+        let limit = limit.clamp(1, 500);
+        self.store.with_conn(|c| {
+            let mut stmt = c
+                .prepare(&format!(
+                    "SELECT {bucket} AS bucket, count(*) AS total,
+                            sum(CASE WHEN dt.selected_path IN ('local','local_with_refresh') THEN 1 ELSE 0 END) AS local,
+                            sum(CASE WHEN dt.selected_path IN ('hybrid','external') THEN 1 ELSE 0 END) AS external,
+                            sum(CASE WHEN st.status = 'failed' THEN 1 ELSE 0 END) AS failed
+                     FROM search_tasks st LEFT JOIN decision_traces dt ON dt.task_id = st.id
+                     WHERE {}
+                     GROUP BY bucket ORDER BY bucket ASC LIMIT {limit}",
+                    scope.sql()
+                ))
+                .map_err(e)?;
+            let rows = stmt
+                .query_map(scope.params().as_slice(), |r| {
+                    Ok(serde_json::json!({
+                        "date": r.get::<_, String>(0)?,
+                        "total": r.get::<_, i64>(1)?,
+                        "local": r.get::<_, Option<i64>>(2)?.unwrap_or(0),
+                        "external": r.get::<_, Option<i64>>(3)?.unwrap_or(0),
+                        "failed": r.get::<_, Option<i64>>(4)?.unwrap_or(0),
+                    }))
+                })
+                .map_err(e)?;
+            let mut items = Vec::new();
+            for row in rows {
+                items.push(row.map_err(e)?);
+            }
+            Ok(serde_json::json!({ "items": items }))
+        })
+    }
+
+    fn query_strategies(&self, f: &AnalyticsFilters) -> Result<serde_json::Value, SearchOsError> {
+        let scope = task_scope(f);
+        self.store.with_conn(|c| {
+            let mut stmt = c
+                .prepare(&format!(
+                    "SELECT COALESCE(dt.final_strategy, 'unknown') AS strategy, count(*) AS n
+                     FROM decision_traces dt JOIN search_tasks st ON st.id = dt.task_id
+                     WHERE {}
+                     GROUP BY 1 ORDER BY n DESC, strategy ASC",
+                    scope.sql()
+                ))
+                .map_err(e)?;
+            let rows = stmt
+                .query_map(scope.params().as_slice(), |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+                })
+                .map_err(e)?;
+            let mut items = Vec::new();
+            for row in rows {
+                items.push(row.map_err(e)?);
+            }
+            Ok(serde_json::json!({ "items": items }))
+        })
+    }
+
+    fn query_requests(
+        &self,
+        f: &AnalyticsFilters,
+        limit: u32,
+        cursor: Option<&str>,
+    ) -> Result<serde_json::Value, SearchOsError> {
+        let mut scope = task_scope(f);
+        if let Some(cursor) = cursor {
+            scope.before_cursor("st.started_at", cursor);
+        }
+        let limit = limit.clamp(1, 200);
+        self.store.with_conn(|c| {
+            let mut stmt = c
+                .prepare(&format!(
+                    "SELECT st.id, st.query, st.mode, st.status, st.started_at,
+                            COALESCE(dt.selected_path, 'unknown'), COALESCE(dt.final_strategy, 'unknown')
+                     FROM search_tasks st LEFT JOIN decision_traces dt ON dt.task_id = st.id
+                     WHERE {}
+                     ORDER BY st.started_at DESC, st.id DESC LIMIT {limit}",
+                    scope.sql()
+                ))
+                .map_err(e)?;
+            let rows = stmt
+                .query_map(scope.params().as_slice(), |r| {
+                    Ok(serde_json::json!({
+                        "request_id": r.get::<_, String>(0)?,
+                        "query": r.get::<_, String>(1)?,
+                        "mode": r.get::<_, String>(2)?,
+                        "status": r.get::<_, String>(3)?,
+                        "created_at": r.get::<_, String>(4)?,
+                        "strategy": r.get::<_, String>(5)?,
+                        "final_strategy": r.get::<_, String>(6)?,
+                    }))
+                })
+                .map_err(e)?;
+            let mut items = Vec::new();
+            for row in rows {
+                items.push(row.map_err(e)?);
+            }
+            Ok(serde_json::json!({ "items": items, "limit": limit }))
+        })
+    }
+
+    fn query_cost_breakdown(
+        &self,
+        f: &AnalyticsFilters,
+    ) -> Result<serde_json::Value, SearchOsError> {
+        let scope = cost_scope(f);
+        self.store.with_conn(|c| {
+            let breakdown = |sql: String| -> Result<Vec<(String, i64, i64)>, SearchOsError> {
+                let mut st = c.prepare(&sql).map_err(e)?;
+                let rs = st
+                    .query_map(scope.params().as_slice(), |r| {
+                        Ok((
+                            r.get::<_, String>(0)?,
+                            r.get::<_, i64>(1)?,
+                            r.get::<_, i64>(2)?,
+                        ))
+                    })
+                    .map_err(e)?;
+                let mut out = Vec::new();
+                for row in rs {
+                    out.push(row.map_err(e)?);
+                }
+                Ok(out)
+            };
+            let actual_rows = c
+                .query_row(
+                    &format!("SELECT count(actual_cost_micros) FROM cost_events ce WHERE {}", scope.sql()),
+                    scope.params().as_slice(),
+                    |r| r.get::<_, i64>(0),
+                )
+                .map_err(e)?;
+            Ok(serde_json::json!({
+                "by_operation": breakdown(format!("SELECT ce.operation, count(*), COALESCE(sum(ce.estimated_cost_micros),0) FROM cost_events ce WHERE {} GROUP BY ce.operation ORDER BY ce.operation", scope.sql()))?,
+                "by_provider": breakdown(format!("SELECT COALESCE(ce.provider_id,'local'), count(*), COALESCE(sum(ce.estimated_cost_micros),0) FROM cost_events ce WHERE {} GROUP BY 1 ORDER BY 1", scope.sql()))?,
+                "by_workspace": breakdown(format!("SELECT ce.workspace_id, count(*), COALESCE(sum(ce.estimated_cost_micros),0) FROM cost_events ce WHERE {} GROUP BY ce.workspace_id ORDER BY ce.workspace_id", scope.sql()))?,
+                "by_agent": breakdown(format!("SELECT COALESCE(ce.agent_id,'unattributed'), count(*), COALESCE(sum(ce.estimated_cost_micros),0) FROM cost_events ce WHERE {} GROUP BY 1 ORDER BY 1", scope.sql()))?,
+                "is_estimate": actual_rows == 0,
+            }))
+        })
+    }
+
+    fn query_quality_dimensions(
+        &self,
+        f: &AnalyticsFilters,
+    ) -> Result<serde_json::Value, SearchOsError> {
+        let scope = task_scope(f);
+        self.store.with_conn(|c| {
+            let dim = |sql: String| -> Result<Vec<(String, i64)>, SearchOsError> {
+                let mut st = c.prepare(&sql).map_err(e)?;
+                let rs = st
+                    .query_map(scope.params().as_slice(), |r| {
+                        Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+                    })
+                    .map_err(e)?;
+                let mut out = Vec::new();
+                for row in rs {
+                    out.push(row.map_err(e)?);
+                }
+                Ok(out)
+            };
+            Ok(serde_json::json!({
+                "freshness": dim(format!("SELECT COALESCE(dt.freshness_status,'unknown'), count(*) FROM decision_traces dt JOIN search_tasks st ON st.id = dt.task_id WHERE {} GROUP BY 1 ORDER BY 1", scope.sql()))?,
+                "coverage": dim(format!("SELECT COALESCE(dt.coverage_status,'unknown'), count(*) FROM decision_traces dt JOIN search_tasks st ON st.id = dt.task_id WHERE {} GROUP BY 1 ORDER BY 1", scope.sql()))?,
+                "source": dim(format!("SELECT COALESCE(dt.source_status,'unknown'), count(*) FROM decision_traces dt JOIN search_tasks st ON st.id = dt.task_id WHERE {} GROUP BY 1 ORDER BY 1", scope.sql()))?,
+                "failures": dim(format!("SELECT COALESCE(dt.rejection_reasons_json,'none'), count(*) FROM decision_traces dt JOIN search_tasks st ON st.id = dt.task_id WHERE {} GROUP BY 1 ORDER BY 1", scope.sql()))?,
+            }))
+        })
+    }
+
+    fn query_knowledge_growth(
+        &self,
+        f: &AnalyticsFilters,
+    ) -> Result<serde_json::Value, SearchOsError> {
+        let scope = document_scope(f);
+        let bucket = f.bucket("d.created_at");
+        self.store.with_conn(|c| {
+            let mut stmt = c
+                .prepare(&format!(
+                    "SELECT {bucket} AS bucket, count(*) AS n
+                     FROM documents d WHERE d.status != 'deleted' AND {}
+                     GROUP BY bucket ORDER BY bucket ASC",
+                    scope.sql()
+                ))
+                .map_err(e)?;
+            let rows = stmt
+                .query_map(scope.params().as_slice(), |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+                })
+                .map_err(e)?;
+            let mut items = Vec::new();
+            for row in rows {
+                items.push(row.map_err(e)?);
+            }
+            let (chunks, embeddings) = c
+                .query_row(
+                    &format!(
+                        "SELECT (SELECT count(*) FROM document_chunks dc JOIN documents d ON d.id = dc.document_id WHERE {}),
+                                (SELECT count(*) FROM embeddings emb
+                                  JOIN document_chunks dc ON dc.id = emb.chunk_id
+                                  JOIN documents d ON d.id = dc.document_id WHERE {})",
+                        scope.sql(),
+                        scope.sql()
+                    ),
+                    scope.params_repeated(2).as_slice(),
+                    |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
+                )
+                .map_err(e)?;
+            Ok(serde_json::json!({ "items": items, "chunks": chunks, "embeddings": embeddings }))
+        })
+    }
+
+    fn query_knowledge_freshness(
+        &self,
+        _f: &AnalyticsFilters,
+    ) -> Result<serde_json::Value, SearchOsError> {
+        // Freshness classification is still not instrumented; the filtered
+        // answer keeps the same null shape rather than inventing buckets.
+        Ok(serde_json::json!({
+            "fresh": null, "near_expiry": null, "stale": null, "expired": null, "unknown": null,
+            "reason": "document-level freshness classification is not instrumented in the MVP; missing values are not zero",
+        }))
+    }
+
+    fn query_providers(&self, f: &AnalyticsFilters) -> Result<serde_json::Value, SearchOsError> {
+        let scope = cost_scope(f);
+        self.store.with_conn(|c| {
+            let mut stmt = c
+                .prepare(&format!(
+                    "SELECT COALESCE(ce.provider_id, 'local'), count(*), COALESCE(sum(ce.estimated_cost_micros),0)
+                     FROM cost_events ce WHERE {}
+                     GROUP BY 1 ORDER BY 1",
+                    scope.sql()
+                ))
+                .map_err(e)?;
+            let rows = stmt
+                .query_map(scope.params().as_slice(), |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, i64>(1)?,
+                        r.get::<_, i64>(2)?,
+                    ))
+                })
+                .map_err(e)?;
+            let mut items = Vec::new();
+            for row in rows {
+                items.push(row.map_err(e)?);
+            }
+            Ok(serde_json::json!({
+                "items": items,
+                "health": "see /cost/providers",
+            }))
+        })
+    }
+
+    fn query_crawlers_summary(
+        &self,
+        f: &AnalyticsFilters,
+    ) -> Result<serde_json::Value, SearchOsError> {
+        let scope = time_scope(f, "cr.started_at");
+        self.store.with_conn(|c| {
+            let (total, successful, failed) = c
+                .query_row(
+                    &format!(
+                        "SELECT count(*),
+                                sum(CASE WHEN cr.status = 'success' THEN 1 ELSE 0 END),
+                                sum(CASE WHEN cr.status != 'success' THEN 1 ELSE 0 END)
+                         FROM crawler_runs cr WHERE {}",
+                        scope.sql()
+                    ),
+                    scope.params().as_slice(),
+                    |r| {
+                        Ok((
+                            r.get::<_, i64>(0)?,
+                            r.get::<_, Option<i64>>(1)?.unwrap_or(0),
+                            r.get::<_, Option<i64>>(2)?.unwrap_or(0),
+                        ))
+                    },
+                )
+                .map_err(e)?;
+            Ok(serde_json::json!({
+                "total": total, "successful": successful, "failed": failed,
+                "extensions": null, "reason": "extension health comes from the crawler registry, not from a fake zero",
+                "drilldown": "/crawlers",
+            }))
+        })
+    }
+
+    fn query_infrastructure_summary(
+        &self,
+        f: &AnalyticsFilters,
+    ) -> Result<serde_json::Value, SearchOsError> {
+        let docs = document_scope(f);
+        self.store.with_conn(|c| {
+            let page_count: i64 = c
+                .query_row("PRAGMA page_count", [], |r| r.get(0))
+                .map_err(e)?;
+            let page_size: i64 = c
+                .query_row("PRAGMA page_size", [], |r| r.get(0))
+                .map_err(e)?;
+            let chunks: i64 = c
+                .query_row(
+                    &format!(
+                        "SELECT count(*) FROM document_chunks dc
+                         JOIN documents d ON d.id = dc.document_id WHERE {}",
+                        docs.sql()
+                    ),
+                    docs.params().as_slice(),
+                    |r| r.get(0),
+                )
+                .map_err(e)?;
+            Ok(serde_json::json!({
+                "sqlite_bytes": page_count.saturating_mul(page_size),
+                "index_chunks": chunks,
+                "cpu": null, "gpu": null, "memory": null, "network": null,
+                "reason": "process resource sampling is not instrumented in the MVP; null is not zero",
+            }))
+        })
+    }
+}
+
 #[cfg(test)]
 mod analytics_tests {
     use super::*;
 
     fn store() -> SqliteStore {
         crate::store::SqliteStore::open_in_memory().unwrap()
+    }
+
+    fn seed_workspace(s: &SqliteStore, id: &str) {
+        s.with_conn(|c| {
+            c.execute(
+                "INSERT OR IGNORE INTO workspaces (id, name, config_version, created_at, updated_at)
+                 VALUES (?1, ?1, 1, '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00')",
+                params![id],
+            )
+            .map(|_| ())
+            .map_err(|e| SearchOsError::Storage(e.to_string()))
+        })
+        .unwrap();
+    }
+
+    fn seed_task(
+        s: &SqliteStore,
+        id: &str,
+        ws: &str,
+        mode: &str,
+        status: &str,
+        started_at: &str,
+        path: &str,
+    ) {
+        seed_workspace(s, ws);
+        s.with_conn(|c| {
+            c.execute(
+                "INSERT INTO search_tasks (id, workspace_id, agent_id, query, normalized_query,
+                                         query_fingerprint, profile_id, profile_version, mode, status,
+                                         started_at, trace_id)
+                 VALUES (?1, ?2, NULL, 'q', 'q', ?3, 'p', '1', ?4, ?5, ?6, ?1)",
+                params![id, ws, id, mode, status, started_at],
+            )
+            .and_then(|_| {
+                c.execute(
+                    "INSERT INTO decision_traces (id, task_id, intents_json, profile_version,
+                                                 local_candidates, accepted_candidates, freshness_status,
+                                                 coverage_status, source_status, selected_path,
+                                                 rejection_reasons_json, estimated_cost_micros,
+                                                 estimated_currency, actual_cost_micros, decision_at)
+                     VALUES (?1, ?2, '[]', '1', 0, 0, 'verified', 'sufficient', 'verified', ?3,
+                             '[]', 0, 'USD', NULL, ?4)",
+                    params![format!("dt_{id}"), id, path, started_at],
+                )
+            })
+            .map(|_| ())
+            .map_err(|e| SearchOsError::Storage(e.to_string()))
+        })
+        .unwrap();
+    }
+
+    fn seed_passed(s: &SqliteStore, task_id: &str) {
+        s.with_conn(|c| {
+            c.execute(
+                "INSERT INTO audit_events (id, actor, action, target, detail_json, at)
+                 VALUES (?1, 'quality_gate', 'task_passed', ?2, NULL, '2026-01-01T00:00:00+00:00')",
+                params![format!("ae_{task_id}"), task_id],
+            )
+            .map(|_| ())
+            .map_err(|e| SearchOsError::Storage(e.to_string()))
+        })
+        .unwrap();
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn seed_cost(
+        s: &SqliteStore,
+        id: &str,
+        task_id: &str,
+        ws: &str,
+        provider: &str,
+        operation: &str,
+        occurred_at: &str,
+        micros: i64,
+    ) {
+        s.with_conn(|c| {
+            c.execute(
+                "INSERT INTO cost_events (id, task_id, workspace_id, agent_id, operation, provider_id,
+                                        input_units, output_units, estimated_cost_micros, currency,
+                                        occurred_at, pricing_model_version)
+                 VALUES (?1, ?2, ?3, NULL, ?4, ?5, 0, 0, ?6, 'USD', ?7, '1')",
+                params![id, task_id, ws, operation, provider, micros, occurred_at],
+            )
+            .map(|_| ())
+            .map_err(|e| SearchOsError::Storage(e.to_string()))
+        })
+        .unwrap();
+    }
+
+    fn seed_document(s: &SqliteStore, id: &str, ws: &str, created_at: &str) {
+        seed_workspace(s, ws);
+        s.with_conn(|c| {
+            c.execute(
+                "INSERT INTO sources (id, canonical_url, domain, source_type, created_at, updated_at)
+                 VALUES (?1, ?2, 'example.com', 'web', ?3, ?3)",
+                params![
+                    format!("src_{id}"),
+                    format!("https://example.com/{id}"),
+                    created_at
+                ],
+            )
+            .and_then(|_| {
+                c.execute(
+                    "INSERT INTO documents (id, source_id, canonical_url, current_version_id, language,
+                                         content_type, status, created_at, updated_at, workspace_id)
+                     VALUES (?1, ?2, ?3, NULL, 'en', 'text/markdown', 'normalized', ?4, ?4, ?5)",
+                    params![
+                        id,
+                        format!("src_{id}"),
+                        format!("https://example.com/{id}"),
+                        created_at,
+                        ws
+                    ],
+                )
+            })
+            .map(|_| ())
+            .map_err(|e| SearchOsError::Storage(e.to_string()))
+        })
+        .unwrap();
+    }
+
+    fn filters() -> AnalyticsFilters {
+        AnalyticsFilters::default()
     }
 
     #[test]
@@ -2636,6 +3917,329 @@ mod analytics_tests {
             .unwrap()
             .is_empty());
         assert_eq!(repo.events_since(0, 10).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn unfiltered_live_query_matches_the_precomputed_read_model() {
+        let s = store();
+        let repo = AnalyticsRepo::new(&s);
+        seed_task(
+            &s,
+            "t1",
+            "ws_a",
+            "local-only",
+            "completed",
+            "2026-11-01T10:00:00+00:00",
+            "local",
+        );
+        seed_task(
+            &s,
+            "t2",
+            "ws_b",
+            "external",
+            "failed",
+            "2026-11-02T10:00:00+00:00",
+            "hybrid",
+        );
+        seed_passed(&s, "t1");
+        seed_cost(
+            &s,
+            "c1",
+            "t1",
+            "ws_a",
+            "tavily",
+            "search",
+            "2026-11-01T10:00:05+00:00",
+            1_000,
+        );
+        seed_document(&s, "d1", "ws_a", "2026-11-01T09:00:00+00:00");
+
+        repo.rebuild(5_000).unwrap();
+        let precomputed = repo.read_model("overview").unwrap().unwrap();
+        let live = repo
+            .query_dataset("overview", &filters(), 5_000, 90, None)
+            .unwrap()
+            .data;
+        assert_eq!(
+            live["searches"]["total"], precomputed["searches"]["total"],
+            "an unfiltered live query must agree with the precomputed model"
+        );
+        assert_eq!(live["searches"]["total"], 2);
+        assert_eq!(live["local_resolution"]["count"], 1);
+        assert_eq!(live["quality"]["passed"], 1);
+        assert_eq!(live["cost"]["estimated_micros"], 1_000);
+        assert_eq!(live["knowledge"]["documents"], 1);
+        assert_eq!(live["data_freshness"], "live");
+    }
+
+    #[test]
+    fn time_range_and_interval_are_pushed_into_sql() {
+        let s = store();
+        let repo = AnalyticsRepo::new(&s);
+        seed_task(
+            &s,
+            "t1",
+            "ws_a",
+            "local-only",
+            "completed",
+            "2026-11-02T10:00:00+00:00",
+            "local",
+        );
+        seed_task(
+            &s,
+            "t2",
+            "ws_a",
+            "local-only",
+            "completed",
+            "2026-11-03T10:00:00+00:00",
+            "local",
+        );
+        seed_task(
+            &s,
+            "t3",
+            "ws_a",
+            "external",
+            "completed",
+            "2026-11-04T10:00:00+00:00",
+            "hybrid",
+        );
+
+        let mut day = filters();
+        day.from = Some("2026-11-03T00:00:00Z".into());
+        day.to = Some("2026-11-03T23:59:59Z".into());
+        day.interval = Some("day".into());
+        let series = repo
+            .query_dataset("search_timeseries", &day, 5_000, 90, None)
+            .unwrap()
+            .data;
+        let items = series["items"].as_array().unwrap();
+        assert_eq!(items.len(), 1, "only the second day is inside the range");
+        assert_eq!(items[0]["date"], "2026-11-03");
+        assert_eq!(items[0]["total"], 1);
+
+        // The precomputed series is day-granular; a week bucket must be live.
+        let mut week = filters();
+        week.interval = Some("week".into());
+        assert!(week.needs_live_buckets());
+        let series = repo
+            .query_dataset("search_timeseries", &week, 5_000, 90, None)
+            .unwrap()
+            .data;
+        let items = series["items"].as_array().unwrap();
+        assert_eq!(items.len(), 1, "all three tasks fall in one ISO week");
+        assert_eq!(items[0]["total"], 3);
+
+        let mut month = filters();
+        month.interval = Some("month".into());
+        let series = repo
+            .query_dataset("search_timeseries", &month, 5_000, 90, None)
+            .unwrap()
+            .data;
+        assert_eq!(series["items"][0]["date"], "2026-11");
+    }
+
+    #[test]
+    fn workspace_and_mode_filters_are_pushed_into_sql() {
+        let s = store();
+        let repo = AnalyticsRepo::new(&s);
+        seed_task(
+            &s,
+            "t1",
+            "ws_a",
+            "local-only",
+            "completed",
+            "2026-11-01T10:00:00+00:00",
+            "local",
+        );
+        seed_task(
+            &s,
+            "t2",
+            "ws_b",
+            "external",
+            "completed",
+            "2026-11-01T10:00:00+00:00",
+            "hybrid",
+        );
+        seed_cost(
+            &s,
+            "c1",
+            "t1",
+            "ws_a",
+            "tavily",
+            "search",
+            "2026-11-01T10:00:05+00:00",
+            1_000,
+        );
+        seed_cost(
+            &s,
+            "c2",
+            "t2",
+            "ws_b",
+            "brave",
+            "search",
+            "2026-11-01T10:00:05+00:00",
+            2_000,
+        );
+
+        let mut by_ws = filters();
+        by_ws.workspace_id = Some("ws_a".into());
+        let overview = repo
+            .query_dataset("overview", &by_ws, 5_000, 90, None)
+            .unwrap();
+        assert!(overview.applied.contains(&"workspace_id"));
+        assert_eq!(overview.data["searches"]["total"], 1);
+        assert_eq!(overview.data["cost"]["estimated_micros"], 1_000);
+
+        let mut by_mode = filters();
+        by_mode.search_mode = Some("external".into());
+        let cost = repo
+            .query_dataset("cost_breakdown", &by_mode, 5_000, 90, None)
+            .unwrap();
+        assert!(cost.applied.contains(&"search_mode"));
+        assert_eq!(
+            cost.data["by_provider"],
+            serde_json::json!([["brave", 1, 2_000]])
+        );
+
+        let mut by_provider = filters();
+        by_provider.provider_id = Some("tavily".into());
+        let cost = repo
+            .query_dataset("cost_breakdown", &by_provider, 5_000, 90, None)
+            .unwrap();
+        assert_eq!(
+            cost.data["by_provider"],
+            serde_json::json!([["tavily", 1, 1_000]])
+        );
+    }
+
+    #[test]
+    fn quality_status_filter_uses_the_quality_gate_audit() {
+        let s = store();
+        let repo = AnalyticsRepo::new(&s);
+        seed_task(
+            &s,
+            "t1",
+            "ws_a",
+            "local-only",
+            "completed",
+            "2026-11-01T10:00:00+00:00",
+            "local",
+        );
+        seed_task(
+            &s,
+            "t2",
+            "ws_a",
+            "local-only",
+            "failed",
+            "2026-11-01T10:00:00+00:00",
+            "reject",
+        );
+        seed_passed(&s, "t1");
+
+        let mut passed = filters();
+        passed.quality_status = Some("passed".into());
+        let ds = repo
+            .query_dataset("overview", &passed, 5_000, 90, None)
+            .unwrap();
+        assert!(ds.applied.contains(&"quality_status"));
+        assert_eq!(ds.data["searches"]["total"], 1);
+        assert_eq!(ds.data["quality"]["passed"], 1);
+
+        // A value the schema cannot derive is not silently dropped: it is
+        // reported as an ignored filter instead.
+        let mut conflict = filters();
+        conflict.quality_status = Some("conflict".into());
+        let ds = repo
+            .query_dataset("overview", &conflict, 5_000, 90, None)
+            .unwrap();
+        assert!(!ds.applied.contains(&"quality_status"));
+        assert_eq!(
+            ignore_reason("quality_status"),
+            "the quality-gate outcome is only recorded per search task"
+        );
+    }
+
+    #[test]
+    fn cursor_watermarks_the_request_table() {
+        let s = store();
+        let repo = AnalyticsRepo::new(&s);
+        seed_task(
+            &s,
+            "t1",
+            "ws_a",
+            "local-only",
+            "completed",
+            "2026-11-01T10:00:00+00:00",
+            "local",
+        );
+        seed_task(
+            &s,
+            "t2",
+            "ws_a",
+            "local-only",
+            "completed",
+            "2026-11-02T10:00:00+00:00",
+            "local",
+        );
+
+        let before = filters();
+        let ds = repo
+            .query_dataset(
+                "search_requests",
+                &before,
+                5_000,
+                90,
+                Some("2026-11-02T00:00:00Z"),
+            )
+            .unwrap();
+        assert_eq!(ds.data["items"].as_array().unwrap().len(), 1);
+        assert_eq!(ds.data["items"][0]["request_id"], "t1");
+    }
+
+    #[test]
+    fn precomputed_payload_is_reused_only_while_the_watermark_is_unchanged() {
+        let s = store();
+        let repo = AnalyticsRepo::new(&s);
+        assert!(repo.needs_rebuild(), "no watermark stored yet");
+        repo.rebuild(5_000).unwrap();
+        assert!(!repo.needs_rebuild(), "nothing changed since the rebuild");
+
+        seed_task(
+            &s,
+            "t1",
+            "ws_a",
+            "local-only",
+            "completed",
+            "2026-11-01T10:00:00+00:00",
+            "local",
+        );
+        assert!(repo.needs_rebuild(), "a new task invalidates the payload");
+
+        repo.rebuild(5_000).unwrap();
+        assert!(!repo.needs_rebuild());
+        assert_eq!(
+            repo.stored_watermark().unwrap().unwrap(),
+            repo.current_watermark().unwrap(),
+            "the watermark describes the current operational rows"
+        );
+    }
+
+    #[test]
+    fn filters_absent_from_a_dataset_are_reported_not_applied() {
+        let s = store();
+        let repo = AnalyticsRepo::new(&s);
+        let mut f = filters();
+        f.project_id = Some("p1".into());
+        f.workspace_id = Some("ws_a".into());
+        let ds = repo
+            .query_dataset("crawlers_summary", &f, 5_000, 90, None)
+            .unwrap();
+        assert!(!ds.applied.contains(&"workspace_id"));
+        assert!(!ds.applied.contains(&"project_id"));
+        assert_eq!(
+            ignore_reason("project_id"),
+            "no project column exists in the analytics operational schema"
+        );
     }
 }
 

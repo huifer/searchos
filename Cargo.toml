@@ -36,7 +36,7 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-license = "Apache-2.0"
+license = "MIT"
 repository = "https://github.com/searchos/searchos"
 
 [workspace.dependencies]
@@ -113,6 +113,14 @@ regex = "1"
 # Observability (RFC Part 22: tracing + metrics)
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+# OTLP/HTTP export is opt-in; `http-proto` uses pre-generated prost messages
+# (no protoc at build time) and a blocking reqwest client in its own thread.
+opentelemetry = "0.33"
+opentelemetry_sdk = { version = "0.33", features = ["trace", "metrics", "rt-tokio"] }
+opentelemetry-otlp = { version = "0.33", default-features = false, features = [
+    "http-proto", "reqwest-blocking-client", "trace", "metrics",
+] }
+tracing-opentelemetry = "0.34"
 
 # Async trait objects (RFC-002 2.4: dyn traits with async methods)
 async-trait = "0.1"

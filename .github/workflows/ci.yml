@@ -46,6 +46,101 @@ jobs:
           echo "tests=$count"
           [ "$count" -ge 428 ]
 
+  # Evaluation quality gate: real retrieval against the deterministic seed
+  # corpus. Catches a regression that silently collapses keyword coverage.
+  eval-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build binary
+        run: cargo build --locked --bin searchos
+      - name: Generate the deterministic seed corpus
+        run: python3 fixtures/evaluations/generate_seed.py --limit 40
+      - name: Ingest the seed corpus
+        env:
+          SEARCHOS_DATA_DIR: /tmp/searchos-eval
+        run: |
+          mkdir -p "$SEARCHOS_DATA_DIR"
+          ./target/debug/searchos init
+          ./target/debug/searchos ingest --dir fixtures/evaluations/seed
+      - name: Run the evaluation
+        env:
+          SEARCHOS_DATA_DIR: /tmp/searchos-eval
+        run: |
+          ./target/debug/searchos --format json eval run \
+            --dataset fixtures/evaluations/dataset-v1.jsonl \
+            --limit 20 --out eval-report.json
+      - name: Assert quality thresholds
+        run: python3 scripts/check_eval_gate.py eval-report.json
+
+  # Backup/restore drill: the operational rehearsal the deploy runbook
+  # references. A broken restore must fail CI, not a recovery attempt.
+  backup-drill:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build binary
+        run: cargo build --locked --bin searchos
+      - name: Run the backup/restore drill
+        run: cargo test -p searchos-e2e-tests --test backup_restore --locked
+
+  # The OpenAPI document is the frozen external contract. This job fails when
+  # a registered route is not documented, or a documented path does not exist.
+  openapi:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Contract drift check
+        run: cargo test -p searchos-interface-http --lib openapi_spec_matches_the_route_table
+      - name: Route table resolves
+        run: cargo test -p searchos-interface-http --lib every_registered_route_resolves
+
+  sdk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: sdk/typescript/package-lock.json
+      - name: TypeScript SDK build
+        working-directory: sdk/typescript
+        run: |
+          npm ci
+          npm run build
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Python SDK syntax + import check
+        run: |
+          python -m compileall -q sdk/python
+          python -c "import sys; sys.path.insert(0, 'sdk/python'); from searchos import SearchOSClient, SearchOSError; print('python sdk import ok')"
+
+  # Console unit tests (Vitest + Testing Library): client transport, proxy
+  # multipart/auth, filter provenance, ingest and document lifecycle.
+  frontend-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
   security-audit:
     runs-on: ubuntu-latest
     steps:

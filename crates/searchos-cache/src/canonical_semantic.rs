@@ -133,11 +133,37 @@ impl SemanticCompatibility {
     }
 }
 
+/// Cosine similarity between two equally-sized vectors.
+pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+    if a.is_empty() || a.len() != b.len() {
+        return 0.0;
+    }
+    let mut dot = 0.0f32;
+    let mut norm_a = 0.0f32;
+    let mut norm_b = 0.0f32;
+    for (x, y) in a.iter().zip(b.iter()) {
+        dot += x * y;
+        norm_a += x * x;
+        norm_b += y * y;
+    }
+    if norm_a == 0.0 || norm_b == 0.0 {
+        return 0.0;
+    }
+    dot / (norm_a.sqrt() * norm_b.sqrt())
+}
+
+/// Minimum cosine similarity for a semantic-cache reuse. The bucket key is a
+/// coarse recall hint only; reuse additionally requires the query embeddings
+/// to actually be close, otherwise unrelated queries that happen to share a
+/// rounded prefix would be served each other's candidates.
+pub const SEMANTIC_REUSE_MIN_SIMILARITY: f32 = 0.92;
+
 /// One semantic cache entry.
 type SemanticEntry = (
     Vec<RetrievalCandidate>,
     SemanticCompatibility,
     CacheEntryMeta,
+    Vec<f32>,
 );
 
 /// Semantic cache: 语义近似请求复用 — invalidated on quality or freshness
@@ -159,38 +185,51 @@ impl SemanticCache {
 
     /// Key: similarity bucket of the query embedding (caller computes the
     /// bucket from the embedder: e.g. L2-normalized vector rounded).
+    ///
+    /// The bucket is a coarse recall hint only. Two unrelated queries can
+    /// share a bucket (the fallback embedder hashes text into a small
+    /// dimensional space and the bucket rounds to one decimal), so reuse
+    /// additionally requires a real similarity gate — see [`Self::get`].
     fn key(similarity_bucket: &str) -> String {
         format!("sem:{similarity_bucket}")
     }
 
-    /// Stores candidates with their compatibility constraints.
+    /// Stores candidates with their compatibility constraints and the query
+    /// embedding that produced them.
     pub fn put(
         &self,
         similarity_bucket: &str,
         candidates: Vec<RetrievalCandidate>,
         compatibility: SemanticCompatibility,
         policy_version: &str,
+        query_vector: Vec<f32>,
     ) {
         let k = Self::key(similarity_bucket);
         let meta = CacheEntryMeta::new(self.ttl_seconds, policy_version);
         self.entries
             .write()
             .unwrap()
-            .insert(k, (candidates, compatibility, meta));
+            .insert(k, (candidates, compatibility, meta, query_vector));
     }
 
-    /// Gets candidates only when the compatibility gate passes (RFC-007 7.4).
+    /// Gets candidates only when the compatibility gate passes
+    /// (RFC-007 7.4) **and** the requesting query is actually close to the
+    /// cached query. Sharing a bucket is never sufficient.
     pub fn get(
         &self,
         similarity_bucket: &str,
         requester: &SemanticCompatibility,
         policy_version: &str,
+        query_vector: &[f32],
     ) -> Option<Vec<RetrievalCandidate>> {
         let k = Self::key(similarity_bucket);
         let map = self.entries.read().unwrap();
         match map.get(&k) {
-            Some((v, compat, meta))
-                if meta.valid(policy_version) && compat.allows_reuse(requester) =>
+            Some((v, compat, meta, stored_vector))
+                if meta.valid(policy_version)
+                    && compat.allows_reuse(requester)
+                    && cosine_similarity(stored_vector, query_vector)
+                        >= SEMANTIC_REUSE_MIN_SIMILARITY =>
             {
                 Some(v.clone())
             }
@@ -260,14 +299,54 @@ mod tests {
     #[test]
     fn semantic_reuse_requires_compatibility() {
         let c = SemanticCache::new(600);
-        c.put("bucket-1", vec![cand("a")], compat("ws", "recent"), "1");
-        // Same constraints: reuse allowed.
-        assert!(c.get("bucket-1", &compat("ws", "recent"), "1").is_some());
+        let vector = vec![1.0, 0.0, 0.0];
+        c.put(
+            "bucket-1",
+            vec![cand("a")],
+            compat("ws", "recent"),
+            "1",
+            vector.clone(),
+        );
+        // Same constraints and a close query: reuse allowed.
+        assert!(c
+            .get("bucket-1", &compat("ws", "recent"), "1", &vector)
+            .is_some());
         // Freshness constraint differs: no reuse.
-        assert!(c.get("bucket-1", &compat("ws", "strict"), "1").is_none());
+        assert!(c
+            .get("bucket-1", &compat("ws", "strict"), "1", &vector)
+            .is_none());
         // Different workspace: no reuse.
         assert!(c
-            .get("bucket-1", &compat("other-ws", "recent"), "1")
+            .get("bucket-1", &compat("other-ws", "recent"), "1", &vector)
+            .is_none());
+    }
+
+    /// The bucket key is a coarse rounded prefix; two unrelated queries can
+    /// share it. Reuse must still be denied by the similarity gate, otherwise
+    /// unrelated queries would be served each other's candidates.
+    #[test]
+    fn semantic_reuse_requires_vector_similarity() {
+        let c = SemanticCache::new(600);
+        let stored = vec![1.0, 0.0, 0.0];
+        c.put(
+            "bucket-1",
+            vec![cand("a")],
+            compat("ws", "recent"),
+            "1",
+            stored,
+        );
+
+        // Orthogonal query, same bucket: no reuse.
+        assert!(c
+            .get("bucket-1", &compat("ws", "recent"), "1", &[0.0, 1.0, 0.0])
+            .is_none());
+        // Near-identical query: reuse.
+        assert!(c
+            .get("bucket-1", &compat("ws", "recent"), "1", &[1.0, 0.01, 0.0])
+            .is_some());
+        // Zero-length / mismatched vectors never match.
+        assert!(c
+            .get("bucket-1", &compat("ws", "recent"), "1", &[])
             .is_none());
     }
 
@@ -294,24 +373,31 @@ mod tests {
     fn semantic_reuse_checks_all_seven_dimensions() {
         let c = SemanticCache::new(600);
         let stored = compat("ws", "recent");
-        c.put("bucket", vec![cand("a")], stored.clone(), "1");
-        assert!(c.get("bucket", &stored, "1").is_some());
+        let vector = vec![1.0, 0.0];
+        c.put(
+            "bucket",
+            vec![cand("a")],
+            stored.clone(),
+            "1",
+            vector.clone(),
+        );
+        assert!(c.get("bucket", &stored, "1", &vector).is_some());
         let mut different = stored.clone();
         different.mode = "local_only".into();
-        assert!(c.get("bucket", &different, "1").is_none());
+        assert!(c.get("bucket", &different, "1", &vector).is_none());
         let mut stricter = stored.clone();
         stricter.coverage_requirement = 0.9;
-        assert!(c.get("bucket", &stricter, "1").is_none());
+        assert!(c.get("bucket", &stricter, "1", &vector).is_none());
         let mut invalid = stored.clone();
         invalid.validity_status = "failed".into();
-        assert!(c.get("bucket", &invalid, "1").is_none());
+        assert!(c.get("bucket", &invalid, "1", &vector).is_none());
     }
 
     #[test]
     fn semantic_cache_clears_on_quality_failure() {
         let c = SemanticCache::new(600);
-        c.put("b", vec![cand("a")], compat("ws", "recent"), "1");
+        c.put("b", vec![cand("a")], compat("ws", "recent"), "1", vec![1.0]);
         c.clear();
-        assert!(c.get("b", &compat("ws", "recent"), "1").is_none());
+        assert!(c.get("b", &compat("ws", "recent"), "1", &[1.0]).is_none());
     }
 }

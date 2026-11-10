@@ -180,7 +180,21 @@ pub async fn handle_message(runtime: Arc<SearchOsRuntime>, msg: &Value) -> Optio
         }
         "tools/list" => Ok(json!({ "tools": tools() })),
         "tools/call" => call_tool(runtime, &params).await,
-        "notifications/initialized" | "notifications/cancelled" => return None,
+        // JSON-RPC notifications never get a response. Cancellation is
+        // acknowledged rather than dropped: the v1 stdio server handles each
+        // request inline, so there is no in-flight work to cancel. A client
+        // asking for cancellation is told so on stderr and it is counted.
+        "notifications/initialized" => return None,
+        "notifications/cancelled" => {
+            searchos_observability::MetricsRegistry::global()
+                .inc_counter("mcp.cancellation_unsupported_total");
+            tracing::warn!(
+                "MCP cancellation is not supported by the v1 stdio server \
+                 (ADR-031): each request is handled inline, so there is nothing \
+                 in flight to cancel. See docs/mcp.md."
+            );
+            return None;
+        }
         "ping" => Ok(json!({})),
         other => Err(rpc_error(
             -32601,
@@ -610,6 +624,36 @@ mod tests {
         )
         .await
         .is_none());
+    }
+
+    /// ADR-031: the v1 stdio server handles every request inline, so there is
+    /// nothing in flight to cancel. A cancellation notification still gets no
+    /// response (JSON-RPC), but it must not vanish silently: it is counted and
+    /// logged so an operator can see the client asked for it.
+    #[tokio::test]
+    async fn cancellation_is_acknowledged_not_silently_dropped() {
+        let (rt, _d) = runtime().await;
+        let before = searchos_observability::MetricsRegistry::global()
+            .counter("mcp.cancellation_unsupported_total");
+        let resp = handle_message(
+            rt,
+            &json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":1}}),
+        )
+        .await;
+        assert!(resp.is_none(), "a notification must not produce a response");
+        let after = searchos_observability::MetricsRegistry::global()
+            .counter("mcp.cancellation_unsupported_total");
+        assert!(
+            after > before,
+            "cancellation must be counted, not silently dropped"
+        );
+    }
+
+    /// The declared transport is stdio; the crate has no HTTP server in its
+    /// dependency graph (asserted in the compatibility suite).
+    #[test]
+    fn transport_is_stdio() {
+        assert_eq!(crate::TRANSPORT, "stdio");
     }
 
     #[tokio::test]

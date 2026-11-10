@@ -1,0 +1,23 @@
+# Prometheus scrape configuration for a local SearchOS deployment.
+#
+# The gateway exposes Prometheus text exposition 0.0.4 on GET /metrics with
+# the same bearer token as every other endpoint. When SEARCHOS_AUTH_TOKEN is
+# set, uncomment the authorization block and keep the token in a file mounted
+# into the container (never commit it).
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    deployment: searchos-local
+
+scrape_configs:
+  - job_name: searchos-gateway
+    metrics_path: /metrics
+    scheme: http
+    static_configs:
+      - targets: ["gateway:8787"]
+    # bearer_token_file: /etc/searchos/token
+    # authorization:
+    #   type: Bearer
+    #   credentials_file: /etc/searchos/token

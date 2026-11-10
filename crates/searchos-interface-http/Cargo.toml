@@ -24,3 +24,5 @@ searchos-policy = { workspace = true }
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
 chrono = { workspace = true }
+rusqlite = { workspace = true }
+serde_yaml = { workspace = true }

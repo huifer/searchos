@@ -1,6 +1,7 @@
 "use client";
 
 import type { ReactNode } from "react";
+import { useI18n } from "@/lib/i18n";
 import dynamic from "next/dynamic";
 import { AlertTriangle, ArrowRight, ArrowUpRight, RefreshCw } from "lucide-react";
 
@@ -44,10 +45,11 @@ export function Panel({
   className?: string;
   action?: ReactNode;
 }) {
+  const { t } = useI18n();
   return (
     <Card className={cn("panel", className)}>
       <CardHeader>
-        <CardTitle>{title}</CardTitle>
+        <CardTitle>{t(title)}</CardTitle>
         <div className="panel-meta">
           {meta}
           {action}
@@ -107,27 +109,29 @@ export function Skeleton({ lines = 3 }: { lines?: number }) {
 }
 
 export function Empty({ title, body }: { title: string; body: string }) {
+  const { t } = useI18n();
   return (
     <div className="state-empty">
       <div className="state-mark">[ ]</div>
       <div>
-        <div className="state-title">{title}</div>
-        <p className="state-body">{body}</p>
+        <div className="state-title">{t(title)}</div>
+        <p className="state-body">{t(body)}</p>
       </div>
     </div>
   );
 }
 
 export function ErrorNotice({ message, onRetry }: { message: string; onRetry?: () => void }) {
+  const { t } = useI18n();
   return (
     <Alert variant="destructive">
       <AlertTriangle className="size-4" aria-hidden="true" />
-      <AlertTitle>Gateway request failed</AlertTitle>
+      <AlertTitle>{t("Gateway request failed")}</AlertTitle>
       <AlertDescription>{message}</AlertDescription>
       {onRetry ? (
         <div className="col-start-2 mt-2">
           <ShadcnButton variant="outline" size="sm" onClick={onRetry}>
-            <RefreshCw className="size-3.5" /> Retry
+            <RefreshCw className="size-3.5" /> {t("Retry")}
           </ShadcnButton>
         </div>
       ) : null}
@@ -191,10 +195,11 @@ export function Measure({ label, value, display }: { label: string; value: numbe
 }
 
 export function SectionIntro({ title, description }: { title: string; description: string }) {
+  const { t } = useI18n();
   return (
     <div className="intro">
-      <h1>{title}</h1>
-      <p>{description}</p>
+      <h1>{t(title)}</h1>
+      <p>{t(description)}</p>
     </div>
   );
 }

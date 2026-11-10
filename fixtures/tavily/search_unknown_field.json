@@ -1,0 +1,12 @@
+{
+  "case": "search_unknown_field",
+  "method": "POST",
+  "path": "/search",
+  "body": { "query": "q", "search_depth": "basic", "some_future_tavily_knob": "on" },
+  "expect": {
+    "status": 200,
+    "json_fields": ["query", "results", "unsupported_features", "answer", "response_time"],
+    "absent_fields": [],
+    "unsupported_features_contains": ["some_future_tavily_knob"]
+  }
+}

@@ -23,5 +23,15 @@ and partial results could look successful.
 - `request_id` is an idempotency key: replaying it must not create a second task, external call, bill, or document version.
 - Evidence merge canonicalizes URLs, retains conflicts, and counts independent sources by host; unresolved conflicts force `QualityStatus::Conflict`.
 - Final quality gate uses measured relevance scores, never a constant placeholder.
+- **Semantic cache reuse needs a real similarity gate (2026-11 fix).** The cache key
+  is a coarse bucket (`vector_bucket`: first 8 embedding components rounded to
+  one decimal). Unrelated queries can share a bucket, so `SemanticCache::get`
+  now also requires `cosine_similarity(stored_query, request_query) >=
+  SEMANTIC_REUSE_MIN_SIMILARITY (0.92)` before returning cached candidates. Before
+  this fix a local-mode gateway (hashing embedder) served an unrelated document
+  with a constant 0.5 score for arbitrary queries such as `zzzznonsense` —
+  observed live, reproduced, and verified fixed. The seven `SemanticCompatibility`
+  gates still apply; vector similarity is a recall condition, never the pass
+  condition. Never weaken this gate back to bucket equality.
 
 **Related:** [[searchos-project]], [[searchos-verification]], docs/gap-analysis.md, docs/rfc/README.md

@@ -5,6 +5,8 @@
 /web/out
 /web/*.tsbuildinfo
 /web/.env*.local
+/sdk/typescript/node_modules
+/sdk/typescript/dist
 
 # Local data directory (created at runtime)
 ~/.searchos
@@ -21,3 +23,7 @@
 .env
 *.key
 __pycache__/
+
+# Generated evaluation artifacts (CI regenerates them)
+/fixtures/evaluations/seed/
+/eval-report.json

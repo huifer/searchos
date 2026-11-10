@@ -1,5 +1,7 @@
 "use client";
 
+import { useI18n } from "@/lib/i18n";
+
 import { useCallback, useState } from "react";
 import { Check, Copy, ExternalLink } from "lucide-react";
 
@@ -23,6 +25,7 @@ function MockCard({
   title: string;
   description: string;
 }) {
+  const { t } = useI18n();
   return (
     <div className="flex flex-col gap-2">
       <div className="flex items-center justify-between">
@@ -50,6 +53,7 @@ function MockCard({
 }
 
 function CopyButton({ value }: { value: string }) {
+  const { t } = useI18n();
   const [copied, setCopied] = useState(false);
 
   const copy = useCallback(async () => {
@@ -76,6 +80,7 @@ function CopyButton({ value }: { value: string }) {
 }
 
 export function SeoPage() {
+  const { t } = useI18n();
   const [lang, setLang] = useState<Lang>("en");
   const image = lang === "zh" ? OG_IMAGES.zh : OG_IMAGES.en;
   const githubImage = lang === "zh" ? OG_IMAGES.githubZh : OG_IMAGES.githubEn;
@@ -113,13 +118,13 @@ export function SeoPage() {
       >
         <div className="grid gap-4 lg:grid-cols-2">
           <MockCard
-            label="X / TWITTER - SUMMARY_LARGE_IMAGE"
+            label={t("X / TWITTER - SUMMARY_LARGE_IMAGE")}
             image={image}
             title={pageTitle(page)}
             description={page.description}
           />
           <MockCard
-            label="GITHUB - REPO SOCIAL PREVIEW"
+            label={t("GITHUB - REPO SOCIAL PREVIEW")}
             image={githubImage}
             title={pageTitle(page)}
             description={page.description}
@@ -131,9 +136,9 @@ export function SeoPage() {
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>Property</TableHead>
-              <TableHead>Content</TableHead>
-              <TableHead>Note</TableHead>
+              <TableHead>{t("Property")}</TableHead>
+              <TableHead>{t("Content")}</TableHead>
+              <TableHead>{t("Note")}</TableHead>
               <TableHead />
             </TableRow>
           </TableHeader>
@@ -158,10 +163,10 @@ export function SeoPage() {
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>File</TableHead>
-              <TableHead>Size</TableHead>
-              <TableHead>Lang</TableHead>
-              <TableHead>Usage</TableHead>
+              <TableHead>{t("File")}</TableHead>
+              <TableHead>{t("Size")}</TableHead>
+              <TableHead>{t("Lang")}</TableHead>
+              <TableHead>{t("Usage")}</TableHead>
               <TableHead />
             </TableRow>
           </TableHeader>

@@ -1,0 +1,12 @@
+{
+  "case": "search_native_shape",
+  "method": "POST",
+  "path": "/search",
+  "body": { "query": "rust tokio runtime", "mode": "local-only", "max_results": 2 },
+  "expect": {
+    "status": 200,
+    "json_fields": ["query", "status", "results", "trace_id", "warnings"],
+    "absent_fields": ["unsupported_features", "response_time"],
+    "unsupported_features": []
+  }
+}

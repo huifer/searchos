@@ -176,6 +176,7 @@ export function metaTagsFor(page: PageSeo): MetaTag[] {
     { property: "og:image:height", content: String(OG_IMAGES.en.height), note: "Aspect hint" },
     { property: "og:image:alt", content: OG_IMAGES.en.alt, note: "Accessibility text" },
     { property: "og:locale", content: SITE.locale, note: "Primary locale" },
+    { property: "og:locale:alternate", content: "zh_CN", note: "Chinese console locale" },
     { property: "twitter:card", content: "summary_large_image", note: "Large card layout" },
     { property: "twitter:title", content: pageTitle(page), note: "Card headline" },
     { property: "twitter:description", content: page.description, note: "Card body" },

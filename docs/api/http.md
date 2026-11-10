@@ -14,7 +14,11 @@
 | POST | `/ingest/batch` | Batch text import with per-item outcomes (RFC-029) |
 | GET | `/ingest/jobs/:id` | Batch job + item status (RFC-029) |
 | POST | `/documents` | Fetch and persist a document |
-| GET | `/documents/:id` | Document + current version |
+| GET | `/documents` | Live document list: workspace-scoped, optional `source_type` / `status` filter; soft-deleted hidden unless asked for |
+| GET | `/documents/:id` | Document + lifecycle summary + current version + version history |
+| GET | `/documents/:id/versions` | Immutable content version history |
+| POST | `/documents/:id/reindex` | Rewrite only the full-text index entries |
+| DELETE | `/documents/:id` | Soft delete + chunk removal + immediate index removal |
 | POST | `/memory/search` | Namespaced memory search (RFC-013 isolation) |
 | GET | `/cost/summary` | Ledger summary (estimates, not real bills) |
 | GET | `/cost/providers` | Per-provider health + spend |
@@ -31,6 +35,7 @@
 | GET | `/profiles`, `/profiles/:id` | Versioned SearchProfiles |
 | POST | `/documents/search` | Persisted document lookup |
 | GET | `/health` | Status + index consistency |
+| GET | `/metrics` | Prometheus text exposition 0.0.4 (same auth as the rest) |
 
 Every route is also mounted under `/v1` (RFC-013 13.7) and responses carry
 `x-searchos-api-version`. No catch-all routes are used; the Axum route-conflict
@@ -42,8 +47,15 @@ console uses a server-side proxy instead (see [`docs/ui.md`](../ui.md)).
 ## Dashboard API (RFC-028)
 
 All Dashboard responses are `{ data, meta }` with `generated_at`, `time_range`,
-`aggregation_version`, `data_freshness` and `workspace_scope`. Handlers never
-write SQL; they call `AnalyticsQueryService` over `analytics_read_models`.
+`aggregation_version`, `data_freshness`, `query_mode`, `applied_filters`,
+`ignored_filters`, `refresh_skipped`, `model_age_seconds` and `workspace_scope`.
+Handlers never write SQL; they call `AnalyticsQueryService`, which either reuses
+the precomputed `analytics_read_models` payload (no predicate and
+`interval=day`) or runs a live aggregation with every predicate in the SQL
+WHERE clause. A stored payload is rebuilt only when the operational source
+watermark has moved. `meta.applied_filters` / `meta.ignored_filters` declare
+exactly which filters each dataset consumed and which its schema cannot
+apply, so a filter is never silently dropped.
 
 | Method | Path | Read Model |
 |---|---|---|
@@ -69,6 +81,56 @@ Auth: `Authorization: Bearer <token>` when `server.auth_token` is configured
 `server.workspace_tokens` is set, the token is bound to exactly one workspace
 and cross-workspace requests return 403 (RFC-017 17.6). A fixed-window
 `server.rate_limit_per_minute` returns 429 when exceeded (RFC-013 13.3).
+
+## Prometheus metrics (`GET /metrics`)
+
+`GET /metrics` returns **Prometheus text exposition format 0.0.4**
+(`text/plain; version=0.0.4; charset=utf-8`) and uses the same bearer-token
+authentication as every other endpoint, so a scraper supplies the token rather
+than the endpoint being unauthenticated.
+
+One scrape carries both halves of the picture:
+
+| Group | Examples |
+|---|---|
+| Execution correctness | `searchos_search_requests_total`, `searchos_quality_pass_total`, `searchos_quality_partial_total`, `searchos_freshness_violations_total`, `searchos_conflicts_total`, `searchos_provider_failures_total` |
+| Efficiency | `searchos_cache_hits_total`, `searchos_semantic_reuse_total`, `searchos_singleflight_merges_total`, `searchos_external_avoided_total` |
+| Cost | `searchos_cost_micros_total`, `searchos_cost_micros_per_quality_pass` |
+| Index | `searchos_index_outbox_processed_total`, `searchos_index_outbox_dead_total`, `searchos_index_outbox_pending` |
+| Latency | `searchos_search_latency_p50_seconds`, `_p95_`, `_p99_` |
+| Part 30 invariants | `searchos_invariant_*` (every invariant counter/gauge) |
+| Process health | `searchos_uptime_seconds`, `searchos_sse_active`, `searchos_sse_connections_total`, `searchos_schema_version`, `searchos_build_info` |
+
+The only labelled series is `searchos_search_status_total{status="…"}`, and its
+label set is the bounded status vocabulary, never user input.
+
+These are **in-process** counters: they are the same numbers the console shows,
+not a substitute for an external monitor. They reset on restart.
+
+## OpenTelemetry (OTLP/HTTP, opt-in)
+
+`GET /metrics` is always available. In addition, traces and the same metric
+snapshot can be pushed over OTLP/HTTP protobuf by setting
+`SEARCHOS_OTLP_ENABLED=true` and `SEARCHOS_OTLP_ENDPOINT=http://host:4318`.
+It is off by default; no exporter, background thread or network call exists
+when disabled. Signals are flushed on graceful shutdown. Collector tokens go
+in `SEARCHOS_OTLP_HEADERS` (`k=v,k2=v2`) and never appear in logs or
+validation errors. See [`docs/observability.md`](../observability.md).
+
+## Graceful shutdown
+
+`searchos gateway start` handles `SIGTERM` and `SIGINT`:
+
+1. The listener stops accepting new connections.
+2. In-flight requests drain; the SSE dashboard streams terminate.
+3. The outbox worker performs one final flush, so documents fetched just
+   before shutdown still reach the full-text index.
+4. The process exits `0`.
+
+A **second** signal forces an immediate exit, so a wedged process can always be
+recovered. Because every request is handled inline, MCP cancellation is not a
+shutdown concern (see [`docs/mcp.md`](mcp.md)); SSE is the only long-lived
+connection and it is wired to the shutdown signal.
 
 ## POST /search
 
@@ -160,10 +222,26 @@ Default bounds: 20 MB per document, 200 MB per batch, configurable via
 
 ## Tavily compatibility
 
-The gateway accepts Tavily-shaped requests on `/search`
-(`search_depth`, `topic`, `max_results`, `include_domains`,
-`exclude_domains`, `days`, `include_raw_content`) and maps them to the
-SearchOS domain model. Unsupported features are reported explicitly in
-`unsupported_features` (RFC-012 12.7). `answer` is always `null` — SearchOS
-does not fabricate answers (RFC-001 1.2). Tavily requests are scoped to the
-dedicated `tavily` workspace unless an explicit `workspace_id` is supplied.
+The frozen Tavily subset is documented in
+[`docs/tavily-compatibility.md`](../tavily-compatibility.md) and enforced by the
+fixture suite (`fixtures/tavily/` +
+`tests/compatibility/tests/tavily_contract.rs`).
+
+The gateway routes a `/search` body to the compatibility layer when it contains
+any Tavily key (`search_depth`, `topic`, `include_answer`, `include_raw_content`,
+`include_domains`, `exclude_domains`, `include_images`, `chunks_per_source`,
+`time_range`, `country`, `include_favicon`, `days`, …) and maps it onto the
+SearchOS domain model. Every knob that is not honored — and every unknown field —
+is reported explicitly in `unsupported_features`, which is always present
+(possibly empty). `answer` is always `null`: SearchOS does not fabricate answers
+(RFC-001 1.2). A body without any Tavily key stays on the native envelope and
+never grows Tavily-only fields.
+
+Tavily-shaped `/extract` (`{ "urls": [...] }`) extracts one URL per call: the
+first is honored, the rest are returned in `failed_results` with an explicit
+reason, and `extract_depth` / `format` / `include_images` /
+`include_favicon` are reported as unsupported.
+
+Errors use the standard gateway envelope; there is no Tavily-specific error
+shape. `POST /crawl` and `POST /map` are **not** part of the v1 subset (they
+return `404` and are absent from `docs/openapi.yaml`).

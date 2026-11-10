@@ -1,0 +1,13 @@
+{
+  "case": "extract_multi",
+  "method": "POST",
+  "path": "/extract",
+  "body": { "urls": ["not-a-valid-url", "also-not-valid"] },
+  "expect": {
+    "status": 200,
+    "json_fields": ["results", "failed_results", "unsupported_features", "response_time"],
+    "absent_fields": [],
+    "failed_results_min": 2,
+    "unsupported_features_contains": ["urls[1..]"]
+  }
+}

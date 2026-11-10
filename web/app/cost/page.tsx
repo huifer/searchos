@@ -1,5 +1,7 @@
 "use client";
 
+import { useI18n } from "@/lib/i18n";
+
 import { useState, type FormEvent } from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -18,6 +20,7 @@ type MoneyLike = { amount_micros?: number } | null | undefined;
 function moneyMicros(m: MoneyLike): number | undefined { return m?.amount_micros; }
 
 export default function CostPage() {
+  const { t } = useI18n();
   const savings = useApi<SavingsReport>("cost/savings", 30_000);
   const summary = useApi<{ summary: CostSummary; is_estimate: boolean }>("cost/summary", 30_000);
   const reservations = useApi<ReservationList>("cost/reservations", 30_000);
@@ -64,22 +67,22 @@ export default function CostPage() {
 
       {savings.data ? (
         <div className="grid grid-4">
-          <Metric label="Baseline" value={micros(savings.data.baseline_micros)} unit="USD" note="External-only equivalent quality" />
-          <Metric label="SearchOS" value={micros(savings.data.searchos_micros)} unit="USD" note="Includes local compute" />
-          <Metric label="Savings" value={micros(savings.data.savings_micros)} unit="USD" note={pct(savings.data.savings_rate)} tone="accent" />
-          <Metric label="CPQPA" value={micros(savings.data.cost_per_quality_passing_answer_micros)} unit="USD" note={`${count(savings.data.quality_passing_tasks)} passing tasks`} />
+          <Metric label={t("Baseline")} value={micros(savings.data.baseline_micros)} unit="USD" note="External-only equivalent quality" />
+          <Metric label={t("SearchOS")} value={micros(savings.data.searchos_micros)} unit="USD" note="Includes local compute" />
+          <Metric label={t("Savings")} value={micros(savings.data.savings_micros)} unit="USD" note={pct(savings.data.savings_rate)} tone="accent" />
+          <Metric label={t("CPQPA")} value={micros(savings.data.cost_per_quality_passing_answer_micros)} unit="USD" note={`${count(savings.data.quality_passing_tasks)} passing tasks`} />
         </div>
       ) : null}
 
       <div className="split">
         <div className="stack">
-          <Panel title="Cost analytics" meta={<Badge variant="warn">Estimate</Badge>}>
+          <Panel title="Cost analytics" meta={<Badge variant="warn">{t("Estimate")}</Badge>}>
             <Tabs defaultValue="operation">
               <TabsList>
-                <TabsTrigger value="operation">Operation</TabsTrigger>
-                <TabsTrigger value="provider">Provider</TabsTrigger>
-                <TabsTrigger value="workspace">Workspace</TabsTrigger>
-                <TabsTrigger value="agent">Agent</TabsTrigger>
+                <TabsTrigger value="operation">{t("Operation")}</TabsTrigger>
+                <TabsTrigger value="provider">{t("Provider")}</TabsTrigger>
+                <TabsTrigger value="workspace">{t("Workspace")}</TabsTrigger>
+                <TabsTrigger value="agent">{t("Agent")}</TabsTrigger>
               </TabsList>
               {(["by_operation", "by_provider", "by_workspace", "by_agent"] as const).map((key) => (
                 <TabsContent key={key} value={key.replace("by_", "")} className="pt-3">
@@ -87,7 +90,7 @@ export default function CostPage() {
                     <Empty title="No cost events" body="Run a search to populate the analytics cost breakdown." />
                   ) : (
                     <Table>
-                      <TableHeader><TableRow><TableHead>Key</TableHead><TableHead>Events</TableHead><TableHead>Estimated micros</TableHead></TableRow></TableHeader>
+                      <TableHeader><TableRow><TableHead>{t("Key")}</TableHead><TableHead>{t("Events")}</TableHead><TableHead>{t("Estimated micros")}</TableHead></TableRow></TableHeader>
                       <TableBody>
                         {(breakdown.data?.data?.[key] ?? []).slice(0, 20).map(([name, n, m]) => (
                           <TableRow key={name}><TableCell>{name}</TableCell><TableCell>{count(n)}</TableCell><TableCell>{micros(m)}</TableCell></TableRow>
@@ -100,20 +103,20 @@ export default function CostPage() {
             </Tabs>
             <Separator className="my-4" />
             <div className="stack">
-              <Kv label="Total estimated" value={`${micros(moneyMicros(summary.data?.summary.total_estimated))} USD`} />
-              <Kv label="Total actual" value={summary.data?.summary.total_actual ? `${micros(moneyMicros(summary.data.summary.total_actual))} USD` : "no billing data"} />
-              <Kv label="Cost events" value={count(summary.data?.summary.event_count)} />
-              <Kv label="Cost per successful query" value={`${micros(moneyMicros(summary.data?.summary.cost_per_successful_query))} USD`} />
+              <Kv label={t("Total estimated")} value={`${micros(moneyMicros(summary.data?.summary.total_estimated))} USD`} />
+              <Kv label={t("Total actual")} value={summary.data?.summary.total_actual ? `${micros(moneyMicros(summary.data.summary.total_actual))} USD` : "no billing data"} />
+              <Kv label={t("Cost events")} value={count(summary.data?.summary.event_count)} />
+              <Kv label={t("Cost per successful query")} value={`${micros(moneyMicros(summary.data?.summary.cost_per_successful_query))} USD`} />
             </div>
           </Panel>
 
           <Panel title="Reuse cost views" meta={<span>RFC-006 6.9</span>}>
             <div className="stack">
-              <Kv label="Original acquisition" value={`${micros(savings.data?.reuse_views?.original_acquisition_micros)} USD`} />
-              <Kv label="Reuse execution" value={`${micros(savings.data?.reuse_views?.reuse_execution_micros)} USD`} />
-              <Kv label="Allocated amortized" value={`${micros(savings.data?.reuse_views?.amortized_micros)} USD`} />
-              <Kv label="Marginal" value={`${micros(savings.data?.reuse_views?.marginal_micros)} USD`} />
-              <Kv label="External calls / local resolved" value={`${count(savings.data?.external_calls)} / ${count(savings.data?.local_resolved_tasks)}`} />
+              <Kv label={t("Original acquisition")} value={`${micros(savings.data?.reuse_views?.original_acquisition_micros)} USD`} />
+              <Kv label={t("Reuse execution")} value={`${micros(savings.data?.reuse_views?.reuse_execution_micros)} USD`} />
+              <Kv label={t("Allocated amortized")} value={`${micros(savings.data?.reuse_views?.amortized_micros)} USD`} />
+              <Kv label={t("Marginal")} value={`${micros(savings.data?.reuse_views?.marginal_micros)} USD`} />
+              <Kv label={t("External calls / local resolved")} value={`${count(savings.data?.external_calls)} / ${count(savings.data?.local_resolved_tasks)}`} />
             </div>
           </Panel>
         </div>
@@ -123,30 +126,30 @@ export default function CostPage() {
             <form onSubmit={reconcile}>
               <div className="form-grid" style={{ gridTemplateColumns: "minmax(0, 1fr)" }}>
                 <div className="field">
-                  <Label htmlFor="eventId">Cost event id</Label>
+                  <Label htmlFor="eventId">{t("Cost event id")}</Label>
                   <Input id="eventId" value={eventId} onChange={(e) => setEventId(e.target.value)} placeholder="cost_<uuid>" required />
                   <span className="field-helper">Find ids in the local SQLite cost_events table.</span>
                 </div>
                 <div className="field">
-                  <Label htmlFor="amount">Actual billed amount (USD)</Label>
+                  <Label htmlFor="amount">{t("Actual billed amount (USD)")}</Label>
                   <Input id="amount" type="number" min="0" step="0.000001" value={amount} onChange={(e) => setAmount(e.target.value)} required />
-                  <span className="field-helper">The estimate is never overwritten.</span>
+                  <span className="field-helper">{t("The estimate is never overwritten.")}</span>
                 </div>
                 <div className="field">
-                  <Label htmlFor="source">Source</Label>
+                  <Label htmlFor="source">{t("Source")}</Label>
                   <Select value={source} onValueChange={setSource}>
                     <SelectTrigger id="source"><SelectValue /></SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="provider_billing">Provider billing</SelectItem>
-                      <SelectItem value="local_measurement">Local measurement</SelectItem>
-                      <SelectItem value="user">User import</SelectItem>
+                      <SelectItem value="provider_billing">{t("Provider billing")}</SelectItem>
+                      <SelectItem value="local_measurement">{t("Local measurement")}</SelectItem>
+                      <SelectItem value="user">{t("User import")}</SelectItem>
                     </SelectContent>
                   </Select>
-                  <span className="field-helper">Billing data flips the report from estimate to actual.</span>
+                  <span className="field-helper">{t("Billing data flips the report from estimate to actual.")}</span>
                 </div>
               </div>
               <div className="form-actions">
-                <Button type="submit" loading={busy} disabled={!eventId.trim()}>Reconcile</Button>
+                <Button type="submit" loading={busy} disabled={!eventId.trim()}>{t("Reconcile")}</Button>
               </div>
             </form>
             {message ? <div className="form-message">{message}</div> : null}
@@ -158,7 +161,7 @@ export default function CostPage() {
               <Empty title="No reservations yet" body="Each executed task reserves estimated budget before external work, then settles with actual spend." />
             ) : (
               <Table>
-                <TableHeader><TableRow><TableHead>Task</TableHead><TableHead>Status</TableHead><TableHead>Reserved</TableHead><TableHead>Spent</TableHead></TableRow></TableHeader>
+                <TableHeader><TableRow><TableHead>{t("Task")}</TableHead><TableHead>{t("Status")}</TableHead><TableHead>{t("Reserved")}</TableHead><TableHead>{t("Spent")}</TableHead></TableRow></TableHeader>
                 <TableBody>
                   {(reservations.data?.reservations ?? []).map((r) => (
                     <TableRow key={r.id}>

@@ -1,5 +1,7 @@
 "use client";
 
+import { useI18n } from "@/lib/i18n";
+
 import { useState, type FormEvent } from "react";
 import { Info } from "lucide-react";
 
@@ -39,6 +41,7 @@ function statusTone(status?: string): Tone {
 }
 
 export default function SearchPage() {
+  const { t } = useI18n();
   const profiles = useApi<ProfileList>("profiles");
   const [query, setQuery] = useState("What is the Tokio async runtime?");
   const [profile, setProfile] = useState("general");
@@ -92,13 +95,13 @@ export default function SearchPage() {
             <form onSubmit={run}>
               <div className="form-grid">
                 <div className="field field-wide">
-                  <Label htmlFor="query">Query</Label>
-                  <Textarea id="query" value={query} onChange={(e) => setQuery(e.target.value)} required placeholder="Ask a question or paste a URL" />
-                  <span className="field-helper">Strict freshness queries bypass the exact cache automatically.</span>
+                  <Label htmlFor="query">{t("Query")}</Label>
+                  <Textarea id="query" value={query} onChange={(e) => setQuery(e.target.value)} required placeholder={t("Ask a question or paste a URL")} />
+                  <span className="field-helper">{t("Strict freshness queries bypass the exact cache automatically.")}</span>
                 </div>
 
                 <div className="field">
-                  <Label htmlFor="profile">Profile</Label>
+                  <Label htmlFor="profile">{t("Profile")}</Label>
                   <Select value={profile} onValueChange={setProfile}>
                     <SelectTrigger id="profile"><SelectValue /></SelectTrigger>
                     <SelectContent>
@@ -107,11 +110,11 @@ export default function SearchPage() {
                       ))}
                     </SelectContent>
                   </Select>
-                  <span className="field-helper">Versioned quality and freshness policy.</span>
+                  <span className="field-helper">{t("Versioned quality and freshness policy.")}</span>
                 </div>
 
                 <div className="field">
-                  <Label htmlFor="mode">Mode</Label>
+                  <Label htmlFor="mode">{t("Mode")}</Label>
                   <Select value={mode} onValueChange={setMode}>
                     <SelectTrigger id="mode"><SelectValue /></SelectTrigger>
                     <SelectContent>
@@ -122,32 +125,32 @@ export default function SearchPage() {
                 </div>
 
                 <div className="field">
-                  <Label htmlFor="workspace">Workspace</Label>
+                  <Label htmlFor="workspace">{t("Workspace")}</Label>
                   <Input id="workspace" value={workspace} onChange={(e) => setWorkspace(e.target.value)} />
-                  <span className="field-helper">Knowledge namespace and cost attribution scope.</span>
+                  <span className="field-helper">{t("Knowledge namespace and cost attribution scope.")}</span>
                 </div>
 
                 <div className="field">
-                  <Label htmlFor="requestId">Request id</Label>
-                  <Input id="requestId" value={requestId} onChange={(e) => setRequestId(e.target.value)} placeholder="Optional idempotency key" />
-                  <span className="field-helper">Replaying a key does not create a second bill.</span>
+                  <Label htmlFor="requestId">{t("Request id")}</Label>
+                  <Input id="requestId" value={requestId} onChange={(e) => setRequestId(e.target.value)} placeholder={t("Optional idempotency key")} />
+                  <span className="field-helper">{t("Replaying a key does not create a second bill.")}</span>
                 </div>
 
                 <div className="field">
-                  <Label htmlFor="maxQueries">Max external queries</Label>
+                  <Label htmlFor="maxQueries">{t("Max external queries")}</Label>
                   <Input id="maxQueries" type="number" min="0" max="20" value={maxQueries} onChange={(e) => setMaxQueries(e.target.value)} />
-                  <span className="field-helper">Hard cap on targeted gap queries.</span>
+                  <span className="field-helper">{t("Hard cap on targeted gap queries.")}</span>
                 </div>
 
                 <div className="field">
-                  <Label htmlFor="maxCost">Max total cost (USD)</Label>
+                  <Label htmlFor="maxCost">{t("Max total cost (USD)")}</Label>
                   <Input id="maxCost" type="number" min="0" step="0.001" value={maxCost} onChange={(e) => setMaxCost(e.target.value)} />
-                  <span className="field-helper">Budget exhaustion returns an explicit status.</span>
+                  <span className="field-helper">{t("Budget exhaustion returns an explicit status.")}</span>
                 </div>
               </div>
 
               <div className="form-actions">
-                <Button type="submit" loading={loading}>Run search</Button>
+                <Button type="submit" loading={loading}>{t("Run search")}</Button>
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <span className="inline-flex cursor-help items-center gap-1 text-[11px] text-muted-foreground">
@@ -171,7 +174,7 @@ export default function SearchPage() {
                     <div className="row-meta">
                       <LegacyBadge tone={statusTone(h.status)}>{h.status}</LegacyBadge>
                       <span>{h.path}</span>
-                      {h.trace ? <InlineLink href={`/traces?trace=${encodeURIComponent(h.trace)}`}>Inspect trace</InlineLink> : null}
+                      {h.trace ? <InlineLink href={`/traces?trace=${encodeURIComponent(h.trace)}`}>{t("Inspect trace")}</InlineLink> : null}
                     </div>
                   </div>
                 ))}
@@ -193,25 +196,25 @@ export default function SearchPage() {
               <Panel title="Decision" meta={<LegacyBadge tone={statusTone(response.status)}>{response.status ?? "unknown"}</LegacyBadge>}>
                 <Tabs defaultValue="summary">
                   <TabsList>
-                    <TabsTrigger value="summary">Summary</TabsTrigger>
-                    <TabsTrigger value="raw">Raw JSON</TabsTrigger>
+                    <TabsTrigger value="summary">{t("Summary")}</TabsTrigger>
+                    <TabsTrigger value="raw">{t("Raw JSON")}</TabsTrigger>
                   </TabsList>
                   <TabsContent value="summary" className="pt-3">
                     <div className="stack">
-                      <Kv label="Path" value={response.decision?.path ?? "--"} />
-                      <Kv label="Reason" value={response.decision?.reason ?? "--"} />
-                      <Kv label="Quality" value={response.quality?.status ?? "--"} />
-                      <Kv label="Freshness" value={response.quality?.freshness ?? "--"} />
-                      <Kv label="Coverage" value={response.quality?.coverage ?? "--"} />
-                      <Kv label="Estimated cost" value={`${micros(response.cost?.estimated === undefined ? undefined : Math.round(response.cost.estimated * 1_000_000))} ${response.cost?.currency ?? "USD"}`} />
-                      <Kv label="Task id" value={response.task_id ?? "--"} />
-                      <Kv label="Replayed" value={response.replayed ? "yes" : "no"} />
+                      <Kv label={t("Path")} value={response.decision?.path ?? "--"} />
+                      <Kv label={t("Reason")} value={response.decision?.reason ?? "--"} />
+                      <Kv label={t("Quality")} value={response.quality?.status ?? "--"} />
+                      <Kv label={t("Freshness")} value={response.quality?.freshness ?? "--"} />
+                      <Kv label={t("Coverage")} value={response.quality?.coverage ?? "--"} />
+                      <Kv label={t("Estimated cost")} value={`${micros(response.cost?.estimated === undefined ? undefined : Math.round(response.cost.estimated * 1_000_000))} ${response.cost?.currency ?? "USD"}`} />
+                      <Kv label={t("Task id")} value={response.task_id ?? "--"} />
+                      <Kv label={t("Replayed")} value={response.replayed ? "yes" : "no"} />
                     </div>
                     {response.warnings && response.warnings.length > 0 ? (
                       <div className="form-message">Warnings: {response.warnings.join(" / ")}</div>
                     ) : null}
                     {response.trace_id ? (
-                      <div className="mt-4"><InlineLink href={`/traces?trace=${encodeURIComponent(response.trace_id)}`}>Inspect decision trace</InlineLink></div>
+                      <div className="mt-4"><InlineLink href={`/traces?trace=${encodeURIComponent(response.trace_id)}`}>{t("Inspect decision trace")}</InlineLink></div>
                     ) : null}
                   </TabsContent>
                   <TabsContent value="raw" className="pt-3">
@@ -225,7 +228,7 @@ export default function SearchPage() {
                   <Empty title="No evidence returned" body="An insufficient or budget-exhausted task returns an explicit status instead of empty success." />
                 ) : (
                   <Table>
-                    <TableHeader><TableRow><TableHead>Result</TableHead><TableHead>Source</TableHead><TableHead>Score</TableHead></TableRow></TableHeader>
+                    <TableHeader><TableRow><TableHead>{t("Result")}</TableHead><TableHead>{t("Source")}</TableHead><TableHead>{t("Score")}</TableHead></TableRow></TableHeader>
                     <TableBody>
                       {response.results.map((item, i) => (
                         <TableRow key={`${item.url}-${i}`}>

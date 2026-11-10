@@ -1,0 +1,32 @@
+{
+  "case": "search_unsupported",
+  "method": "POST",
+  "path": "/search",
+  "body": {
+    "query": "latest ai news",
+    "topic": "news",
+    "include_answer": true,
+    "include_raw_content": true,
+    "include_images": true,
+    "chunks_per_source": 3,
+    "time_range": "week",
+    "country": "DE",
+    "include_favicon": true,
+    "include_usage": true
+  },
+  "expect": {
+    "status": 200,
+    "json_fields": ["query", "results", "unsupported_features", "answer", "response_time"],
+    "absent_fields": [],
+    "unsupported_features_contains": [
+      "include_answer",
+      "include_raw_content",
+      "include_images",
+      "chunks_per_source",
+      "time_range",
+      "country",
+      "include_favicon",
+      "include_usage"
+    ]
+  }
+}

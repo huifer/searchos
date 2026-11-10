@@ -1,0 +1,7 @@
+{
+  "case": "extract_empty",
+  "method": "POST",
+  "path": "/extract",
+  "body": { "urls": [] },
+  "expect": { "status": 400, "json_fields": ["error"], "absent_fields": [] }
+}

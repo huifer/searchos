@@ -1,0 +1,1302 @@
+# SearchOS Gateway API — OpenAPI 3.1 contract.
+#
+# This file is the frozen external contract. It is verified against the real
+# Axum route table by the Rust test `openapi_spec_matches_the_route_table`
+# (crates/searchos-interface-http), which fails when a documented path does
+# not exist or a registered route is not documented. Do not edit one without
+# the other.
+#
+# The same paths are mounted unversioned and under `/v1` (RFC-013 13.7); the
+# `servers` list documents both mounts instead of duplicating every path.
+
+openapi: 3.1.0
+info:
+  title: SearchOS Gateway API
+  version: 0.1.0
+  summary: Local-first AI search infrastructure gateway
+  description: |
+    SearchOS runs in two modes over the same core. Gateway Mode exposes this
+    HTTP API: quality-gated search, URL extraction, local data ingestion,
+    document lifecycle, namespaced memory, cost ledger, traces and the
+    Analytics Read Model that backs the operator console.
+
+    Every response is an explicit status envelope — partial or insufficient
+    results are never disguised as `completed`. Estimated costs are labelled
+    `is_estimate` and are never rewritten by billing reconciliation.
+
+    The browser console never reads operational tables; it goes through
+    `/api/v1/dashboard/*`.
+  license:
+    name: MIT
+  contact:
+    name: SearchOS
+servers:
+  - url: http://127.0.0.1:8787
+    description: unversioned mount
+  - url: http://127.0.0.1:8787/v1
+    description: versioned mount (RFC-013 13.7)
+tags:
+  - name: Search
+    description: Quality-gated search over local knowledge and external providers
+  - name: Knowledge
+    description: URL extraction, local ingestion and the document lifecycle
+  - name: Memory
+    description: Namespaced agent memory (workspace-isolated)
+  - name: Cost
+    description: Cost ledger, savings and budget reservations
+  - name: Observability
+    description: Traces, decisions, metrics and runtime status
+  - name: Analytics
+    description: RFC-026/027/028 Dashboard API over the Analytics Read Model
+security:
+  - bearerAuth: []
+paths:
+  /health:
+    get:
+      tags: [Observability]
+      summary: Liveness plus index consistency
+      security: []
+      responses:
+        '200':
+          description: Gateway is serving and the index is consistent.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+
+  /metrics:
+    get:
+      tags: [Observability]
+      summary: Prometheus metrics
+      description: |
+        Prometheus text exposition format 0.0.4 (`text/plain; version=0.0.4`).
+        Same authentication as every other endpoint — a scraper supplies the
+        bearer token.
+
+        The scrape carries both execution correctness (search, quality, cost,
+        provider, outbox counters plus the Part 30 invariant metrics) and
+        process health (`searchos_uptime_seconds`, `searchos_sse_active`,
+        `searchos_index_outbox_pending`, `searchos_schema_version`,
+        `searchos_build_info`). These are in-process counters; they are not a
+        substitute for an external monitor, but they are the same numbers the
+        console shows.
+      responses:
+        '200':
+          description: Prometheus text exposition.
+          content:
+            text/plain:
+              schema: { type: string }
+              example: |
+                # HELP searchos_search_requests_total Total search requests received
+                # TYPE searchos_search_requests_total counter
+                searchos_search_requests_total 42
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /search:
+    post:
+      tags: [Search]
+      summary: Execute a search
+      description: |
+        Local-first: answers are served from the local index and memory before
+        any external provider is called. The response status is explicit —
+        `partial` / `insufficient_evidence` are never reported as `completed`.
+
+        A Tavily-shaped body (`search_depth`, `topic`, `include_answer`,
+        `include_raw_content`, `include_domains`, `exclude_domains`, `days`, …)
+        is routed through the compatibility layer, which reports unsupported
+        knobs back in `unsupported_features` explicitly instead of silently
+        ignoring them. See `docs/tavily-compatibility.md` for the frozen subset.
+        The compatibility layer only engages when the body contains a Tavily
+        key; a plain `{ "query": ... }` body stays on the native contract.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchRequest'
+      responses:
+        '200':
+          description: Search completed (status is in the body).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchResponse'
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /extract:
+    post:
+      tags: [Knowledge]
+      summary: Fetch, extract and persist a URL
+      description: |
+        Native body: `{ "url": "...", "persist": true }`.
+
+        Tavily-shaped body: `{ "urls": [...] }`. SearchOS extracts **one URL
+        per call**: the first is honored, the rest are returned in
+        `failed_results` with an explicit reason. `extract_depth` / `format` /
+        `include_images` / `include_favicon` are reported in
+        `unsupported_features` rather than silently ignored.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - $ref: '#/components/schemas/ExtractRequest'
+                - $ref: '#/components/schemas/TavilyExtractRequest'
+      responses:
+        '200':
+          description: Extracted content, persisted unless `persist` is false.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: object
+                    additionalProperties: true
+                  - $ref: '#/components/schemas/TavilyExtractResponse'
+        '400': { $ref: '#/components/responses/ValidationError' }
+
+  /ingest:
+    post:
+      tags: [Knowledge]
+      summary: Import pasted or typed text
+      description: |
+        Feeds the same knowledge store as URL fetch: same versioning, chunking,
+        workspace isolation and rebuild path. Re-importing the same
+        `source_key` with unchanged content is a no-op (`changed: false`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IngestRequest'
+      responses:
+        '201':
+          description: Imported document.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IngestedDocument'
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '413': { $ref: '#/components/responses/ContentTooLarge' }
+
+  /ingest/file:
+    post:
+      tags: [Knowledge]
+      summary: Upload a text file
+      description: |
+        The client filename is a label only; it never touches the server
+        filesystem. Content is decoded as strict UTF-8.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+                workspace_id: { type: string }
+                source_key: { type: string }
+                title: { type: string }
+                content_type: { type: string }
+                language: { type: string }
+      responses:
+        '201':
+          description: Imported document.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IngestedDocument'
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '413': { $ref: '#/components/responses/ContentTooLarge' }
+
+  /ingest/batch:
+    post:
+      tags: [Knowledge]
+      summary: Import several documents in one call
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IngestBatchRequest'
+      responses:
+        '201':
+          description: Per-item outcomes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IngestBatchResult'
+        '400': { $ref: '#/components/responses/ValidationError' }
+
+  /ingest/jobs/{id}:
+    get:
+      tags: [Knowledge]
+      summary: Batch job status
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+      responses:
+        '200':
+          description: Job row plus one row per item.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  job: { $ref: '#/components/schemas/IngestJob' }
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/IngestJobItem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /documents:
+    get:
+      tags: [Knowledge]
+      summary: List documents
+      description: |
+        Live list, scoped to the caller's workspace. Soft-deleted rows are
+        hidden unless `status=deleted` is requested explicitly, which exposes
+        the audit trail.
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceId'
+        - name: source_type
+          in: query
+          description: '`web`, `local` (any local kind), or an exact local_ kind.'
+          schema: { type: string }
+        - name: status
+          in: query
+          description: Lifecycle status, e.g. `normalized`, `indexed`, `deleted`.
+          schema: { type: string }
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Document summaries with version and chunk counts.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  documents:
+                    type: array
+                    items: { $ref: '#/components/schemas/DocumentSummary' }
+    post:
+      tags: [Knowledge]
+      summary: Fetch and persist a URL
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url]
+              properties:
+                url: { type: string, format: uri }
+                workspace_id: { type: string }
+      responses:
+        '200':
+          description: Persisted document.
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+
+  /documents/{id}:
+    get:
+      tags: [Knowledge]
+      summary: Document detail
+      description: |
+        Returns the document, a lifecycle summary (status, version/chunk
+        counts), the current version and the full version history. A
+        soft-deleted document is `404`.
+      parameters:
+        - $ref: '#/components/parameters/DocumentId'
+      responses:
+        '200':
+          description: Document detail.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  document: { type: object, additionalProperties: true }
+                  summary: { $ref: '#/components/schemas/DocumentSummary' }
+                  current_version: { $ref: '#/components/schemas/DocumentVersion' }
+                  versions:
+                    type: array
+                    items: { $ref: '#/components/schemas/DocumentVersion' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Knowledge]
+      summary: Soft-delete a document
+      description: |
+        Soft delete plus chunk removal and full-text index removal (RFC-006
+        6.7). The deletion is applied immediately, so the document is
+        verifiably unsearchable afterwards. The row stays reachable through
+        `GET /documents?status=deleted`.
+      parameters:
+        - $ref: '#/components/parameters/DocumentId'
+      responses:
+        '200':
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted: { type: boolean }
+                  document_id: { type: string }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /documents/{id}/versions:
+    get:
+      tags: [Knowledge]
+      summary: Version history
+      parameters:
+        - $ref: '#/components/parameters/DocumentId'
+      responses:
+        '200':
+          description: Immutable content versions, newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  document: { $ref: '#/components/schemas/DocumentSummary' }
+                  versions:
+                    type: array
+                    items: { $ref: '#/components/schemas/DocumentVersion' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /documents/{id}/reindex:
+    post:
+      tags: [Knowledge]
+      summary: Re-index a document
+      description: |
+        Rewrites only the full-text index entries. Metadata, the version row
+        and the chunk rows are never rewritten, so the version count is
+        unchanged.
+      parameters:
+        - $ref: '#/components/parameters/DocumentId'
+      responses:
+        '200':
+          description: Re-indexed chunk count.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  document_id: { type: string }
+                  reindexed: { type: integer, minimum: 0 }
+                  version_count: { type: integer, minimum: 0 }
+                  chunk_count: { type: integer, minimum: 0 }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /documents/search:
+    post:
+      tags: [Knowledge]
+      summary: Find documents by URL or title
+      description: Metadata lookup over the document store, workspace-scoped.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [query]
+              properties:
+                query: { type: string }
+                workspace_id: { type: string }
+                limit: { type: integer, default: 20, minimum: 1, maximum: 100 }
+      responses:
+        '200':
+          description: Matching documents.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  documents:
+                    type: array
+                    items: { $ref: '#/components/schemas/DocumentSummary' }
+
+  /memory/search:
+    post:
+      tags: [Memory]
+      summary: Search namespaced agent memory
+      description: |
+        Entries are visible only to the reading namespace (RFC-013 13.5).
+        Retrieval is embedding plus BM25 fused with reciprocal rank fusion.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [query]
+              properties:
+                query: { type: string }
+                workspace_id: { type: string }
+                top_k: { type: integer, default: 10 }
+      responses:
+        '200':
+          description: Ranked memory hits.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items: { $ref: '#/components/schemas/MemoryHit' }
+
+  /cost/summary:
+    get:
+      tags: [Cost]
+      summary: Cost ledger summary
+      description: Estimated and actual totals; `is_estimate` is true until real bill data is reconciled.
+      responses:
+        '200':
+          description: Cost summary.
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+
+  /cost/providers:
+    get:
+      tags: [Cost]
+      summary: Per-provider cost breakdown
+      responses:
+        '200':
+          description: Provider rows.
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+
+  /cost/savings:
+    get:
+      tags: [Cost]
+      summary: Savings report against an external-only baseline
+      responses:
+        '200':
+          description: Savings report.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SavingsReport' }
+
+  /cost/reservations:
+    get:
+      tags: [Cost]
+      summary: Budget reservation ledger
+      description: Reserve → execute → settle. Estimates are never rewritten.
+      responses:
+        '200':
+          description: Reservations.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  reservations:
+                    type: array
+                    items: { type: object, additionalProperties: true }
+
+  /cost/reconcile:
+    post:
+      tags: [Cost]
+      summary: Import a provider bill line
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [cost_event_id, actual_cost_micros, source, currency]
+              properties:
+                cost_event_id: { type: string }
+                actual_cost_micros: { type: integer, format: int64 }
+                source: { type: string }
+                currency: { type: string, default: USD }
+      responses:
+        '200': { description: Reconciled. }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /stats/search:
+    get:
+      tags: [Observability]
+      summary: Search metrics snapshot
+      responses:
+        '200':
+          description: In-process metrics (local diagnostics, not an external monitor).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MetricsSnapshot' }
+
+  /stats/savings:
+    get:
+      tags: [Cost]
+      summary: Savings and reuse-cost views
+      responses:
+        '200':
+          description: Savings report.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SavingsReport' }
+
+  /stats/retrieval:
+    get:
+      tags: [Observability]
+      summary: Retrieval statistics
+      responses:
+        '200':
+          description: Retrieval counters.
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+
+  /decisions/{trace_id}:
+    get:
+      tags: [Observability]
+      summary: Decision trace
+      parameters:
+        - $ref: '#/components/parameters/TraceId'
+      responses:
+        '200':
+          description: Structured stage trace.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DecisionTrace' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /trace/{trace_id}:
+    get:
+      tags: [Observability]
+      summary: Decision trace (alias)
+      parameters:
+        - $ref: '#/components/parameters/TraceId'
+      responses:
+        '200':
+          description: Structured stage trace.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DecisionTrace' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /traces:
+    get:
+      tags: [Observability]
+      summary: Recent decision traces
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 20, minimum: 1, maximum: 200 }
+      responses:
+        '200':
+          description: Trace list.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  traces:
+                    type: array
+                    items: { $ref: '#/components/schemas/DecisionTrace' }
+
+  /system/status:
+    get:
+      tags: [Observability]
+      summary: Runtime status
+      responses:
+        '200':
+          description: Runtime status.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SystemStatus' }
+
+  /profiles:
+    get:
+      tags: [Search]
+      summary: List search profiles
+      responses:
+        '200':
+          description: Profiles.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  profiles:
+                    type: array
+                    items: { type: object, additionalProperties: true }
+
+  /profiles/{id}:
+    get:
+      tags: [Search]
+      summary: Inspect one search profile
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Profile.
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/dashboard/overview:
+    get:
+      tags: [Analytics]
+      summary: Overview Read Model
+      description: |
+        Unfiltered requests reuse the precomputed Read Model and report
+        `meta.query_mode: precomputed`; any time range, interval, workspace,
+        agent, mode, provider or quality filter is pushed into SQL and reports
+        `meta.query_mode: sql`. Filters a view cannot apply are listed in
+        `meta.ignored_filters` with a reason — never silently dropped.
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceId'
+        - $ref: '#/components/parameters/TimeRange'
+        - $ref: '#/components/parameters/Interval'
+      responses:
+        '200':
+          description: Overview KPIs with denominators and definitions.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: object, additionalProperties: true }
+                  meta: { $ref: '#/components/schemas/DashboardMeta' }
+
+  /api/v1/dashboard/search/summary:
+    get:
+      tags: [Analytics]
+      summary: Search requests Read Model
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceId'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200': { description: Read Model envelope. }
+  /api/v1/dashboard/search/requests:
+    get:
+      tags: [Analytics]
+      summary: Search requests Read Model (alias)
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceId'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200': { description: Read Model envelope. }
+  /api/v1/dashboard/search/timeseries:
+    get:
+      tags: [Analytics]
+      summary: Search activity time series
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceId'
+        - $ref: '#/components/parameters/TimeRange'
+        - $ref: '#/components/parameters/Interval'
+      responses:
+        '200': { description: Read Model envelope. }
+  /api/v1/dashboard/search/strategies:
+    get:
+      tags: [Analytics]
+      summary: Final-strategy distribution
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceId'
+      responses:
+        '200': { description: Read Model envelope. }
+  /api/v1/dashboard/cost/summary:
+    get:
+      tags: [Analytics]
+      summary: Cost breakdown Read Model
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceId'
+      responses:
+        '200': { description: Read Model envelope. }
+  /api/v1/dashboard/cost/breakdown:
+    get:
+      tags: [Analytics]
+      summary: Cost breakdown Read Model (alias)
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceId'
+      responses:
+        '200': { description: Read Model envelope. }
+  /api/v1/dashboard/cost/savings:
+    get:
+      tags: [Analytics]
+      summary: Cost breakdown Read Model (alias)
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceId'
+      responses:
+        '200': { description: Read Model envelope. }
+  /api/v1/dashboard/knowledge/summary:
+    get:
+      tags: [Analytics]
+      summary: Knowledge growth Read Model
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceId'
+      responses:
+        '200': { description: Read Model envelope. }
+  /api/v1/dashboard/knowledge/documents:
+    get:
+      tags: [Analytics]
+      summary: Knowledge growth Read Model (alias)
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceId'
+      responses:
+        '200': { description: Read Model envelope. }
+  /api/v1/dashboard/knowledge/freshness:
+    get:
+      tags: [Analytics]
+      summary: Document freshness Read Model
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceId'
+      responses:
+        '200': { description: Read Model envelope; freshness buckets are null until instrumented. }
+  /api/v1/dashboard/quality/summary:
+    get:
+      tags: [Analytics]
+      summary: Quality dimensions Read Model
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceId'
+      responses:
+        '200': { description: Read Model envelope. }
+  /api/v1/dashboard/quality/dimensions:
+    get:
+      tags: [Analytics]
+      summary: Quality dimensions Read Model (alias)
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceId'
+      responses:
+        '200': { description: Read Model envelope. }
+  /api/v1/dashboard/quality/failures:
+    get:
+      tags: [Analytics]
+      summary: Quality dimensions Read Model (alias)
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceId'
+      responses:
+        '200': { description: Read Model envelope. }
+  /api/v1/dashboard/providers:
+    get:
+      tags: [Analytics]
+      summary: Provider usage Read Model
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceId'
+      responses:
+        '200': { description: Read Model envelope. }
+  /api/v1/dashboard/crawlers/summary:
+    get:
+      tags: [Analytics]
+      summary: Crawler summary Read Model
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceId'
+      responses:
+        '200': { description: Read Model envelope. }
+  /api/v1/dashboard/infrastructure/summary:
+    get:
+      tags: [Analytics]
+      summary: Infrastructure Read Model
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceId'
+      responses:
+        '200': { description: Read Model envelope; unmeasured resources are null, not zero. }
+
+  /api/v1/dashboard/export:
+    get:
+      tags: [Analytics]
+      summary: Export the Overview Read Model
+      parameters:
+        - name: format
+          in: query
+          schema: { type: string, enum: [json, csv], default: json }
+      responses:
+        '200':
+          description: JSON envelope or CSV, per `format`.
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+            text/csv:
+              schema: { type: string }
+
+  /api/v1/dashboard/events:
+    get:
+      tags: [Analytics]
+      summary: Realtime refetch hint (SSE)
+      description: |
+        One-way event stream. SSE is a hint to refetch the Read Model, never
+        the source of historical truth.
+      responses:
+        '200':
+          description: The text/event-stream stream carries analytics.events events.
+          content:
+            text/event-stream:
+              schema: { type: string }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: Set when server.auth_token is configured; empty disables auth for local dev.
+  parameters:
+    WorkspaceId:
+      name: workspace_id
+      in: query
+      required: false
+      schema: { type: string }
+      description: Defaults to `default`; a token-bound deployment overrides it.
+    DocumentId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+    JobId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+    TraceId:
+      name: trace_id
+      in: path
+      required: true
+      schema: { type: string }
+    TimeRange:
+      name: from
+      in: query
+      required: false
+      schema: { type: string, format: date-time }
+      description: RFC3339 (`Z` or numeric offset); normalized to UTC server-side.
+    Interval:
+      name: interval
+      in: query
+      required: false
+      schema: { type: string, enum: [minute, hour, day, week, month], default: day }
+    Limit:
+      name: limit
+      in: query
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 500, default: 50 }
+  responses:
+    ValidationError:
+      description: Request rejected before execution.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unauthorized:
+      description: Missing or invalid bearer token.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    RateLimited:
+      description: Too many requests.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: Resource does not exist or is not visible to the caller's workspace.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    ContentTooLarge:
+      description: Document exceeds the configured ingest bound.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string }
+            message: { type: string }
+    Health:
+      type: object
+      properties:
+        status: { type: string, example: ok }
+        version: { type: string, example: 0.1.0 }
+        index:
+          type: object
+          properties:
+            fulltext_backend: { type: string }
+            fulltext_chunks: { type: integer }
+            tantivy_chunks: { type: integer }
+            sqlite_chunks: { type: integer }
+            consistent: { type: boolean }
+        providers:
+          type: array
+          items: { type: string }
+    SearchRequest:
+      type: object
+      required: [query]
+      properties:
+        query: { type: string }
+        mode:
+          type: string
+          enum: [local-only, local-first, hybrid, external-only, external-first]
+          default: local-first
+        profile: { type: string }
+        workspace_id: { type: string }
+        request_id:
+          type: string
+          description: Idempotency key; replaying it must not create a second task, call or bill.
+        max_results: { type: integer, minimum: 1 }
+        max_external_queries: { type: integer, minimum: 0 }
+        max_total_cost: { type: number, format: double }
+    SearchResponse:
+      type: object
+      required: [query, results, status]
+      properties:
+        query: { type: string }
+        status:
+          type: string
+          enum: [completed, completed_with_warnings, partial, insufficient_evidence, budget_exhausted, failed, cancelled]
+        decision:
+          type: object
+          properties:
+            path: { type: string }
+            reason: { type: string }
+        results:
+          type: array
+          items: { $ref: '#/components/schemas/SearchResultItem' }
+        quality:
+          type: object
+          properties:
+            status: { type: string, enum: [passed, partial, failed, conflict, unknown] }
+            freshness: { type: string }
+            coverage: { type: string }
+            score: { type: number, format: float }
+            failed_constraints:
+              type: array
+              items: { type: string }
+        cost:
+          type: object
+          properties:
+            estimated: { type: integer, format: int64 }
+            actual: { type: integer, format: int64, nullable: true }
+            currency: { type: string }
+        provenance:
+          type: array
+          items: { type: object, additionalProperties: true }
+        warnings:
+          type: array
+          items: { type: string }
+        trace_id: { type: string }
+        task_id: { type: string, nullable: true }
+        replayed: { type: boolean }
+        # Present only when the request was routed through the Tavily
+        # compatibility layer. Always an array, possibly empty.
+        unsupported_features:
+          type: array
+          items: { type: string }
+        # Tavily compatibility: always null (SearchOS never fabricates an answer).
+        answer: { type: string, nullable: true }
+        response_time: { type: number, format: double }
+    SearchResultItem:
+      type: object
+      properties:
+        title: { type: string, nullable: true }
+        url: { type: string }
+        content: { type: string }
+        score: { type: number, format: float }
+        published_at: { type: string, nullable: true }
+        source: { type: string }
+    ExtractRequest:
+      type: object
+      required: [url]
+      properties:
+        url: { type: string, format: uri }
+        workspace_id: { type: string }
+        persist: { type: boolean, default: true }
+    TavilyExtractRequest:
+      type: object
+      required: [urls]
+      properties:
+        urls:
+          type: array
+          items: { type: string, format: uri }
+        extract_depth: { type: string, enum: [basic, advanced] }
+        format: { type: string, enum: [markdown, text] }
+        include_images: { type: boolean }
+        include_favicon: { type: boolean }
+        workspace_id: { type: string }
+    TavilyExtractResponse:
+      type: object
+      properties:
+        results:
+          type: array
+          items:
+            type: object
+            properties:
+              url: { type: string }
+              title: { type: string, nullable: true }
+              raw_content: { type: string, nullable: true }
+        failed_results:
+          type: array
+          items:
+            type: object
+            properties:
+              url: { type: string }
+              error: { type: string }
+        unsupported_features:
+          type: array
+          items: { type: string }
+        response_time: { type: number, format: double }
+    IngestRequest:
+      type: object
+      required: [content]
+      properties:
+        content: { type: string }
+        source_key: { type: string }
+        title: { type: string }
+        content_type: { type: string }
+        language: { type: string }
+        workspace_id: { type: string }
+        metadata: { type: object, additionalProperties: true }
+    IngestBatchRequest:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/IngestRequest' }
+        directory:
+          type: object
+          properties:
+            files:
+              type: array
+              items:
+                type: object
+                required: [file_name, content]
+                properties:
+                  file_name: { type: string }
+                  content: { type: string }
+                  source_key: { type: string }
+                  title: { type: string }
+                  content_type: { type: string }
+                  language: { type: string }
+            recursive: { type: boolean }
+            extensions:
+              type: array
+              items: { type: string }
+    IngestedDocument:
+      type: object
+      properties:
+        document_id: { type: string }
+        version_id: { type: string }
+        canonical_url: { type: string }
+        source_type: { type: string, enum: [web, local_text, local_file, local_directory, local_mixed] }
+        content_hash: { type: string }
+        changed: { type: boolean }
+        title: { type: string, nullable: true }
+        chunk_count: { type: integer }
+        status: { type: string }
+    IngestBatchResult:
+      type: object
+      properties:
+        job_id: { type: string }
+        state: { type: string, enum: [pending, running, completed, partial, failed] }
+        total_items: { type: integer }
+        ok_items: { type: integer }
+        failed_items: { type: integer }
+        documents:
+          type: array
+          items: { $ref: '#/components/schemas/IngestedDocument' }
+        failures:
+          type: array
+          items: { $ref: '#/components/schemas/IngestFailure' }
+    IngestFailure:
+      type: object
+      properties:
+        source_key: { type: string }
+        error: { type: string }
+    IngestJob:
+      type: object
+      properties:
+        id: { type: string }
+        workspace_id: { type: string }
+        source_type: { type: string }
+        state: { type: string }
+        total_items: { type: integer }
+        ok_items: { type: integer }
+        failed_items: { type: integer }
+        error_detail: { type: string, nullable: true }
+        created_at: { type: string }
+        finished_at: { type: string, nullable: true }
+    IngestJobItem:
+      type: object
+      properties:
+        id: { type: string }
+        job_id: { type: string }
+        source_key: { type: string }
+        state: { type: string }
+        document_id: { type: string, nullable: true }
+        error_detail: { type: string, nullable: true }
+    DocumentSummary:
+      type: object
+      properties:
+        id: { type: string }
+        source_id: { type: string }
+        canonical_url: { type: string }
+        current_version_id: { type: string, nullable: true }
+        title: { type: string, nullable: true }
+        content_type: { type: string }
+        language: { type: string, nullable: true }
+        source_type: { type: string }
+        status: { type: string, enum: [discovered, fetched, normalized, indexed, deleted] }
+        workspace_id: { type: string }
+        version_count: { type: integer }
+        chunk_count: { type: integer }
+        created_at: { type: string }
+        updated_at: { type: string }
+    DocumentVersion:
+      type: object
+      properties:
+        id: { type: string }
+        document_id: { type: string }
+        content_hash: { type: string }
+        raw_content_ref: { type: string }
+        markdown_ref: { type: string, nullable: true }
+        published_at: { type: string, nullable: true }
+        fetched_at: { type: string }
+        extractor_version: { type: string }
+        crawler_version: { type: string, nullable: true }
+    MemoryHit:
+      type: object
+      properties:
+        entry:
+          type: object
+          properties:
+            id: { type: string }
+            title: { type: string }
+            content: { type: string }
+            url: { type: string, nullable: true }
+        score: { type: number, format: float }
+    SavingsReport:
+      type: object
+      properties:
+        currency: { type: string }
+        task_count: { type: integer }
+        baseline_micros: { type: integer }
+        searchos_micros: { type: integer }
+        savings_micros: { type: integer }
+        savings_rate: { type: number, format: float }
+        quality_passing_tasks: { type: integer }
+        cost_per_quality_passing_answer_micros: { type: integer, nullable: true }
+        external_avoidance_rate: { type: number, format: float }
+        valid_local_resolution_rate: { type: number, format: float }
+        external_calls: { type: integer }
+        local_resolved_tasks: { type: integer }
+        reuse_views:
+          type: object
+          properties:
+            original_acquisition_micros: { type: integer }
+            reuse_execution_micros: { type: integer }
+            amortized_micros: { type: integer }
+            marginal_micros: { type: integer }
+        is_estimate: { type: boolean }
+    MetricsSnapshot:
+      type: object
+      description: In-process counters; local diagnostics, not an external monitor.
+      additionalProperties: true
+    DecisionTrace:
+      type: object
+      properties:
+        trace_id: { type: string }
+        task_id: { type: string }
+        intents:
+          type: array
+          items: { type: string }
+        profile_version: { type: string }
+        local_candidates: { type: integer }
+        accepted_candidates: { type: integer }
+        freshness_status: { type: string }
+        coverage_status: { type: string }
+        source_status: { type: string }
+        selected_path: { type: string }
+        rejection_reasons:
+          type: array
+          items: { type: string }
+        estimated_cost:
+          type: object
+          properties:
+            amount_micros: { type: integer }
+            currency: { type: string }
+        actual_cost:
+          type: object
+          nullable: true
+          properties:
+            amount_micros: { type: integer }
+            currency: { type: string }
+        decision_at: { type: string }
+        stages:
+          type: array
+          items:
+            type: object
+            properties:
+              stage: { type: string }
+              status: { type: string }
+              started_at_ms: { type: integer }
+              duration_ms: { type: integer }
+              input_summary: { type: string }
+              output_summary: { type: string }
+              reasons:
+                type: array
+                items: { type: string }
+        final_strategy: { type: string, nullable: true }
+        final_outcome: { type: string, nullable: true }
+    SystemStatus:
+      type: object
+      properties:
+        version: { type: string }
+        api_version: { type: string }
+        config_version: { type: integer }
+        schema_version: { type: integer }
+        database_ok: { type: boolean }
+        index:
+          type: object
+          properties:
+            tantivy_chunks: { type: integer }
+            sqlite_chunks: { type: integer }
+            consistent: { type: boolean }
+        providers:
+          type: array
+          items: { type: string }
+        crawlers: { type: integer }
+        extensions: { type: integer }
+        auth_required: { type: boolean }
+        rate_limit_per_minute: { type: integer }
+    DashboardMeta:
+      type: object
+      properties:
+        generated_at: { type: string }
+        time_range:
+          type: object
+          properties:
+            from: { type: string, nullable: true }
+            to: { type: string, nullable: true }
+            timezone: { type: string }
+        interval: { type: string }
+        aggregation_version: { type: string }
+        data_freshness: { type: string, enum: [complete, fresh, live, stale, empty] }
+        query_mode:
+          type: string
+          enum: [precomputed, sql]
+          description: precomputed = stored Read Model reused; sql = predicates pushed into a live query.
+        applied_filters:
+          type: array
+          items: { type: string }
+        ignored_filters:
+          type: array
+          items:
+            type: object
+            properties:
+              filter: { type: string }
+              reason: { type: string }
+        refresh_skipped: { type: boolean }
+        model_age_seconds: { type: integer, nullable: true }
+        workspace_scope: { type: string }

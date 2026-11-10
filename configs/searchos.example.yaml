@@ -69,11 +69,15 @@ ingest:
 memory:
   enabled: true
   embedding:
-    provider: local           # local | remote
-    model: bge-m3
+    # v0.1.0 ships a deterministic local HashingEmbedder. A non-local provider
+    # logs a warning and falls back; no remote embedding model is wired yet.
+    provider: local           # local | remote (remote = fallback + warning)
+    model: bge-m3             # label only; the local embedder is model-free
 
 intelligence:
   query_expansion: true
+  # Gates the RRF result cache. Reranking itself does not run by default
+  # (RFC-007 7.7): no Reranker provider is attached in v0.1.0.
   reranking: true
   answer_generation: false
 
@@ -111,6 +115,15 @@ observability:
   log_level: warn
   trace_retention_days: 30
   metrics_enabled: true
+  # OpenTelemetry OTLP/HTTP export (off by default). GET /metrics is always
+  # available with Prometheus text; OTLP is an additional, opt-in exporter.
+  # Secrets (collector tokens) go in SEARCHOS_OTLP_HEADERS, never in this file.
+  otlp_enabled: false
+  otlp_endpoint: http://127.0.0.1:4318
+  otlp_service_name: searchos
+  otlp_metrics_interval_seconds: 15
+  otlp_export_traces: true
+  otlp_export_metrics: true
 
 providers:
   tavily:

@@ -11,7 +11,7 @@ Services, never only in an HTTP handler**, so Local Mode and Gateway Mode behave
 ```text
 ┌──────────────────────────────────────────┐
 │              Interface Layer             │
-│  CLI   ·   Rust SDK   ·   MCP   ·   HTTP API │
+│  CLI   ·   Rust lib   ·   MCP   ·   HTTP API │
 └──────────────────┬───────────────────────┘
                    │
 ┌──────────────────▼───────────────────────┐
@@ -34,7 +34,7 @@ Services, never only in an HTTP handler**, so Local Mode and Gateway Mode behave
 
 | Module | Responsibility |
 |---|---|
-| Interface | CLI, HTTP, MCP, SDK |
+| Interface | CLI, HTTP, MCP stdio, SDK |
 | Application | use-case orchestration and entry points |
 | Core | search, routing, memory, retrieval |
 | Extension | site/provider/capability extensions |
@@ -47,10 +47,27 @@ Modules communicate only through explicit Traits and data contracts.
 
 | Capability | Local Mode | Gateway Mode |
 |---|---|---|
-| Entry | CLI / Rust SDK / MCP stdio | HTTP API / remote MCP |
+| Entry | CLI / Rust workspace crates / MCP stdio | HTTP API |
 | Tavily API | not needed | supported |
 | Multi-user / Multi-node | not primary | supported |
 | Hard constraint | in-process Core, no HTTP loopback | handlers are thin transport only |
+
+**MCP is stdio-only in v1 (ADR-031).** The gateway does not expose an MCP
+route; remote agents use the REST/Tavily surface. The rationale, the stdio
+contract and the gates that keep this honest are in [`docs/mcp.md`](mcp.md).
+
+## Process lifecycle
+
+| Signal | Behaviour |
+|---|---|
+| `SIGTERM` / `SIGINT` (first) | Stop accepting, drain in-flight requests, terminate SSE streams, flush the outbox once, exit `0` |
+| Second signal | Force an immediate exit (recovery path for a wedged process) |
+| SSE stream | Subscribes to the shutdown signal, so it cannot pin the connection drain |
+| Outbox worker | Ticks every 1.5 s and performs one final drain on shutdown |
+
+`GET /metrics` exports the same in-process counters the console shows, in
+Prometheus text exposition 0.0.4. See
+[`docs/api/http.md`](api/http.md#prometheus-metrics-get-metrics).
 
 ## Search Pipeline
 

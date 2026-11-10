@@ -1,5 +1,13 @@
-# SearchOS Feature 补充行程文档
+# SearchOS Feature 补充行程文档（历史规划资料 / Historical planning artifact）
 
+> **STATUS (2026-11): CLOSED.** Every Wave 0–4 item in this document has been
+> implemented and verified. It is retained for the rationale, phasing and
+> non-goals, **not** as a current status list. The authoritative status is the
+> completion audit in `.memory/searchos-project.md`, the CI gates in
+> `.github/workflows/ci.yml` / `tests/README.md`, and `docs/deployment.md`.
+> Wave 1–2 descriptions below
+> are stale (they predate the Part 30 execution-correctness pass).
+>
 > 目标：把当前 SearchOS 从主链路可运行，推进到执行正确、契约可信、可发布、可持续扩展。
 > 评估时间：2026-11-09（Asia/Shanghai）。评估期间同一工作树存在并行修改，以下状态以写入前的最新代码为准。
 
@@ -113,10 +121,14 @@
 - 生成 TypeScript/Python client；Rust SDK 封装 core 或 HTTP client。
 - CI 对 OpenAPI 与实际路由做 drift check。
 
-### 11. MCP 口径与长任务
-- 先裁决 architecture.md 的 remote MCP 与 part-22 的 stdio-only 冲突。
-- 若只做 stdio，修正文档；若支持 remote，则增加 streamable HTTP、session、progress、cancel。
-- 不要静默丢弃 notifications/cancelled。
+### 11. MCP 口径与长任务 — DONE (ADR-031)
+- 裁决结果：**v1 只做 stdio**。`docs/architecture.md` 的 "HTTP API / remote MCP"
+  与 README 的 "REST + MCP" 已修正；契约落在 `docs/mcp.md`，理由与代价见 ADR-031。
+- 远程入口是 REST/Tavily 面，本地入口是 `searchos mcp`；两者调用同一套应用服务。
+- `notifications/cancelled` 不再静默丢弃：计数 `mcp.cancellation_unsupported_total`
+  并向 stderr 记录（v1 内联处理请求，无在途工作可取消）。
+- 门禁：`tests/compatibility/tests/mcp_transport.rs`（传输声明、MCP crate 无 HTTP
+  服务端依赖、网关无 MCP 路由、取消被确认、文档不得宣称远程 MCP、工具目录稳定）。
 
 ### 12. Console knowledge/ingest
 - Knowledge 页面加入 text/file/dir ingest、job status、失败项、重试。

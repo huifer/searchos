@@ -33,6 +33,8 @@ pub struct SearchOsConfig {
 #[serde(default)]
 pub struct IntelligenceConfig {
     pub query_expansion: bool,
+    /// Gates the RRF result cache (not a model reranker). No `Reranker`
+    /// provider is attached in v0.1.0; RFC-007 7.7 leaves reranking off by default.
     pub reranking: bool,
     /// SearchOS returns evidence, never a fabricated final answer.
     pub answer_generation: bool,
@@ -160,6 +162,19 @@ pub struct ObservabilityConfig {
     pub log_level: String,
     pub trace_retention_days: u32,
     pub metrics_enabled: bool,
+    /// Opt-in OTLP/HTTP export. Off by default: no exporter, no background
+    /// thread and no network call when disabled.
+    pub otlp_enabled: bool,
+    /// Collector base URL, e.g. http://localhost:4318.
+    pub otlp_endpoint: String,
+    /// service.name resource attribute.
+    pub otlp_service_name: String,
+    /// `k=v,k2=v2` extra HTTP headers (e.g. an auth token). Secrets never
+    /// appear in config files or logs; use SEARCHOS_OTLP_HEADERS instead.
+    pub otlp_headers: String,
+    pub otlp_metrics_interval_seconds: u64,
+    pub otlp_export_traces: bool,
+    pub otlp_export_metrics: bool,
 }
 impl Default for ObservabilityConfig {
     fn default() -> Self {
@@ -167,6 +182,30 @@ impl Default for ObservabilityConfig {
             log_level: "warn".into(),
             trace_retention_days: 30,
             metrics_enabled: true,
+            otlp_enabled: false,
+            otlp_endpoint: "http://127.0.0.1:4318".into(),
+            otlp_service_name: "searchos".into(),
+            otlp_headers: String::new(),
+            otlp_metrics_interval_seconds: 15,
+            otlp_export_traces: true,
+            otlp_export_metrics: true,
+        }
+    }
+}
+
+impl ObservabilityConfig {
+    /// Builds the plain OTLP config consumed by the observability crate.
+    /// Header values come from the environment in practice; parsing happens
+    /// here so secrets are never echoed in validation errors.
+    pub fn otlp_config(&self) -> searchos_observability::OtlpConfig {
+        searchos_observability::OtlpConfig {
+            enabled: self.otlp_enabled,
+            endpoint: self.otlp_endpoint.clone(),
+            service_name: self.otlp_service_name.clone(),
+            headers: searchos_observability::otlp::parse_headers(&self.otlp_headers),
+            metrics_interval_seconds: self.otlp_metrics_interval_seconds,
+            export_traces: self.otlp_export_traces,
+            export_metrics: self.otlp_export_metrics,
         }
     }
 }
@@ -454,6 +493,10 @@ pub const ENV_TAVILY_KEYS: &str = "TAVILY_API_KEYS";
 pub const ENV_BRAVE_KEYS: &str = "BRAVE_API_KEYS";
 pub const ENV_CONFIG_PATH: &str = "SEARCHOS_CONFIG";
 pub const ENV_AUTH_TOKEN: &str = "SEARCHOS_AUTH_TOKEN";
+pub const ENV_OTLP_ENABLED: &str = "SEARCHOS_OTLP_ENABLED";
+pub const ENV_OTLP_ENDPOINT: &str = "SEARCHOS_OTLP_ENDPOINT";
+pub const ENV_OTLP_SERVICE_NAME: &str = "SEARCHOS_OTLP_SERVICE_NAME";
+pub const ENV_OTLP_HEADERS: &str = "SEARCHOS_OTLP_HEADERS";
 
 impl SearchOsConfig {
     /// Loads config from `~/.searchos/config/config.yaml` (or
@@ -639,6 +682,13 @@ pub const ALL_CONFIG_FIELDS: &[&str] = &[
     "observability.log_level",
     "observability.trace_retention_days",
     "observability.metrics_enabled",
+    "observability.otlp_enabled",
+    "observability.otlp_endpoint",
+    "observability.otlp_service_name",
+    "observability.otlp_headers",
+    "observability.otlp_metrics_interval_seconds",
+    "observability.otlp_export_traces",
+    "observability.otlp_export_metrics",
     "providers.tavily.enabled",
     "providers.tavily.priority",
     "providers.tavily.api_keys",
@@ -720,6 +770,13 @@ pub const CONSUMED_CONFIG_FIELDS: &[&str] = &[
     "observability.log_level",
     "observability.trace_retention_days",
     "observability.metrics_enabled",
+    "observability.otlp_enabled",
+    "observability.otlp_endpoint",
+    "observability.otlp_service_name",
+    "observability.otlp_headers",
+    "observability.otlp_metrics_interval_seconds",
+    "observability.otlp_export_traces",
+    "observability.otlp_export_metrics",
     "providers.tavily.enabled",
     "providers.tavily.priority",
     "providers.tavily.api_keys",
@@ -785,6 +842,9 @@ impl SearchOsConfig {
         }
         if self.security.max_redirects > 20 {
             errors.push("security.max_redirects must be <= 20".into());
+        }
+        if let Err(message) = self.observability.otlp_config().validate() {
+            errors.push(format!("observability: {message}"));
         }
         if !self.server.workspace_tokens.is_empty() && self.server.auth_token.is_empty() {
             errors.push("server.workspace_tokens requires server.auth_token".into());
@@ -858,15 +918,53 @@ impl SearchOsConfig {
 
     /// Effective config: file + env overrides applied.
     pub fn effective(mut self) -> Self {
-        if let Ok(dir) = std::env::var(ENV_DATA_DIR) {
-            if !dir.trim().is_empty() {
-                self.app.data_dir = PathBuf::from(dir);
-            }
-        }
-        if let Ok(token) = std::env::var(ENV_AUTH_TOKEN) {
-            self.server.auth_token = token;
-        }
+        apply_env_overrides(&mut self);
         self
+    }
+}
+
+/// Applies environment overrides to a parsed config.
+///
+/// This is the single place env wins over the file. `load_config_report_full`
+/// calls it on the real load path; `effective()` exposes it for callers that
+/// build a config in memory. Secrets (bearer token, collector headers) are
+/// env-only by design and are never echoed.
+pub fn apply_env_overrides(cfg: &mut SearchOsConfig) {
+    if let Ok(dir) = std::env::var(ENV_DATA_DIR) {
+        if !dir.trim().is_empty() {
+            cfg.app.data_dir = PathBuf::from(dir);
+        }
+    }
+    if let Ok(token) = std::env::var(ENV_AUTH_TOKEN) {
+        cfg.server.auth_token = token;
+    }
+    // OTLP is env-first: collector tokens must not live in the config file.
+    if let Ok(value) = std::env::var(ENV_OTLP_ENABLED) {
+        let value = value.trim().to_ascii_lowercase();
+        if matches!(value.as_str(), "1" | "true" | "yes" | "on") {
+            cfg.observability.otlp_enabled = true;
+        } else if matches!(value.as_str(), "0" | "false" | "no" | "off") {
+            cfg.observability.otlp_enabled = false;
+        }
+    }
+    if let Ok(value) = std::env::var(ENV_OTLP_ENDPOINT) {
+        if !value.trim().is_empty() {
+            cfg.observability.otlp_endpoint = value;
+        }
+    } else if let Ok(value) = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT") {
+        // Standard OTEL env var, for collectors configured globally.
+        if !value.trim().is_empty() {
+            cfg.observability.otlp_endpoint = value;
+            cfg.observability.otlp_enabled = true;
+        }
+    }
+    if let Ok(value) = std::env::var(ENV_OTLP_SERVICE_NAME) {
+        if !value.trim().is_empty() {
+            cfg.observability.otlp_service_name = value;
+        }
+    }
+    if let Ok(value) = std::env::var(ENV_OTLP_HEADERS) {
+        cfg.observability.otlp_headers = value;
     }
 }
 
@@ -894,11 +992,7 @@ pub fn load_config_report_full(
         },
         Err(_) => SearchOsConfig::default(),
     };
-    if let Ok(dir) = std::env::var(ENV_DATA_DIR) {
-        if !dir.trim().is_empty() {
-            cfg.app.data_dir = PathBuf::from(dir);
-        }
-    }
+    apply_env_overrides(&mut cfg);
     if let Err(v) = cfg.validate() {
         errors.extend(v);
     }

@@ -11,7 +11,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/状态-v0.1.0%20已实现-6f7277" alt="status" />
-  <img src="https://img.shields.io/badge/rust-1.75%2B-orange?logo=rust" alt="rust" />
+  <img src="https://img.shields.io/badge/rust-1.94%2B-orange?logo=rust" alt="rust" />
   <img src="https://img.shields.io/badge/next.js-16-black?logo=nextdotjs" alt="nextjs" />
   <img src="https://img.shields.io/badge/license-MIT-36f555" alt="license" />
   <img src="https://img.shields.io/badge/tests-CI%20green-36f555" alt="tests" />
@@ -44,8 +44,9 @@ SearchOS 用一套统一的基础设施解决这些问题。
 
 ## 核心特性
 
-- **双运行模式（Dual Runtime）**——同一套 Rust Core 既可作为进程内 **Local Mode**（CLI / Rust SDK /
-  MCP stdio）运行，也可作为 HTTP **Gateway Mode**（兼容 Tavily 的 REST + MCP）运行。
+- **双运行模式（Dual Runtime）**——同一套 Rust Core 既可作为进程内 **Local Mode**（CLI / Rust
+  library crates / MCP stdio）运行，也可作为 HTTP **Gateway Mode**（兼容 Tavily 的 REST）运行。
+  v1 的 MCP 仅支持 **stdio**（ADR-031）；远程 agent 使用 REST 面。
 - **Tavily 兼容 API**——把现有客户端指向 `http://127.0.0.1:8787` 即可，工作流无需改动。
 - **本地优先搜索**——优先从本地索引与记忆中返回答案，再决定是否访问外部搜索。
 - **搜索记忆（Search Memory）**——搜索历史、文档版本、语义记忆、研究记忆都是一等公民级、可持续积累的资产。
@@ -53,6 +54,12 @@ SearchOS 用一套统一的基础设施解决这些问题。
 - **可扩展核心**——Manifest 生命周期、权限、故障隔离的发现与隔离；原生 Provider 与网站爬虫随主程序编译。
 - **成本感知路由**——综合质量、新鲜度、延迟、成本、可用性进行评分选择；并提供 Singleflight 请求合并。
 - **分布式就绪（Distributed-ready）**——从数据模型与接口层面第一天就为多节点设计，但不在 v1 强制引入分布式复杂度。
+- **Prometheus 指标**——`GET /metrics` 导出与控制台相同的进程内计数器（搜索、质量、成本、
+  outbox、Part 30 不变量、运行时长）；网关在 `SIGTERM` 下优雅停机，并在退出前做
+  最后一次 outbox 冲刷。
+- **OpenTelemetry（可选）**——trace 与同一套指标快照可通过 OTLP/HTTP 推送到任意
+  collector；默认关闭、环境变量配置、优雅停机时冲刷。
+  见 [`docs/observability.md`](docs/observability.md)。
 
 ## 可视化控制台
 
@@ -73,7 +80,7 @@ SearchOS 用一套统一的基础设施解决这些问题。
 
 ### 前置要求
 
-- Rust 1.75+（`rustup`）
+- Rust 1.94+（`rustup`）—— 锁文件锁定 sqlx 0.9（MSRV 1.94）；Docker 构建使用 1.97
 - Node.js 20+（仅控制台需要）
 
 ### 1. 构建并运行 CLI（Local Mode）
@@ -115,15 +122,49 @@ npm run dev                     # http://localhost:3100
 ### MCP
 
 ```bash
-searchos mcp                    # stdio MCP server：7 个 RFC-021 工具 + search_trace 别名
+searchos mcp                    # stdio MCP server（ADR-031：不提供 HTTP MCP 传输）
 ```
+
+## 使用 Docker 运行
+
+```bash
+docker compose up --build          # 网关 127.0.0.1:8787，控制台 127.0.0.1:3100
+```
+
+一个命名卷保存全部状态（SQLite、Tantivy、LanceDB、对象存储），`docker compose down`
+不会丢知识库。网关在 `SIGTERM` 下优雅停机（SSE 关闭、outbox 冲刷），并提供
+`GET /health` 与 `GET /metrics`（Prometheus 文本格式）；`deploy/prometheus.yml`
+是现成的抓取配置（`docker compose --profile observability up -d`）。
+MCP 仅 stdio（ADR-031），因此没有 MCP 容器——远程 agent 走 REST 面。
+可用两个构建参数：`RUST_VERSION`（默认 1.97，lockfile 要求 ≥ 1.94）与
+`CARGO_REGISTRY`（在 crates.io 较慢的地区使用 sparse 镜像）。
+详见 [`docs/deployment.md`](docs/deployment.md)。
+
+## 发版
+
+```bash
+# 1. 确认 workspace 版本与将要推送的 tag 一致
+grep '^version' Cargo.toml
+
+# 2. 在 CHANGELOG.md 中为新版本添加小节
+
+# 3. 打 tag 并推送——release 工作流会接管
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+`.github/workflows/release.yml` 会先跑与 CI 相同的门禁，再构建带 SHA-256
+校验和的 release 二进制、为网关与控制台构建多架构镜像，并创建 GitHub Release，
+附带二进制、校验和与该版本的 CHANGELOG 小节。推送镜像到 GHCR 需要仓库密钥
+`REGISTRY_TOKEN`；没有该密钥时工作流仍会构建两个镜像用于验证。tag 必须与
+workspace 版本一致，否则工作流失败。详见 [`CHANGELOG.md`](CHANGELOG.md)。
 
 ## 架构总览
 
 ```text
 ┌──────────────────────────────────────────┐
 │              接口层 Interface Layer       │
-│  CLI   ·   Rust SDK   ·   MCP   ·   HTTP API │
+│  CLI   ·   Rust lib   ·   MCP   ·   HTTP API │
 └──────────────────┬───────────────────────┘
                    │
 ┌──────────────────▼───────────────────────┐
@@ -175,8 +216,10 @@ CI 在每次 push / PR 时运行 fmt / clippy / test 以及控制台 typecheck +
 
 ## 开发路线图
 
-以「可交付能力」推进的分阶段计划（约 16 周到达 v1.0）。完整内容见
-[`docs/roadmap.md`](docs/roadmap.md)。
+以下分阶段计划属于**历史资料**：[`docs/feature-roadmap.md`](docs/feature-roadmap.md)
+中 Wave 0–4 的全部条目均已关闭并验证，当前仓库已发布为 **v0.1.0**。
+[`docs/roadmap.md`](docs/roadmap.md) 的表格仅保留规划依据，不作为当前状态；
+发布记录见 [`CHANGELOG.md`](CHANGELOG.md)。
 
 | 阶段 | 范围 |
 |-----:|------|
@@ -186,8 +229,8 @@ CI 在每次 push / PR 时运行 fmt / clippy / test 以及控制台 typecheck +
 | P3 | 本地检索与记忆 |
 | P4 | 扩展系统 |
 | P5 | AI 搜索智能 |
-| P6 | Agent 集成（MCP、SDK） |
-| P7 | 生产发布（v1.0） |
+| P6 | Agent 集成（MCP、TypeScript / Python SDK） |
+| P7 | 生产发布（已发布为 v0.1.0） |
 
 ## 文档
 
@@ -204,11 +247,32 @@ CI 在每次 push / PR 时运行 fmt / clippy / test 以及控制台 typecheck +
 - [功能遗漏分析：源设计 vs. 实现](docs/gap-analysis.md)
 - [RFC 实现缺口登记](docs/rfc-implementation-gaps.md)
 - [可视化控制台（Next.js / React）](docs/ui.md) · [web/README.md](web/README.md)
-- [HTTP API](docs/api/http.md) · [CLI 参考](docs/api/cli.md)
+- [HTTP API](docs/api/http.md) · [OpenAPI 3.1 契约](docs/openapi.yaml) · [CLI 参考](docs/api/cli.md)
+- [Tavily 兼容契约](docs/tavily-compatibility.md)
+- [可观测性（Prometheus + OTLP）](docs/observability.md)
+- [MCP 传输契约（stdio-only，ADR-031）](docs/mcp.md)
+- SDK：[TypeScript](sdk/typescript/README.md) · [Python](sdk/python/README.md)
 - [扩展与爬虫系统](docs/extensions.md)
 - [路线图与 ADR](docs/roadmap.md)
 - [文档中心](docs/index.md)
 - [English README](README.md)
+
+## 当前限制
+
+以下是 v0.1.0 有意划定的边界，不是未通过的检查。完整 non-goal 清单见
+[`docs/feature-roadmap.md`](docs/feature-roadmap.md) §6。
+
+- **本地 embedding 是确定性的，不是语义模型。** 运行时使用 `HashingEmbedder`
+  生成向量、记忆与语义缓存向量（`crates/searchos-core/src/runtime.rs`）。
+  `memory.embedding.provider` 设为非 `local` 时只会打印警告并回退，尚未接入
+  远程 embedding 模型或模型版本迁移。向量相似度与语义缓存复用应理解为
+  词法哈希邻近，而非模型语义。
+- **未挂载 reranker provider。** `Reranker` 端口与 `NeverReranker` 已存在，
+  但按 RFC-007 §7.7 重排默认不执行，`HybridRetriever` 构建时未注入。
+  `intelligence.reranking` 目前控制的是 RRF 结果缓存，而非模型重排。
+- **SDK 只有 TypeScript 与 Python。** Rust 使用者直接依赖 workspace crates，
+  没有单独的 `sdk/rust` 客户端。
+- **MCP 仅支持 stdio**（ADR-031）；`/crawl` 与 `/map` 不在 v1 范围内。
 
 ## 许可证
 

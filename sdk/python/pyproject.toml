@@ -1,0 +1,18 @@
+[project]
+name = "searchos-sdk"
+version = "0.1.0"
+description = "Typed Python client for the SearchOS Gateway API, generated from docs/openapi.yaml."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/huifer/searchos"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["searchos"]

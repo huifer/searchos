@@ -481,8 +481,42 @@ async fn main() {
         2 => "debug",
         _ => "trace",
     };
-    searchos_observability::logging::init_with_default(level);
-    let code = match run(cli).await {
+    // Build telemetry BEFORE installing the tracing subscriber so the OTLP
+    // bridge can be attached as a layer. The guard must outlive `execute` and
+    // be dropped explicitly before `process::exit` (which skips destructors),
+    // otherwise the graceful shutdown loses its final span/metric flush.
+    // Use the report-style loader here so `run()` remains the single place
+    // that prints config warnings (it loads the config again). No duplicate
+    // stderr output on every command.
+    let (startup_config, _, _) = searchos_core::load_config_report_full(cli.config.as_deref());
+    let otlp_config = startup_config.observability.otlp_config();
+    let otlp = match searchos_observability::otlp::init(&otlp_config) {
+        Ok(handle) => handle,
+        Err(e) => {
+            eprintln!("searchos telemetry warning: OTLP export disabled: {e}");
+            None
+        }
+    };
+
+    let code = match otlp {
+        Some(handle) => {
+            let searchos_observability::OtlpHandle { layer, guard } = handle;
+            searchos_observability::logging::init_with_otlp(level, layer);
+            let code = execute(cli, format).await;
+            drop(guard);
+            code
+        }
+        None => {
+            searchos_observability::logging::init_with_default(level);
+            execute(cli, format).await
+        }
+    };
+    std::process::exit(code);
+}
+
+/// Runs the command and maps errors to the documented exit codes.
+async fn execute(cli: Cli, format: Format) -> i32 {
+    match run(cli).await {
         Ok(()) => 0,
         Err(e) => {
             let code = match &e {
@@ -511,8 +545,7 @@ async fn main() {
             }
             code
         }
-    };
-    std::process::exit(code);
+    }
 }
 
 fn load_config(cli: &Cli) -> SearchOsConfig {
@@ -1438,10 +1471,17 @@ async fn run(cli: Cli) -> Result<(), SearchOsError> {
             Ok(())
         }
         Command::Backup { cmd } => {
-            let rt = runtime(cli_ref).await?;
-            let backup_dir = rt.config.app.data_dir.join("data").join("backups");
+            // Restore is a pure file operation and must NOT initialise a
+            // runtime: opening the SQLite database first would create an empty
+            // database whose WAL is checkpointed over the restored snapshot
+            // when the process exits — the exact bug the restore drill caught.
+            // `create` needs a connection for the `VACUUM INTO` snapshot and
+            // writes to a separate file, so it keeps the runtime.
             match cmd {
                 BackupCmd::Create => {
+                    let rt = runtime(cli_ref).await?;
+                    let cfg = rt.config.clone();
+                    let backup_dir = cfg.app.data_dir.join("data").join("backups");
                     // RFC-018 18.5: a consistent backup contains SQLite,
                     // redacted configuration and extension manifests, with
                     // content hashes in a manifest.
@@ -1451,13 +1491,26 @@ async fn run(cli: Cli) -> Result<(), SearchOsError> {
                     let dst = backup_dir.join(format!("searchos-{stamp}"));
                     std::fs::create_dir_all(&dst)
                         .map_err(|e| SearchOsError::Storage(e.to_string()))?;
-                    let src = rt.config.data_db_path();
-                    let db_bytes =
-                        std::fs::read(&src).map_err(|e| SearchOsError::Storage(e.to_string()))?;
+                    // VACUUM INTO writes a consistent snapshot of the whole
+                    // database, including transactions still sitting in the
+                    // WAL. Copying the bare .db file would silently miss them
+                    // (that is exactly what the restore drill caught).
+                    let dst_db = dst.join("metadata.sqlite");
+                    rt.sqlite.with_conn(|c| {
+                        c.execute("VACUUM INTO ?1", [dst_db.to_string_lossy().as_ref()])
+                            .map(|_| ())
+                            .map_err(|e| {
+                                SearchOsError::Storage(format!(
+                                    "backup snapshot failed (VACUUM INTO): {e}"
+                                ))
+                            })
+                    })?;
+                    let db_bytes = std::fs::read(&dst_db)
+                        .map_err(|e| SearchOsError::Storage(e.to_string()))?;
                     let db_hash = searchos_core::hash_util::content_hash_hex(&db_bytes);
                     std::fs::write(dst.join("metadata.sqlite"), &db_bytes)
                         .map_err(|e| SearchOsError::Storage(e.to_string()))?;
-                    let config_json = serde_json::to_string_pretty(&rt.config.redacted())
+                    let config_json = serde_json::to_string_pretty(&cfg.redacted())
                         .map_err(|e| SearchOsError::Internal(e.to_string()))?;
                     std::fs::write(dst.join("config.json"), &config_json)
                         .map_err(|e| SearchOsError::Storage(e.to_string()))?;
@@ -1466,7 +1519,7 @@ async fn run(cli: Cli) -> Result<(), SearchOsError> {
                     std::fs::create_dir_all(&ext_dir)
                         .map_err(|e| SearchOsError::Storage(e.to_string()))?;
                     let mut ext_count = 0usize;
-                    let crawlers_path = rt.config.crawlers_path();
+                    let crawlers_path = cfg.crawlers_path();
                     if let Ok(entries) = std::fs::read_dir(&crawlers_path) {
                         for entry in entries.flatten() {
                             if let Ok(files) = std::fs::read_dir(entry.path()) {
@@ -1514,6 +1567,7 @@ async fn run(cli: Cli) -> Result<(), SearchOsError> {
                     );
                 }
                 BackupCmd::Restore { path } => {
+                    let cfg = load_config(cli_ref);
                     // RFC-018 18.6: verify hashes, DB integrity and schema
                     // compatibility before declaring success.
                     let (db_file, manifest_path) = if path.is_dir() {
@@ -1562,9 +1616,15 @@ async fn run(cli: Cli) -> Result<(), SearchOsError> {
                             "backup database integrity check failed: {integrity}"
                         )));
                     }
-                    let target = rt.config.data_db_path();
+                    let target = cfg.data_db_path();
                     std::fs::write(&target, &db_bytes)
                         .map_err(|e| SearchOsError::Storage(e.to_string()))?;
+                    // A stale WAL beside the restored snapshot would be
+                    // replayed over it on the next open, undoing the restore.
+                    let stem = target.with_extension("");
+                    for suffix in ["-wal", "-shm"] {
+                        let _ = std::fs::remove_file(stem.with_extension(format!("db{suffix}")));
+                    }
                     print(
                         &serde_json::json!({
                             "restored": target.to_string_lossy(),

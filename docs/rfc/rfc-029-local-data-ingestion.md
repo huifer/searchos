@@ -170,6 +170,21 @@ re-fetched or flagged stale after a year.
 | `POST` | `/ingest/batch` | JSON array of `{request, content}` | Directory / bulk |
 | `GET` | `/ingest/jobs/:id` | — | Batch job status |
 
+#### 6.1.1 Document lifecycle (console)
+
+The console drives the full document lifecycle over the same store:
+
+| Method | Path | Notes |
+|--------|------|-------|
+| `GET` | `/documents?workspace_id=&source_type=&status=&limit=` | Live list. Soft-deleted rows are hidden unless `status=deleted` is requested explicitly (audit trail). |
+| `GET` | `/documents/:id` | Document + `summary` (status, version/chunk counts) + current version + full version history. Soft-deleted → `404`. |
+| `GET` | `/documents/:id/versions` | Version history (immutable content versions, RFC-006 6.3). |
+| `POST` | `/documents/:id/reindex` | Rebuilds only the full-text index entries; metadata and version history are never rewritten. |
+| `DELETE` | `/documents/:id` | Soft delete + chunk removal + index deletes (RFC-006 6.7), applied immediately. |
+
+Every path enforces the caller's workspace scope; a foreign or missing
+document returns `404`, so the endpoints cannot be used to probe ids.
+
 Response envelope (matches the existing gateway style):
 
 ```json
