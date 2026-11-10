@@ -86,3 +86,14 @@ in-process as a Local Mode and over HTTP as a Gateway Mode, sharing one core.
   roadmap / SDK claims in the docs, documented the local hashing embedder and the
   unattached reranker as explicit limitations, and removed a React key warning
   from the analytics test fixtures.
+- **CI could not build on GitHub runners**: they do not ship `protoc`, so every
+  Rust job (clippy / test / docs / openapi / eval-gate / backup-drill) failed in
+  `lance-encoding`'s build script. `.github/actions/setup-protoc` now installs
+  `protobuf-compiler` **and** `libprotobuf-dev` (the well-known `.proto` includes
+  are only a Recommends of the former) on every Rust job, including the release
+  `verify` and `artifacts` jobs.
+- **release workflow rejected at parse time**: the `secrets` context is not
+  allowed in a step-level `if:`. The `images` job now exposes the registry token
+  as a job-level env var and uses `if: env.REGISTRY_TOKEN != ''` plus
+  `$REGISTRY_TOKEN` in shell steps. Both workflows pass `actionlint`, now
+  enforced by the `workflow-lint` CI job.

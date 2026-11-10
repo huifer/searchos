@@ -4,8 +4,12 @@
 
 ## Prerequisites
 
-- Rust stable (see `rust-toolchain.toml`)
-- `protoc` (only needed when rebuilding LanceDB from source: `brew install protobuf`)
+- Rust 1.94+ (`rust-toolchain.toml` pins `stable`; the lockfile requires >= 1.94)
+- `protoc` — required by the LanceDB build script for every from-source build
+  (`brew install protobuf` on macOS; `apt-get install protobuf-compiler
+  libprotobuf-dev` on Debian/Ubuntu). CI installs it through
+  `.github/actions/setup-protoc`; the Docker build installs both packages in
+  the `rust-build` stage.
 
 ## Build & test
 

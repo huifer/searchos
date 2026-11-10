@@ -81,6 +81,7 @@ SearchOS 用一套统一的基础设施解决这些问题。
 ### 前置要求
 
 - Rust 1.94+（`rustup`）—— 锁文件锁定 sqlx 0.9（MSRV 1.94）；Docker 构建使用 1.97
+- `protoc` —— LanceDB 构建脚本需要（macOS：`brew install protobuf`；Debian/Ubuntu：`apt-get install protobuf-compiler libprotobuf-dev`）
 - Node.js 20+（仅控制台需要）
 
 ### 1. 构建并运行 CLI（Local Mode）

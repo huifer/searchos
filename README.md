@@ -90,6 +90,7 @@ Light / Dark, square-cornered tactical telemetry, one hazard-red accent. See
 ### Prerequisites
 
 - Rust 1.94+ (`rustup`) — the lockfile pins sqlx 0.9 (MSRV 1.94); the Docker build uses 1.97
+- `protoc` — required by the LanceDB build script (macOS: `brew install protobuf`; Debian/Ubuntu: `apt-get install protobuf-compiler libprotobuf-dev`)
 - Node.js 20+ (console only)
 
 ### 1. Build and run the CLI (Local Mode)

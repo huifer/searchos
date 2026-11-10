@@ -1,0 +1,21 @@
+name: Setup protoc
+description: Install the protobuf compiler required by the LanceDB build script
+
+# `lance-encoding` runs prost-build at compile time. GitHub-hosted runners do
+# not ship protoc, and `protobuf-compiler` alone is not enough: on Debian,
+# `libprotobuf-dev` is only a Recommends, so the well-known includes such as
+# google/protobuf/empty.proto are missing unless it is installed explicitly.
+# Both packages are listed here so every Rust job builds the same way as the
+# Dockerfile (see docs/deployment.md).
+
+runs:
+  using: composite
+  steps:
+    - name: Install protobuf-compiler
+      shell: bash
+      run: |
+        if ! command -v protoc >/dev/null 2>&1; then
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends protobuf-compiler libprotobuf-dev
+        fi
+        protoc --version
