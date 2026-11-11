@@ -159,12 +159,12 @@ docker pull ghcr.io/huifer/searchos-console:0.1.1
 ```
 
 They are pushed by the release workflow with its own `GITHUB_TOKEN`, so no
-registry secret is needed. `docker-compose.yml` uses these exact names and
-tags, so once the packages are public, `docker compose pull` + `docker compose
-up -d` runs the release artifacts without a local build. A freshly pushed
-package is private by default — change it to public in GitHub → Packages (or
-configure a `write:packages` PAT as the `PACKAGES_ADMIN_TOKEN` secret and run
-the `package-visibility` workflow).
+registry secret is needed, and they are **anonymously pullable** — verified
+against the published `v0.1.1` artifacts: `docker pull` works without
+`docker login`, and the gateway image answers `/health`, `/metrics` and a
+full ingest → search round trip straight from the registry. `docker-compose.yml`
+uses these exact names and tags, so `docker compose pull` + `docker compose
+up -d` runs the release artifacts without a local build.
 
 ## Releasing
 

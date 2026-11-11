@@ -19,6 +19,14 @@ multi-arch images, and attaches the matching section of this file.
   (`ghcr-aliases.yml`) that copies an already published multi-arch manifest
   to the documented simple names with `docker buildx imagetools create` — no
   rebuild, seconds instead of hours.
+- **Published images are anonymously pullable**: verified against the v0.1.1
+  artifacts — `docker pull` succeeds without `docker login`, and the pulled
+  gateway image answers `/health` (reporting `version 0.1.1`), serves
+  `/metrics` and completes an ingest → search round trip. The
+  `package-visibility` workflow stays as a maintenance tool for the case
+  where a future package is published private; its own `GITHUB_TOKEN` cannot
+  change visibility (`/user/packages` resolves to the bot identity, so the
+  call answers 404), so it needs a classic PAT with `write:packages`.
 
 ### Fixed
 
@@ -52,8 +60,9 @@ consistent.
   console, tagged with the release version. Each architecture is built
   natively on its own runner (`ubuntu-latest` and `ubuntu-24.04-arm`) and a
   manifest list joins them — building arm64 under QEMU took hours and risked
-  the job timeout. A freshly pushed package is private by default; the
-  runbook explains how to make it public.
+  the job timeout. (Correction: the published packages turned out to be
+  public — an anonymous `docker pull` works — so no visibility change was
+  needed; see `[Unreleased]`.)
 - **Bilingual engineering docs**: `docs/architecture.md`, `docs/extensions.md`,
   `docs/roadmap.md`, `docs/adr/index.md`, `docs/api/cli.md`, `docs/api/http.md`
   and `docs/development/README.md` gained 中文 sections, completing the

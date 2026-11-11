@@ -148,12 +148,12 @@ docker pull ghcr.io/huifer/searchos-gateway:0.1.1     # linux/amd64 + linux/arm6
 docker pull ghcr.io/huifer/searchos-console:0.1.1
 ```
 
-镜像由 release 工作流用自己的 `GITHUB_TOKEN` 推送，不需要额外的仓库密钥。
-`docker-compose.yml` 使用完全相同的名字与 tag，所以 package 公开后
-`docker compose pull` + `docker compose up -d` 即可直接运行发布产物，无需本地构建。
-新推送的 package 默认是私有的——请在 GitHub → Packages 改为公开；
-或者配置一个 `write:packages` PAT 作为 `PACKAGES_ADMIN_TOKEN` 密钥，
-然后运行 `package-visibility` 工作流。
+镜像由 release 工作流用自己的 `GITHUB_TOKEN` 推送，不需要额外的仓库密钥，
+并且**支持匿名拉取**——已针对已发布的 v0.1.1 产物验证：无需 `docker login`
+即可 `docker pull`，且从 registry 拉下的网关镜像可直接响应 `/health`、
+`/metrics`，并完成完整的 ingest → search 链路。
+`docker-compose.yml` 使用完全相同的名字与 tag，所以 `docker compose pull` +
+`docker compose up -d` 即可直接运行发布产物，无需本地构建。
 
 ## 发版
 

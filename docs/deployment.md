@@ -162,14 +162,19 @@ docker pull ghcr.io/huifer/searchos-console:0.1.1
 ```
 
 The release workflow logs in with its own `GITHUB_TOKEN` (the workflow already
-declares `packages: write`), so no registry secret is required. A package
-created by the first push is **private by default**. Changing the visibility
-needs admin over the package — either open GitHub → Packages → the package →
-Settings → General and set it to *Public*, or add a classic PAT with
-`write:packages` as the `PACKAGES_ADMIN_TOKEN` repository secret and run the
-`package-visibility` workflow (the workflow's own `GITHUB_TOKEN` is rejected
-with 404 — it has write, not admin). Until the package is public,
-`docker login ghcr.io` with a token that has `read:packages`.
+declares `packages: write`), so no registry secret is required, and the
+published packages are **anonymously pullable** — verified against `v0.1.1`:
+`docker pull ghcr.io/huifer/searchos-gateway:0.1.1` succeeds without
+`docker login`, and the pulled gateway image answers `/health` (reporting
+`version 0.1.1`), serves `/metrics`, and completes an ingest → search round
+trip.
+
+If a future package ever shows up private, the visibility can be changed in
+GitHub → Packages → the package → Settings → General, or with the
+`package-visibility` workflow once a classic PAT with `write:packages` is
+stored as the `PACKAGES_ADMIN_TOKEN` repository secret — the workflow's own
+`GITHUB_TOKEN` cannot do it, because `/user/packages` resolves to the bot
+identity (the call answers 404).
 
 Each architecture is also available on its own tag (`:0.1.1-amd64`,
 `:0.1.1-arm64`); the version tag is a multi-arch manifest that joins the two
@@ -348,12 +353,15 @@ docker pull ghcr.io/huifer/searchos-console:0.1.1
 ```
 
 release 工作流用自带的 `GITHUB_TOKEN` 登录（工作流已声明 `packages: write`），
-不需要任何 registry 密钥。首次推送创建的 package **默认为私有**。修改可见性需要对
-package 的 admin 权限——两种方式：打开 GitHub → Packages → 对应 package →
-Settings → General 改为 *Public*；或者在仓库密钥里配置一个带 `write:packages`
-的经典 PAT（名称 `PACKAGES_ADMIN_TOKEN`），然后运行 `package-visibility`
-工作流（工作流自带的 `GITHUB_TOKEN` 只有 write 没有 admin，API 会返回 404）。
-在 package 公开之前，需要用带 `read:packages` 权限的 token 执行 `docker login ghcr.io`。
+不需要任何 registry 密钥，并且发布出来的 package **支持匿名拉取**——已针对 v0.1.1
+验证：不执行 `docker login` 也能 `docker pull ghcr.io/huifer/searchos-gateway:0.1.1`，
+拉下来的网关镜像能响应 `/health`（返回 `version 0.1.1`）与 `/metrics`，
+并完成完整的 ingest → search 链路。
+
+如果将来某个新 package 是私有的，可以在 GitHub → Packages → 对应 package →
+Settings → General 改可见性；或者存一个带 `write:packages` 的经典 PAT 作为
+`PACKAGES_ADMIN_TOKEN` 密钥后运行 `package-visibility` 工作流——工作流自带的
+`GITHUB_TOKEN` 做不到，因为 `/user/packages` 会解析成 bot 身份（调用返回 404）。
 
 每个架构也有独立 tag（`:0.1.1-amd64`、`:0.1.1-arm64`）；版本 tag 是把两个原生
 构建合在一起的多架构 manifest。

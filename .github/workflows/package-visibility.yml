@@ -1,15 +1,18 @@
 # One-shot maintenance workflow: flips the released GHCR packages to the
 # requested visibility so anonymous `docker pull` works.
 #
-# Why it needs a secret: a release publishes the packages with the workflow's
-# own `GITHUB_TOKEN`, but GitHub only allows *visibility* changes with admin
-# access to the package — `GITHUB_TOKEN` gets write, not admin, and the API
-# answers 404. Admin comes from a classic PAT with `write:packages` belonging
-# to the package owner. Until that PAT is stored as the
-# `PACKAGES_ADMIN_TOKEN` repository secret, this workflow fails with the
+# Why it needs a secret: the visibility PATCH is only available for the
+# authenticated user's own packages, so a workflow's `GITHUB_TOKEN` resolves
+# `/user/packages` to the bot identity and the call answers 404 (proven
+# against the real packages). Admin comes from a classic PAT with
+# `write:packages` belonging to the package owner. Until that PAT is stored as
+# the `PACKAGES_ADMIN_TOKEN` repository secret, this workflow fails with the
 # instructions below, and the flip must be done in the UI:
 #
 #   GitHub → Packages → package → Package settings → Danger zone → Change visibility
+#
+# Note: packages published by the release workflow are public by default in
+# this repository, so this is a maintenance tool rather than a release step.
 #
 # Run: gh workflow run package-visibility.yml -f visibility=public
 
@@ -35,10 +38,19 @@ jobs:
     steps:
       - name: Flip the released packages
         env:
-          GH_TOKEN: ${{ secrets.PACKAGES_ADMIN_TOKEN != '' && secrets.PACKAGES_ADMIN_TOKEN || github.token }}
+          GH_TOKEN: ${{ secrets.PACKAGES_ADMIN_TOKEN }}
           VISIBILITY: ${{ inputs.visibility }}
         run: |
           set -euo pipefail
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::error::PACKAGES_ADMIN_TOKEN is not configured, so package visibility cannot be changed here."
+            echo "The workflow GITHUB_TOKEN cannot do it either: /user/packages resolves to the bot identity (404)."
+            echo "Two ways forward:"
+            echo "  1. UI: GitHub → Packages → package → Package settings → Danger zone → Change visibility."
+            echo "  2. Add a classic PAT with write:packages as the PACKAGES_ADMIN_TOKEN"
+            echo "     repository secret, then re-run this workflow."
+            exit 1
+          fi
           gh api -X PATCH /user/packages/container/searchos-gateway \
             -f visibility="$VISIBILITY" --jq '{name: .name, visibility: .visibility}'
           gh api -X PATCH /user/packages/container/searchos-console \
