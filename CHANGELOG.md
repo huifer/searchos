@@ -13,7 +13,14 @@ multi-arch images, and attaches the matching section of this file.
 
 ## [Unreleased]
 
-Nothing yet — the next release picks up what lands on `main` after this tag.
+### Added
+
+- **Package-visibility workflow**: a `workflow_dispatch` workflow that flips
+  the released GHCR packages to public or private. The flip needs admin over
+  the package — GitHub rejects the call with the workflow's own `GITHUB_TOKEN`
+  (`packages: write` is not enough) — so it runs with a
+  `PACKAGES_ADMIN_TOKEN` secret (a classic PAT with `write:packages`); the
+  README and the runbook document the UI alternative.
 
 ## [0.1.1] - 2026-11-10
 

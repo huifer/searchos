@@ -160,7 +160,9 @@ docker pull ghcr.io/huifer/searchos-console:v0.1.1
 
 They are pushed by the release workflow with its own `GITHUB_TOKEN`, so no
 registry secret is needed. A freshly pushed package is private by default —
-make it public in GitHub → Packages if you want anonymous pulls.
+change it to public in GitHub → Packages (or configure a `write:packages` PAT
+as the `PACKAGES_ADMIN_TOKEN` secret and run the `package-visibility`
+workflow).
 
 ## Releasing
 

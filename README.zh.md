@@ -149,7 +149,9 @@ docker pull ghcr.io/huifer/searchos-console:v0.1.1
 ```
 
 镜像由 release 工作流用自己的 `GITHUB_TOKEN` 推送，不需要额外的仓库密钥。
-新推送的 package 默认是私有的——如需匿名拉取，请在 GitHub → Packages 中改为公开。
+新推送的 package 默认是私有的——请在 GitHub → Packages 改为公开；
+或者配置一个 `write:packages` PAT 作为 `PACKAGES_ADMIN_TOKEN` 密钥，
+然后运行 `package-visibility` 工作流。
 
 ## 发版
 
