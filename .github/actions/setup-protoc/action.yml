@@ -7,6 +7,9 @@ description: Install the protobuf compiler required by the LanceDB build script
 # google/protobuf/empty.proto are missing unless it is installed explicitly.
 # Both packages are listed here so every Rust job builds the same way as the
 # Dockerfile (see docs/deployment.md).
+#
+# The apt mirror occasionally fails to resolve (transient DNS on the runner),
+# which fails every Rust job at once, so the install is retried.
 
 runs:
   using: composite
@@ -14,8 +17,19 @@ runs:
     - name: Install protobuf-compiler
       shell: bash
       run: |
-        if ! command -v protoc >/dev/null 2>&1; then
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends protobuf-compiler libprotobuf-dev
+        set -uo pipefail
+        if command -v protoc >/dev/null 2>&1; then
+          protoc --version
+          exit 0
         fi
-        protoc --version
+        for attempt in 1 2 3 4 5; do
+          if sudo apt-get update -qq && \
+             sudo apt-get install -y --no-install-recommends protobuf-compiler libprotobuf-dev; then
+            protoc --version
+            exit 0
+          fi
+          echo "apt attempt ${attempt} failed (mirror hiccup?); retrying in 15s"
+          sleep 15
+        done
+        echo "::error::could not install protobuf-compiler after 5 attempts"
+        exit 1
