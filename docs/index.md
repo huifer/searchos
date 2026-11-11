@@ -63,7 +63,7 @@ The canonical specification is the **RFC Suite v1.0** under [`docs/rfc/`](rfc/).
 1. Read [README.md](../README.md) (or [README.zh.md](../README.zh.md)) for a one-page overview.
 2. Read the [RFC Suite index](rfc/README.md) for governance, scope, and design principles.
 3. Use [RFC-001](rfc/rfc-001-product-architecture.md) for the full product/architecture design.
-4. Use [Architecture](architecture.md), [Extensions](extensions.md), and [Roadmap](roadmap.md) as the engineering reference. `docs/roadmap.md` is a historical plan: the shipped v0.1.0 status and the explicit non-goals live in [`docs/feature-roadmap.md`](feature-roadmap.md), the release notes in [`CHANGELOG.md`](../CHANGELOG.md), and the canonical design in [`docs/rfc/`](rfc/README.md).
+4. Use [Architecture](architecture.md), [Extensions](extensions.md), and [Roadmap](roadmap.md) as the engineering reference. `docs/roadmap.md` is a historical plan: the shipped v0.1.1 status and the explicit non-goals live in [`docs/feature-roadmap.md`](feature-roadmap.md), the release notes in [`CHANGELOG.md`](../CHANGELOG.md), and the canonical design in [`docs/rfc/`](rfc/README.md).
 
 # Implementation & API
 

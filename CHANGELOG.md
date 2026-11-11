@@ -13,6 +13,27 @@ multi-arch images, and attaches the matching section of this file.
 
 ## [Unreleased]
 
+Nothing yet — the next release picks up what lands on `main` after this tag.
+
+## [0.1.1] - 2026-11-10
+
+Post-release corrections: container images are published, the remaining
+engineering reference docs are bilingual, and the repository metadata is
+consistent.
+
+### Added
+
+- **Container images**: the release workflow now logs in to GHCR with the
+  workflow's own `GITHUB_TOKEN` — the workflow already declares
+  `packages: write`, so no extra repository secret is needed — and pushes
+  multi-arch `linux/amd64` + `linux/arm64` images for the gateway and the
+  console, tagged with the release version. A freshly pushed package is private
+  by default; the runbook explains how to make it public.
+- **Bilingual engineering docs**: `docs/architecture.md`, `docs/extensions.md`,
+  `docs/roadmap.md`, `docs/adr/index.md`, `docs/api/cli.md`, `docs/api/http.md`
+  and `docs/development/README.md` gained 中文 sections, completing the
+  English + 中文 convention across the documentation set.
+
 ### Fixed
 
 - Corrected the only broken local documentation link (`docs/api/http.md` now
@@ -20,7 +41,14 @@ multi-arch images, and attaches the matching section of this file.
 - Aligned the workspace `repository` URL and every crawler / provider
   User-Agent contact URL with the real remote (`github.com/huifer/searchos`);
   the Python SDK already used it.
-- Added the Keep a Changelog link references below.
+- Added the Keep a Changelog link references and a `repository` field to the
+  TypeScript SDK manifest.
+- Bumped the workspace version to 0.1.1, so the published binary, the OpenAPI
+  document, the SDK manifests and the image tags all carry the same number.
+- The v0.1.0 notes claimed the workflow builds multi-arch container images. It
+  built the gateway and console images for verification only — no registry
+  secret was configured, so nothing was published. The claim is corrected here
+  and the workflow now really publishes them.
 
 ## [0.1.0] - 2026-11-10
 
@@ -110,5 +138,6 @@ in-process as a Local Mode and over HTTP as a Gateway Mode, sharing one core.
   `$REGISTRY_TOKEN` in shell steps. Both workflows pass `actionlint`, now
   enforced by the `workflow-lint` CI job.
 
-[Unreleased]: https://github.com/huifer/searchos/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/huifer/searchos/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/huifer/searchos/releases/tag/v0.1.1
 [0.1.0]: https://github.com/huifer/searchos/releases/tag/v0.1.0

@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/status-v0.1.0%20implemented-6f7277" alt="status" />
+  <img src="https://img.shields.io/badge/status-v0.1.1%20implemented-6f7277" alt="status" />
   <img src="https://img.shields.io/badge/rust-1.94%2B-orange?logo=rust" alt="rust" />
   <img src="https://img.shields.io/badge/next.js-16-black?logo=nextdotjs" alt="nextjs" />
   <img src="https://img.shields.io/badge/license-MIT-36f555" alt="license" />
@@ -151,6 +151,17 @@ the REST surface. Two build args are available: `RUST_VERSION` (default 1.97,
 must be ≥ 1.94 for the lockfile) and `CARGO_REGISTRY` (a sparse registry mirror
 for regions where crates.io is slow). See [`docs/deployment.md`](docs/deployment.md).
 
+Prebuilt images are published for every release:
+
+```bash
+docker pull ghcr.io/huifer/searchos-gateway:v0.1.1     # linux/amd64 + linux/arm64
+docker pull ghcr.io/huifer/searchos-console:v0.1.1
+```
+
+They are pushed by the release workflow with its own `GITHUB_TOKEN`, so no
+registry secret is needed. A freshly pushed package is private by default —
+make it public in GitHub → Packages if you want anonymous pulls.
+
 ## Releasing
 
 ```bash
@@ -160,17 +171,18 @@ grep '^version' Cargo.toml
 # 2. Add a section to CHANGELOG.md for the new version
 
 # 3. Tag and push — the release workflow takes over
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.1.1
+git push origin v0.1.1
 ```
 
 `.github/workflows/release.yml` then runs the same gates as CI, builds the
 release binary with SHA-256 checksums, builds multi-arch images for the gateway
 and the console, and creates a GitHub release carrying the binary, the
-checksums and that version's CHANGELOG section. Pushing images to GHCR needs a
-`REGISTRY_TOKEN` repository secret; without it the workflow still builds both
-images for verification. The tag must match the workspace version or the
-workflow fails. See [`CHANGELOG.md`](CHANGELOG.md).
+checksums and that version's CHANGELOG section. The images are pushed to GHCR
+with the workflow's own `GITHUB_TOKEN` — the workflow already declares
+`packages: write`, so no extra repository secret is required. The tag must
+match the workspace version or the workflow fails. See
+[`CHANGELOG.md`](CHANGELOG.md).
 
 ## Architecture
 
@@ -232,7 +244,7 @@ CI runs fmt / clippy / test plus the console typecheck + build on every push and
 
 The phased plan below is **historical**: every Wave 0–4 item in
 [`docs/feature-roadmap.md`](docs/feature-roadmap.md) is closed and verified, and
-this repository is released as **v0.1.0**. The tables in
+this repository is released as **v0.1.1**. The tables in
 [`docs/roadmap.md`](docs/roadmap.md) are retained for rationale, not as a status
 list; the release notes are in [`CHANGELOG.md`](CHANGELOG.md).
 
@@ -245,7 +257,7 @@ list; the release notes are in [`CHANGELOG.md`](CHANGELOG.md).
 | P4 | Extension system |
 | P5 | AI search intelligence |
 | P6 | Agent integration (MCP, TypeScript / Python SDK) |
-| P7 | Production & release (shipped as v0.1.0) |
+| P7 | Production & release (shipped as v0.1.1) |
 
 ## Documentation
 
@@ -274,7 +286,7 @@ list; the release notes are in [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Current limitations
 
-Deliberate v0.1.0 boundaries, not failed checks. The full non-goal list is in
+Deliberate v0.1.1 boundaries, not failed checks. The full non-goal list is in
 [`docs/feature-roadmap.md`](docs/feature-roadmap.md) §6.
 
 - **Local embeddings are deterministic, not semantic.** The runtime uses

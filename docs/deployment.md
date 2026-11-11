@@ -131,8 +131,8 @@ against a gateway that cannot serve its Read Model.
 ### 9. Building images without compose
 
 ```bash
-docker build --target gateway -t searchos/gateway:0.1.0 .
-docker build --target console -t searchos/console:0.1.0 .
+docker build --target gateway -t searchos/gateway:0.1.1 .
+docker build --target console -t searchos/console:0.1.1 .
 ```
 
 The Rust build uses BuildKit cache mounts for the cargo registry and
@@ -151,6 +151,23 @@ Two build args are available:
 a `Recommends` of `protobuf-compiler`, and `--no-install-recommends` would drop
 it.
 
+#### Prebuilt images
+
+Every release also publishes ready-to-run images to GHCR, so you do not have to
+build locally at all:
+
+```bash
+docker pull ghcr.io/huifer/searchos-gateway:v0.1.1     # linux/amd64 + linux/arm64
+docker pull ghcr.io/huifer/searchos-console:v0.1.1
+```
+
+The release workflow logs in with its own `GITHUB_TOKEN` (the workflow already
+declares `packages: write`), so no registry secret is required. A package
+created by the first push is **private by default** — open GitHub → Packages →
+the package → Settings → General and change the visibility to *Public* if you
+want anonymous pulls. Until then, `docker login ghcr.io` with a token that has
+`read:packages`.
+
 ### 10. Release and rollback
 
 A release is a tag that matches the workspace version. The `release` workflow
@@ -160,7 +177,7 @@ multi-arch images, and publishes a GitHub release with the matching
 
 ```bash
 grep '^version' Cargo.toml      # the tag must match this
-git tag v0.1.0 && git push origin v0.1.0
+git tag v0.1.1 && git push origin v0.1.1
 ```
 
 **Rollback** is a two-step operation because the knowledge base is data, not
@@ -293,8 +310,8 @@ Read Model 的网关启动。
 ### 9. 不用 compose 单独构建镜像
 
 ```bash
-docker build --target gateway -t searchos/gateway:0.1.0 .
-docker build --target console -t searchos/console:0.1.0 .
+docker build --target gateway -t searchos/gateway:0.1.1 .
+docker build --target console -t searchos/console:0.1.1 .
 ```
 
 Rust 构建对 cargo registry 与 `target/` 使用 BuildKit cache mount，源码变更后
@@ -311,6 +328,20 @@ Rust 构建对 cargo registry 与 `target/` 使用 BuildKit cache mount，源码
 `google/protobuf/*.proto`。它只是 `protobuf-compiler` 的 `Recommends`，
 `--no-install-recommends` 会把它丢掉。
 
+#### 预构建镜像
+
+每个版本也会把可直接运行的镜像发布到 GHCR，完全不需要本地构建：
+
+```bash
+docker pull ghcr.io/huifer/searchos-gateway:v0.1.1     # linux/amd64 + linux/arm64
+docker pull ghcr.io/huifer/searchos-console:v0.1.1
+```
+
+release 工作流用自带的 `GITHUB_TOKEN` 登录（工作流已声明 `packages: write`），
+不需要任何 registry 密钥。首次推送创建的 package **默认为私有**——如需匿名拉取，
+请打开 GitHub → Packages → 对应 package → Settings → General，把可见性改为
+*Public*。在此之前，需要用带 `read:packages` 权限的 token 执行 `docker login ghcr.io`。
+
 ### 10. 发版与回滚
 
 一次发版就是一个与 workspace 版本一致的 tag。`release` 工作流会跑 CI 门禁、
@@ -319,7 +350,7 @@ Rust 构建对 cargo registry 与 `target/` 使用 BuildKit cache mount，源码
 
 ```bash
 grep '^version' Cargo.toml      # tag 必须与此一致
-git tag v0.1.0 && git push origin v0.1.0
+git tag v0.1.1 && git push origin v0.1.1
 ```
 
 **回滚**分两步，因为知识库是数据而不只是镜像：

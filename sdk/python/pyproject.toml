@@ -1,6 +1,6 @@
 [project]
 name = "searchos-sdk"
-version = "0.1.0"
+version = "0.1.1"
 description = "Typed Python client for the SearchOS Gateway API, generated from docs/openapi.yaml."
 readme = "README.md"
 requires-python = ">=3.10"

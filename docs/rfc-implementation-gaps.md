@@ -15,7 +15,7 @@
 >
 > Snapshot: 2026-11-08 working tree. 行号仅用于定位，函数名优先。
 >
-> Verification baseline (historical 2026-11-08 snapshot): `cargo test --workspace` → 428 passed / 62 suites；current v0.1.0: 488 passed / 68 suites。
+> Verification baseline (historical 2026-11-08 snapshot): `cargo test --workspace` → 428 passed / 62 suites；current v0.1.1: 488 passed / 68 suites。
 > `web` `typecheck + build`、`clippy -D warnings`、`fmt --check`、路由扫描均通过。
 > 因此下文所有“未实现”均指**功能契约未闭环**，不是“编译失败”。
 

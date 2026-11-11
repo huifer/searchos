@@ -34,7 +34,7 @@ pub struct SearchOsConfig {
 pub struct IntelligenceConfig {
     pub query_expansion: bool,
     /// Gates the RRF result cache (not a model reranker). No `Reranker`
-    /// provider is attached in v0.1.0; RFC-007 7.7 leaves reranking off by default.
+    /// provider is attached in v0.1.1; RFC-007 7.7 leaves reranking off by default.
     pub reranking: bool,
     /// SearchOS returns evidence, never a fabricated final answer.
     pub answer_generation: bool,

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import re
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
@@ -35,6 +36,20 @@ _MONO = GEIST / "geist-mono"
 GEIST_BOLD = _SANS / "Geist-Bold.ttf"
 
 HOME = Path.home()
+
+# The version chip is read from the workspace manifest so the rendered cards
+# can never drift from the released version (the same number the binary, the
+# OpenAPI document and the image tags carry).
+ROOT = WEB.parent
+_MANIFEST = ROOT / "Cargo.toml"
+_VERSION = "unknown"
+if _MANIFEST.is_file():
+    for _line in _MANIFEST.read_text(encoding="utf-8").splitlines():
+        _m = re.match(r'^version = "([^"]+)"', _line.strip())
+        if _m:
+            _VERSION = _m.group(1)
+            break
+VERSION = f"v{_VERSION}"
 CF = {
     "NOTO_REG": HOME / "Library/Fonts/NotoSansCJKsc-Regular.otf",
     "NOTO_MED": HOME / "Library/Fonts/NotoSansCJKsc-Medium.otf",
@@ -263,7 +278,7 @@ def render(w: int, h: int, lang: str = "en") -> Canvas:
 
     # --- header ---
     c.rect(64, 46, 44, 5, fill=ACCENT)
-    chip = "v0.1.0"
+    chip = VERSION
     chip_font = c.font("mono", 12)
     chip_w = c.tw(chip, chip_font) + 16
     chip_x = 1136 - c.tw(copy["header_right"], c.font("mono", 13)) - 16 - chip_w

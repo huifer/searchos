@@ -1,6 +1,6 @@
 {
   "name": "searchos-console",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Visual console for the SearchOS local runtime and gateway.",
   "scripts": {

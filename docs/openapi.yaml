@@ -12,7 +12,7 @@
 openapi: 3.1.0
 info:
   title: SearchOS Gateway API
-  version: 0.1.0
+  version: 0.1.1
   summary: Local-first AI search infrastructure gateway
   description: |
     SearchOS runs in two modes over the same core. Gateway Mode exposes this
@@ -919,7 +919,7 @@ components:
       type: object
       properties:
         status: { type: string, example: ok }
-        version: { type: string, example: 0.1.0 }
+        version: { type: string, example: 0.1.1 }
         index:
           type: object
           properties:

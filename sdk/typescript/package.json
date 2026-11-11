@@ -1,6 +1,6 @@
 {
   "name": "@searchos/typescript-sdk",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Typed TypeScript client for the SearchOS Gateway API, generated from docs/openapi.yaml.",
   "license": "MIT",
   "repository": "https://github.com/huifer/searchos",

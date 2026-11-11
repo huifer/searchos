@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/状态-v0.1.0%20已实现-6f7277" alt="status" />
+  <img src="https://img.shields.io/badge/状态-v0.1.1%20已实现-6f7277" alt="status" />
   <img src="https://img.shields.io/badge/rust-1.94%2B-orange?logo=rust" alt="rust" />
   <img src="https://img.shields.io/badge/next.js-16-black?logo=nextdotjs" alt="nextjs" />
   <img src="https://img.shields.io/badge/license-MIT-36f555" alt="license" />
@@ -141,6 +141,16 @@ MCP 仅 stdio（ADR-031），因此没有 MCP 容器——远程 agent 走 REST 
 `CARGO_REGISTRY`（在 crates.io 较慢的地区使用 sparse 镜像）。
 详见 [`docs/deployment.md`](docs/deployment.md)。
 
+每个版本都会发布预构建镜像：
+
+```bash
+docker pull ghcr.io/huifer/searchos-gateway:v0.1.1     # linux/amd64 + linux/arm64
+docker pull ghcr.io/huifer/searchos-console:v0.1.1
+```
+
+镜像由 release 工作流用自己的 `GITHUB_TOKEN` 推送，不需要额外的仓库密钥。
+新推送的 package 默认是私有的——如需匿名拉取，请在 GitHub → Packages 中改为公开。
+
 ## 发版
 
 ```bash
@@ -150,15 +160,16 @@ grep '^version' Cargo.toml
 # 2. 在 CHANGELOG.md 中为新版本添加小节
 
 # 3. 打 tag 并推送——release 工作流会接管
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.1.1
+git push origin v0.1.1
 ```
 
 `.github/workflows/release.yml` 会先跑与 CI 相同的门禁，再构建带 SHA-256
 校验和的 release 二进制、为网关与控制台构建多架构镜像，并创建 GitHub Release，
-附带二进制、校验和与该版本的 CHANGELOG 小节。推送镜像到 GHCR 需要仓库密钥
-`REGISTRY_TOKEN`；没有该密钥时工作流仍会构建两个镜像用于验证。tag 必须与
-workspace 版本一致，否则工作流失败。详见 [`CHANGELOG.md`](CHANGELOG.md)。
+附带二进制、校验和与该版本的 CHANGELOG 小节。镜像使用工作流自带的
+`GITHUB_TOKEN` 推送到 GHCR——工作流已声明 `packages: write`，因此不需要额外的
+仓库密钥。tag 必须与 workspace 版本一致，否则工作流失败。
+详见 [`CHANGELOG.md`](CHANGELOG.md)。
 
 ## 架构总览
 
@@ -218,7 +229,7 @@ CI 在每次 push / PR 时运行 fmt / clippy / test 以及控制台 typecheck +
 ## 开发路线图
 
 以下分阶段计划属于**历史资料**：[`docs/feature-roadmap.md`](docs/feature-roadmap.md)
-中 Wave 0–4 的全部条目均已关闭并验证，当前仓库已发布为 **v0.1.0**。
+中 Wave 0–4 的全部条目均已关闭并验证，当前仓库已发布为 **v0.1.1**。
 [`docs/roadmap.md`](docs/roadmap.md) 的表格仅保留规划依据，不作为当前状态；
 发布记录见 [`CHANGELOG.md`](CHANGELOG.md)。
 
@@ -231,7 +242,7 @@ CI 在每次 push / PR 时运行 fmt / clippy / test 以及控制台 typecheck +
 | P4 | 扩展系统 |
 | P5 | AI 搜索智能 |
 | P6 | Agent 集成（MCP、TypeScript / Python SDK） |
-| P7 | 生产发布（已发布为 v0.1.0） |
+| P7 | 生产发布（已发布为 v0.1.1） |
 
 ## 文档
 
@@ -260,7 +271,7 @@ CI 在每次 push / PR 时运行 fmt / clippy / test 以及控制台 typecheck +
 
 ## 当前限制
 
-以下是 v0.1.0 有意划定的边界，不是未通过的检查。完整 non-goal 清单见
+以下是 v0.1.1 有意划定的边界，不是未通过的检查。完整 non-goal 清单见
 [`docs/feature-roadmap.md`](docs/feature-roadmap.md) §6。
 
 - **本地 embedding 是确定性的，不是语义模型。** 运行时使用 `HashingEmbedder`

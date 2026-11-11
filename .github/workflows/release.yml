@@ -13,9 +13,11 @@
 # match it (`v0.1.0` ↔ `version = "0.1.0"`), and this workflow asserts that so
 # the tag, the binary, the OpenAPI document and the image tag cannot drift.
 #
-# Registry push: images are pushed to GHCR when `REGISTRY_TOKEN` is configured
-# as a repository secret. Without it the workflow still builds both
-# architectures and loads them into the buildx builder for verification.
+# Registry push: images are pushed to GHCR with the workflow's own
+# `GITHUB_TOKEN` — the workflow already declares `packages: write`, so no
+# extra repository secret is needed. Newly created packages are private by
+# default; flip them to public in GitHub → Packages if you want anonymous
+# pulls.
 
 name: release
 
@@ -89,10 +91,6 @@ jobs:
   images:
     needs: verify
     runs-on: ubuntu-latest
-    # `secrets` is not available in step-level `if:` expressions; expose it as
-    # a job-level env var instead, and use `$REGISTRY_TOKEN` in shell steps.
-    env:
-      REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-qemu-action@v3
@@ -105,42 +103,27 @@ jobs:
           echo "gateway=ghcr.io/${repo}/gateway:${version}" >> "$GITHUB_OUTPUT"
           echo "console=ghcr.io/${repo}/console:${version}" >> "$GITHUB_OUTPUT"
       - name: Log in to GHCR
-        if: env.REGISTRY_TOKEN != ''
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.REGISTRY_TOKEN }}
+          password: ${{ github.token }}
       - name: Build gateway image
         run: |
-          # `--load` only supports one platform; without a registry token we
-          # verify the native architecture locally instead of pushing.
-          platforms="linux/amd64,linux/arm64"
-          output="--push"
-          if [ -z "$REGISTRY_TOKEN" ]; then
-            platforms="linux/amd64"
-            output="--load"
-          fi
           docker buildx build \
-            --platform "$platforms" \
+            --platform linux/amd64,linux/arm64 \
             --target gateway \
             --tag "${{ steps.tags.outputs.gateway }}" \
             --file Dockerfile \
-            $output .
+            --push .
       - name: Build console image
         run: |
-          platforms="linux/amd64,linux/arm64"
-          output="--push"
-          if [ -z "$REGISTRY_TOKEN" ]; then
-            platforms="linux/amd64"
-            output="--load"
-          fi
           docker buildx build \
-            --platform "$platforms" \
+            --platform linux/amd64,linux/arm64 \
             --target console \
             --tag "${{ steps.tags.outputs.console }}" \
             --file Dockerfile \
-            $output .
+            --push .
 
   release:
     needs: [artifacts, images]
