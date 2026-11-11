@@ -1,0 +1,41 @@
+# One-shot maintenance workflow: flips the released GHCR packages to the
+# requested visibility (default: public) so anonymous `docker pull` works.
+#
+# Why a workflow at all? A release pushes the packages with the workflow's own
+# `GITHUB_TOKEN` (declared `packages: write`), but a *local* CLI token usually
+# has no `packages` scope, so the visibility PATCH cannot be run from a laptop.
+# This workflow runs where that permission exists.
+#
+# Run: gh workflow run package-visibility.yml   (or the Actions tab)
+
+name: package-visibility
+
+on:
+  workflow_dispatch:
+    inputs:
+      visibility:
+        description: "Target visibility for the released packages"
+        type: choice
+        default: public
+        options:
+          - public
+          - private
+
+permissions:
+  packages: write
+
+jobs:
+  set-visibility:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Flip the released packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VISIBILITY: ${{ inputs.visibility }}
+        run: |
+          set -euo pipefail
+          gh api -X PATCH /user/packages/container/searchos-gateway \
+            -f visibility="$VISIBILITY" --jq '{name: .name, visibility: .visibility}'
+          gh api -X PATCH /user/packages/container/searchos-console \
+            -f visibility="$VISIBILITY" --jq '{name: .name, visibility: .visibility}'
+          echo "released packages are now ${VISIBILITY}"
