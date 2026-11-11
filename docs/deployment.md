@@ -168,6 +168,10 @@ the package → Settings → General and change the visibility to *Public* if yo
 want anonymous pulls. Until then, `docker login ghcr.io` with a token that has
 `read:packages`.
 
+Each architecture is also available on its own tag (`:v0.1.1-amd64`,
+`:v0.1.1-arm64`); the version tag is a multi-arch manifest that joins the two
+native builds.
+
 ### 10. Release and rollback
 
 A release is a tag that matches the workspace version. The `release` workflow
@@ -341,6 +345,9 @@ release 工作流用自带的 `GITHUB_TOKEN` 登录（工作流已声明 `packag
 不需要任何 registry 密钥。首次推送创建的 package **默认为私有**——如需匿名拉取，
 请打开 GitHub → Packages → 对应 package → Settings → General，把可见性改为
 *Public*。在此之前，需要用带 `read:packages` 权限的 token 执行 `docker login ghcr.io`。
+
+每个架构也有独立 tag（`:v0.1.1-amd64`、`:v0.1.1-arm64`）；版本 tag 是把两个原生
+构建合在一起的多架构 manifest。
 
 ### 10. 发版与回滚
 

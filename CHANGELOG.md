@@ -27,8 +27,11 @@ consistent.
   workflow's own `GITHUB_TOKEN` — the workflow already declares
   `packages: write`, so no extra repository secret is needed — and pushes
   multi-arch `linux/amd64` + `linux/arm64` images for the gateway and the
-  console, tagged with the release version. A freshly pushed package is private
-  by default; the runbook explains how to make it public.
+  console, tagged with the release version. Each architecture is built
+  natively on its own runner (`ubuntu-latest` and `ubuntu-24.04-arm`) and a
+  manifest list joins them — building arm64 under QEMU took hours and risked
+  the job timeout. A freshly pushed package is private by default; the
+  runbook explains how to make it public.
 - **Bilingual engineering docs**: `docs/architecture.md`, `docs/extensions.md`,
   `docs/roadmap.md`, `docs/adr/index.md`, `docs/api/cli.md`, `docs/api/http.md`
   and `docs/development/README.md` gained 中文 sections, completing the
