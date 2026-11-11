@@ -35,19 +35,10 @@ jobs:
     steps:
       - name: Flip the released packages
         env:
-          GH_TOKEN: ${{ secrets.PACKAGES_ADMIN_TOKEN }}
+          GH_TOKEN: ${{ secrets.PACKAGES_ADMIN_TOKEN != '' && secrets.PACKAGES_ADMIN_TOKEN || github.token }}
           VISIBILITY: ${{ inputs.visibility }}
         run: |
           set -euo pipefail
-          if [ -z "${GH_TOKEN}" ]; then
-            echo "::error::PACKAGES_ADMIN_TOKEN is not configured, so package visibility cannot be changed here."
-            echo "GITHUB_TOKEN has packages:write but not admin over the package, and GitHub rejects the call with 404."
-            echo "Two ways forward:"
-            echo "  1. UI: GitHub → Packages → package → Package settings → Danger zone → Change visibility."
-            echo "  2. Add a classic PAT with write:packages as the PACKAGES_ADMIN_TOKEN"
-            echo "     repository secret, then re-run this workflow."
-            exit 1
-          fi
           gh api -X PATCH /user/packages/container/searchos-gateway \
             -f visibility="$VISIBILITY" --jq '{name: .name, visibility: .visibility}'
           gh api -X PATCH /user/packages/container/searchos-console \
