@@ -164,3 +164,132 @@ streamable HTTP 传输、不保存 MCP session 状态。
   无 HTTP 服务端依赖、网关无 MCP 路由、取消被计数、文档不得宣称远程传输。
 
 **规范**：[`docs/mcp.md`](../mcp.md)。
+
+---
+
+## 19.6 ADR-032: Quality-Gated Evidence Promotion
+
+**Decision.** External results enter the durable knowledge store **only** after
+the task's final quality gate accepts them. Promotion is asynchronous and
+outbox-driven: the task records the acquisition, the capture worker performs
+the governed fetch and the index write, and the user response never waits for
+it. Unverified provider snippets are never written to the index.
+
+**Why.**
+
+- The current inline write at `search_service.rs:1384` happens **before** the
+  final gate at `search_service.rs:1489`, so rejected or conflicting evidence
+  already sits in the index and is later served as first-party knowledge.
+- That write stores only a snippet and no document row, so
+  `rebuild_index` (`runtime.rs:645`) erases every purchase: the knowledge base
+  cannot compound.
+- A purchase that is written but hidden behind a stale retrieval cache
+  (the external write path never calls `invalidate_caches`) is paid for and
+  then invisible — the compound effect is masked exactly when it should fire.
+- Synchronous capture would add fetch latency to every response that bought
+  something. The outbox already exists and is drained every 1.5 s.
+
+**Consequences.**
+
+- The external result path changes from "write snippets inline" to "record →
+  queue capture → persist version → index → invalidate". The old behaviour is
+  removed rather than kept behind a flag, because indexing unverified
+  snippets is the defect.
+- A set-level `Partial` verdict does not disqualify an individually accepted
+  item; an unresolved conflict does.
+- Promotion never changes the response status. A promotion failure is
+  recorded as `skipped` with a reason and is invisible to the caller.
+- Cost: every capture is a `web_fetch` cost event against the same task and
+  reservation.
+- Enforced by `tests/integration/tests/rfc_031_evidence_promotion.rs`:
+  promote → rebuild → reuse, no pollution from rejected evidence, zero
+  external calls on the second equivalent query.
+
+**规范**：[`docs/rfc/rfc-031-external-evidence-promotion.md`](rfc-031-external-evidence-promotion.md)。
+
+#### 中文
+
+**决定。** 外部结果**只有**在任务最终质量门接受之后，才允许进入持久知识库。
+沉淀是异步且 outbox 驱动的：任务记录本次获取，捕获 worker 执行受控抓取与索引
+写入，用户响应不等待。未经验证的 Provider 摘要永不写入索引。
+
+**理由。**
+
+- 当前的内联写入（`search_service.rs:1384`）发生在最终质量门
+  （`search_service.rs:1489`）**之前**，因此被拒绝或存在冲突的证据已经躺在索引
+  里，日后会被当成第一方知识服务。
+- 那次写入只存摘要、不存文档行，于是 `rebuild_index`（`runtime.rs:645`）会把
+  买过的一切抹掉——知识库无法产生复利。
+- 写入后却被陈旧检索缓存挡住（外部写入路径从不调用 `invalidate_caches`）的
+  购买，等于付了钱却看不见——复利效应恰好在最该生效时被遮住。
+- 同步捕获会给每一次付费的响应加上抓取延迟。而 outbox 已经存在，每 1.5 秒
+  drain 一次。
+
+**影响。**
+
+- 外部结果路径从“内联写入摘要”改为“记录 → 排队捕获 → 写版本 → 写索引 →
+  失效缓存”。旧行为被移除而不是藏在开关后面，因为“索引未验证摘要”本身就是
+  那个缺陷。
+- 集合级的 `Partial` 结论不否定单个被接受的条目；未解决冲突则否定。
+- 沉淀永不改变响应状态。沉淀失败记为 `skipped` 并带原因，对调用方不可见。
+- 成本：每次捕获都是同一个任务、同一次预留下的一条 `web_fetch` 成本事件。
+- 由 `tests/integration/tests/rfc_031_evidence_promotion.rs` 守住：沉淀 → 重建
+  → 复用、被拒证据不污染、等价查询第二次零外部调用。
+
+---
+
+## 19.7 ADR-033: Workspace-Scoped Knowledge with an Explicit Binding Model
+
+**Decision.** Promoted knowledge is **workspace-scoped by default**.
+`document_bindings` records which workspaces may read a document and with what
+visibility (`workspace` or `public`). Cross-workspace public sharing is
+opt-in via `knowledge.public_web_knowledge` and is **off in v1**.
+
+**Why.**
+
+- The suite's baseline principle is explicit: *"默认 Workspace 隔离，显式授权后
+  才共享，不应该默认全局共享."* A purchase made in workspace A is not
+  automatically knowledge for workspace B.
+- `DocumentRepo::find_by_url` (`repos.rs:507`) matches on `canonical_url`
+  alone, so URL identity is global while ownership is not — a workspace
+  boundary cannot be expressed at all until a binding exists.
+- The store already has the right retrieval rule (`requester OR '*'`,
+  `repos.rs:639` / `697` / `853`, and the same predicate in the PostgreSQL and
+  MySQL backends). The binding model reuses it instead of inventing a second
+  visibility mechanism.
+- Introducing the binding table now means authorised sharing can be enabled
+  later **without a schema migration**.
+
+**Consequences.**
+
+- Promotion writes one binding for the acquiring workspace. A document
+  promoted in workspace A is invisible in workspace B.
+- `documents.visibility` is added with a `'workspace'` default; existing rows
+  keep their behaviour.
+- The RFC suite's global `*` namespace remains reserved for explicitly shared
+  knowledge, not for accidental cross-workspace leakage.
+
+#### 中文
+
+**决定。** 被沉淀的知识**默认按工作区隔离**。`document_bindings` 记录哪些工作
+区可以读某个文档，以及以什么可见性读（`workspace` 或 `public`）。跨工作区的
+公共共享由 `knowledge.public_web_knowledge` 显式开启，并且 **v1 关闭**。
+
+**理由。**
+
+- RFC 套件的基线原则写得很清楚：**“默认 Workspace 隔离，显式授权后才共享，
+  不应该默认全局共享。”** 工作区 A 的一次购买不会自动变成工作区 B 的知识。
+- `DocumentRepo::find_by_url`（`repos.rs:507`）只按 `canonical_url` 匹配，于是
+  URL 身份是全局的、归属却不是——在存在绑定之前，工作区边界根本无法表达。
+- 存储层已经有正确的检索规则（`requester OR '*'`，`repos.rs:639` / `697` /
+  `853`，以及 PostgreSQL / MySQL 后端中的同一谓词）。绑定模型复用它，而不是
+  再发明一套可见性机制。
+- 现在就引入绑定表，意味着日后开启授权共享**不需要 schema 迁移**。
+
+**影响。**
+
+- 沉淀为获取方工作区写一条绑定。在工作区 A 沉淀的文档在工作区 B 不可见。
+- `documents.visibility` 新增列，默认 `'workspace'`；既有行行为不变。
+- RFC 套件的全局 `*` 命名空间保留给显式共享的知识，而不是意外泄露。
+
+**规范**：[`docs/rfc/rfc-031-external-evidence-promotion.md`](rfc-031-external-evidence-promotion.md)。

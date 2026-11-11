@@ -39,6 +39,8 @@ single, reversible-with-effort commitment.
 | ADR-028 | Local Data Ingestion |
 | ADR-030 | Execution Correctness Baseline (Part 30) |
 | ADR-031 | MCP Transport: stdio-only in v1 |
+| ADR-032 | Quality-Gated Evidence Promotion |
+| ADR-033 | Workspace-Scoped Knowledge with an Explicit Binding Model |
 
 ## 中文
 
@@ -81,3 +83,5 @@ single, reversible-with-effort commitment.
 | ADR-028 | 本地数据导入 |
 | ADR-030 | 执行正确性基线（Part 30） |
 | ADR-031 | MCP 传输：v1 仅 stdio |
+| ADR-032 | 质量门控的外部证据沉淀 |
+| ADR-033 | 工作区隔离知识与显式绑定模型 |
