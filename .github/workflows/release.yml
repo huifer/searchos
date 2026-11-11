@@ -111,11 +111,11 @@ jobs:
         id: tags
         run: |
           version="${GITHUB_REF_NAME#v}"
-          repo="$(echo "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')"
+          owner="$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
           {
             echo "version=${version}"
-            echo "gateway=ghcr.io/${repo}/gateway"
-            echo "console=ghcr.io/${repo}/console"
+            echo "gateway=ghcr.io/${owner}/searchos-gateway"
+            echo "console=ghcr.io/${owner}/searchos-console"
           } >> "$GITHUB_OUTPUT"
       - name: Log in to GHCR
         uses: docker/login-action@v3
@@ -150,11 +150,11 @@ jobs:
         id: tags
         run: |
           version="${GITHUB_REF_NAME#v}"
-          repo="$(echo "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')"
+          owner="$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
           {
             echo "version=${version}"
-            echo "gateway=ghcr.io/${repo}/gateway"
-            echo "console=ghcr.io/${repo}/console"
+            echo "gateway=ghcr.io/${owner}/searchos-gateway"
+            echo "console=ghcr.io/${owner}/searchos-console"
           } >> "$GITHUB_OUTPUT"
       - name: Log in to GHCR
         uses: docker/login-action@v3

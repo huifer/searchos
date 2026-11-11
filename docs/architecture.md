@@ -28,9 +28,12 @@ Services, never only in an HTTP handler**, so Local Mode and Gateway Mode behave
 ┌──────────────────▼───────────────────────┐
 │            Infrastructure                 │
 │  SQLite · Tantivy · LanceDB · File/Object  │
-│  Queue · Provider · Embedding · Browser    │
+│  Queue · Provider · Embedding · Browser*   │
 └──────────────────────────────────────────┘
 ```
+
+`Browser*` is a later-phase architecture target — v1 ships no browser engine
+(see the non-goals in [`docs/roadmap.md`](roadmap.md)).
 
 | Module | Responsibility |
 |---|---|

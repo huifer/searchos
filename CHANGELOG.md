@@ -15,14 +15,29 @@ multi-arch images, and attaches the matching section of this file.
 
 ### Added
 
-- **Package-visibility workflow**: a `workflow_dispatch` workflow that flips
-  the released GHCR packages to public or private. The flip needs admin over
-  the package — GitHub rejects the call with the workflow's own `GITHUB_TOKEN`
-  (`packages: write` is not enough) — so it runs with a
-  `PACKAGES_ADMIN_TOKEN` secret (a classic PAT with `write:packages`); the
-  README and the runbook document the UI alternative.
+- **GHCR aliases workflow**: a `workflow_dispatch` workflow
+  (`ghcr-aliases.yml`) that copies an already published multi-arch manifest
+  to the documented simple names with `docker buildx imagetools create` — no
+  rebuild, seconds instead of hours.
 
-## [0.1.1] - 2026-11-10
+### Fixed
+
+- **Image naming / tag mismatch (real user-facing bug)**: `release.yml` derived
+  names from `${GITHUB_REPOSITORY}`, publishing
+  `ghcr.io/huifer/searchos/gateway:0.1.1`, while the README and runbook told
+  users to pull `ghcr.io/huifer/searchos-gateway:v0.1.1` — both the name and
+  the leading `v` were wrong. The workflow now publishes
+  `ghcr.io/<owner>/searchos-{gateway,console}:<version>`, `docker-compose.yml`
+  and the build examples use those exact names/tags, and the already published
+  `0.1.1` manifests are copied to the new names by `ghcr-aliases`.
+- The architecture diagrams now mark the browser engine as a later-phase
+  target (a v1 non-goal) instead of listing it as shipped infrastructure.
+- `sdk/typescript/README.md`, `sdk/python/README.md` and `tests/README.md`
+  gained 中文 sections, completing the bilingual convention for user-facing
+  documentation.
+- Corrected the `[0.1.1]` date to the actual publish date.
+
+## [0.1.1] - 2026-11-11
 
 Post-release corrections: container images are published, the remaining
 engineering reference docs are bilingual, and the repository metadata is

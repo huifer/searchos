@@ -154,15 +154,17 @@ for regions where crates.io is slow). See [`docs/deployment.md`](docs/deployment
 Prebuilt images are published for every release:
 
 ```bash
-docker pull ghcr.io/huifer/searchos-gateway:v0.1.1     # linux/amd64 + linux/arm64
-docker pull ghcr.io/huifer/searchos-console:v0.1.1
+docker pull ghcr.io/huifer/searchos-gateway:0.1.1     # linux/amd64 + linux/arm64
+docker pull ghcr.io/huifer/searchos-console:0.1.1
 ```
 
 They are pushed by the release workflow with its own `GITHUB_TOKEN`, so no
-registry secret is needed. A freshly pushed package is private by default —
-change it to public in GitHub → Packages (or configure a `write:packages` PAT
-as the `PACKAGES_ADMIN_TOKEN` secret and run the `package-visibility`
-workflow).
+registry secret is needed. `docker-compose.yml` uses these exact names and
+tags, so once the packages are public, `docker compose pull` + `docker compose
+up -d` runs the release artifacts without a local build. A freshly pushed
+package is private by default — change it to public in GitHub → Packages (or
+configure a `write:packages` PAT as the `PACKAGES_ADMIN_TOKEN` secret and run
+the `package-visibility` workflow).
 
 ## Releasing
 
@@ -209,9 +211,12 @@ match the workspace version or the workflow fails. See
 │            Infrastructure                │
 │  SQLite · Tantivy · LanceDB · File/Object  │
 │  + ES / Meili / PG / MySQL (selectable)   │
-│  Queue · Provider · Embedding · Browser    │
+│  Queue · Provider · Embedding · Browser*   │
 └──────────────────────────────────────────┘
 ```
+
+`Browser*` is a later-phase architecture target — v1 ships no browser engine
+(see the non-goals in [`docs/roadmap.md`](docs/roadmap.md)).
 
 See [`docs/architecture.md`](docs/architecture.md) and the canonical design in
 [`docs/rfc/README.md`](docs/rfc/README.md).

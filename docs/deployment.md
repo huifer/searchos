@@ -131,8 +131,8 @@ against a gateway that cannot serve its Read Model.
 ### 9. Building images without compose
 
 ```bash
-docker build --target gateway -t searchos/gateway:0.1.1 .
-docker build --target console -t searchos/console:0.1.1 .
+docker build --target gateway -t ghcr.io/huifer/searchos-gateway:0.1.1 .
+docker build --target console -t ghcr.io/huifer/searchos-console:0.1.1 .
 ```
 
 The Rust build uses BuildKit cache mounts for the cargo registry and
@@ -157,8 +157,8 @@ Every release also publishes ready-to-run images to GHCR, so you do not have to
 build locally at all:
 
 ```bash
-docker pull ghcr.io/huifer/searchos-gateway:v0.1.1     # linux/amd64 + linux/arm64
-docker pull ghcr.io/huifer/searchos-console:v0.1.1
+docker pull ghcr.io/huifer/searchos-gateway:0.1.1     # linux/amd64 + linux/arm64
+docker pull ghcr.io/huifer/searchos-console:0.1.1
 ```
 
 The release workflow logs in with its own `GITHUB_TOKEN` (the workflow already
@@ -171,8 +171,8 @@ Settings → General and set it to *Public*, or add a classic PAT with
 with 404 — it has write, not admin). Until the package is public,
 `docker login ghcr.io` with a token that has `read:packages`.
 
-Each architecture is also available on its own tag (`:v0.1.1-amd64`,
-`:v0.1.1-arm64`); the version tag is a multi-arch manifest that joins the two
+Each architecture is also available on its own tag (`:0.1.1-amd64`,
+`:0.1.1-arm64`); the version tag is a multi-arch manifest that joins the two
 native builds.
 
 ### 10. Release and rollback
@@ -191,7 +191,10 @@ git tag v0.1.1 && git push origin v0.1.1
 just an image:
 
 1. Roll the image back: `docker compose down`, set the image tag to the previous
-   version in `docker-compose.yml`, `docker compose up -d`.
+   version in `docker-compose.yml`, then `docker compose pull && docker compose
+   up -d` (or `docker compose up --build` to build that version locally).
+   Note: `v0.1.0` published no container images, so `0.1.1` is the earliest
+   tag you can pull.
 2. Roll the data back if the new version migrated the schema: restore the backup
    taken before the upgrade (`searchos backup create` → copy the directory off
    the container → `docker compose cp` it back → `searchos backup restore`).
@@ -317,8 +320,8 @@ Read Model 的网关启动。
 ### 9. 不用 compose 单独构建镜像
 
 ```bash
-docker build --target gateway -t searchos/gateway:0.1.1 .
-docker build --target console -t searchos/console:0.1.1 .
+docker build --target gateway -t ghcr.io/huifer/searchos-gateway:0.1.1 .
+docker build --target console -t ghcr.io/huifer/searchos-console:0.1.1 .
 ```
 
 Rust 构建对 cargo registry 与 `target/` 使用 BuildKit cache mount，源码变更后
@@ -340,8 +343,8 @@ Rust 构建对 cargo registry 与 `target/` 使用 BuildKit cache mount，源码
 每个版本也会把可直接运行的镜像发布到 GHCR，完全不需要本地构建：
 
 ```bash
-docker pull ghcr.io/huifer/searchos-gateway:v0.1.1     # linux/amd64 + linux/arm64
-docker pull ghcr.io/huifer/searchos-console:v0.1.1
+docker pull ghcr.io/huifer/searchos-gateway:0.1.1     # linux/amd64 + linux/arm64
+docker pull ghcr.io/huifer/searchos-console:0.1.1
 ```
 
 release 工作流用自带的 `GITHUB_TOKEN` 登录（工作流已声明 `packages: write`），
@@ -352,7 +355,7 @@ Settings → General 改为 *Public*；或者在仓库密钥里配置一个带 `
 工作流（工作流自带的 `GITHUB_TOKEN` 只有 write 没有 admin，API 会返回 404）。
 在 package 公开之前，需要用带 `read:packages` 权限的 token 执行 `docker login ghcr.io`。
 
-每个架构也有独立 tag（`:v0.1.1-amd64`、`:v0.1.1-arm64`）；版本 tag 是把两个原生
+每个架构也有独立 tag（`:0.1.1-amd64`、`:0.1.1-arm64`）；版本 tag 是把两个原生
 构建合在一起的多架构 manifest。
 
 ### 10. 发版与回滚
@@ -369,7 +372,9 @@ git tag v0.1.1 && git push origin v0.1.1
 **回滚**分两步，因为知识库是数据而不只是镜像：
 
 1. 回滚镜像：`docker compose down`，把 `docker-compose.yml` 里的镜像 tag 改成
-   上一个版本，`docker compose up -d`。
+   上一个版本，然后 `docker compose pull && docker compose up -d`（或者
+   `docker compose up --build` 本地构建该版本）。注意 `v0.1.0` 没有发布过
+   容器镜像，最早可拉取的 tag 是 `0.1.1`。
 2. 如果新版本迁移过 schema，还要回滚数据：恢复升级前的备份
    （`searchos backup create` → 把目录拷出容器 → `docker compose cp` 拷回 →
    `searchos backup restore`）。迁移是只增不改的，所以旧版本二进制会通过

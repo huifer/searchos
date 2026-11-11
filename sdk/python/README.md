@@ -75,3 +75,81 @@ Every operation in `docs/openapi.yaml` has a typed method:
   label only — the server never writes to its own filesystem.
 - SSE (`/api/v1/dashboard/events`) is intentionally not wrapped: it is a
   refetch hint, and the Read Model remains the historical truth.
+
+## 中文
+
+# searchos-sdk（Python）
+
+SearchOS Gateway API 的类型化 Python 客户端。
+
+由 [`docs/openapi.yaml`](../../docs/openapi.yaml) 生成。该文档是冻结的对外契约，
+并由 Rust 测试 `openapi_spec_matches_the_route_table` 与真实 Axum 路由表比对，
+所以这里的方法不可能与网关脱节而不被 CI 发现。
+
+## 安装
+
+```bash
+pip install searchos-sdk
+```
+
+## 用法
+
+```python
+from searchos import SearchOSClient, SearchOSError
+
+searchos = SearchOSClient(
+    base_url="http://127.0.0.1:8787",
+    base_path="/v1",                      # 可选；同一批路径也挂在未加版本前缀的位置
+    token=None,                           # 配置了 server.auth_token 时传入
+)
+
+response = searchos.search("hybrid retrieval RRF fusion", mode="local-only", max_results=5)
+# status 是显式的：partial / insufficient_evidence 绝不会被写成 completed。
+print(response["status"], len(response["results"]), response.get("trace_id"))
+
+# 把本地文本导入与 URL 抓取完全相同的知识库。
+doc = searchos.ingest_text(
+    "SearchOS serves evidence, not generated answers.",
+    source_key="notes/searchos",
+    title="SearchOS note",
+)
+print(doc["document_id"], doc["changed"])
+
+# 查看、重新索引、删除——文档生命周期。
+detail = searchos.get_document(doc["document_id"])
+print(detail["summary"]["status"], len(detail["versions"]))
+searchos.reindex_document(doc["document_id"])
+searchos.delete_document(doc["document_id"])
+
+# Analytics Read Model：过滤条件下推到 SQL，meta 会声明哪些被应用、
+# 哪些是该数据集无法应用的。
+overview = searchos.dashboard_overview(interval="week")
+print(overview["meta"]["query_mode"], overview["meta"]["applied_filters"])
+
+# 错误对象携带网关状态与错误码。
+try:
+    searchos.get_document("doc_missing")
+except SearchOSError as error:
+    print(error.status, error.code)
+```
+
+## 覆盖范围
+
+`docs/openapi.yaml` 中的每个操作都有对应的类型化方法：
+
+| 分组 | 方法 |
+|---|---|
+| 搜索 | `search` |
+| 知识 | `extract`、`ingest_text`、`ingest_file`、`ingest_batch`、`get_ingest_job`、`list_documents`、`get_document`、`get_document_versions`、`reindex_document`、`delete_document`、`search_documents` |
+| 记忆 | `search_memory` |
+| 成本 | `cost_summary`、`cost_providers`、`cost_savings`、`cost_reservations`、`reconcile_cost` |
+| 可观测性 | `stats_search`、`stats_savings`、`stats_retrieval`、`get_decision`、`list_traces`、`system_status`、`list_profiles`、`get_profile`、`health`、`metrics` |
+| 分析 | `dashboard_overview`、`dashboard_dataset`、`dashboard_export` |
+
+## 说明
+
+- 客户端只使用标准库（`urllib.request`），没有运行时依赖。
+- `ingest_file` 以 multipart/form-data 流式上传，文件名仅作为标签——
+  服务端永远不会写入自己的文件系统。
+- SSE（`/api/v1/dashboard/events`）有意不做封装：它只是重取提示，
+  Read Model 仍是历史的真实来源。

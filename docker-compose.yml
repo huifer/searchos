@@ -21,7 +21,9 @@ services:
       context: .
       dockerfile: Dockerfile
       target: gateway
-    image: searchos/gateway:0.1.1
+    # Same names/tags as the published GHCR images: `up` builds locally and
+    # tags them identically; `docker compose pull` uses the release artifacts.
+    image: ghcr.io/huifer/searchos-gateway:0.1.1
     container_name: searchos-gateway
     restart: unless-stopped
     # 0.0.0.0 inside the container; publish only on loopback by default so a
@@ -56,7 +58,8 @@ services:
       context: .
       dockerfile: Dockerfile
       target: console
-    image: searchos/console:0.1.1
+    # Same names/tags as the published GHCR images (see the gateway service).
+    image: ghcr.io/huifer/searchos-console:0.1.1
     container_name: searchos-console
     restart: unless-stopped
     ports:

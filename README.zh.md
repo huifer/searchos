@@ -144,11 +144,13 @@ MCP 仅 stdio（ADR-031），因此没有 MCP 容器——远程 agent 走 REST 
 每个版本都会发布预构建镜像：
 
 ```bash
-docker pull ghcr.io/huifer/searchos-gateway:v0.1.1     # linux/amd64 + linux/arm64
-docker pull ghcr.io/huifer/searchos-console:v0.1.1
+docker pull ghcr.io/huifer/searchos-gateway:0.1.1     # linux/amd64 + linux/arm64
+docker pull ghcr.io/huifer/searchos-console:0.1.1
 ```
 
 镜像由 release 工作流用自己的 `GITHUB_TOKEN` 推送，不需要额外的仓库密钥。
+`docker-compose.yml` 使用完全相同的名字与 tag，所以 package 公开后
+`docker compose pull` + `docker compose up -d` 即可直接运行发布产物，无需本地构建。
 新推送的 package 默认是私有的——请在 GitHub → Packages 改为公开；
 或者配置一个 `write:packages` PAT 作为 `PACKAGES_ADMIN_TOKEN` 密钥，
 然后运行 `package-visibility` 工作流。
@@ -196,9 +198,12 @@ git push origin v0.1.1
 │              基础设施 Infrastructure      │
 │  SQLite · Tantivy · LanceDB · 文件/对象    │
 │  + ES / Meili / PG / MySQL（可选）          │
-│  队列 · Provider · Embedding · 浏览器      │
+│  队列 · Provider · Embedding · 浏览器*     │
 └──────────────────────────────────────────┘
 ```
+
+`浏览器*` 是后续阶段的架构目标——v1 不包含浏览器引擎（见
+[`docs/roadmap.md`](docs/roadmap.md) 的 non-goals）。
 
 详见 [`docs/architecture.md`](docs/architecture.md) 与正式设计文档
 [`docs/rfc/README.md`](docs/rfc/README.md)。

@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1
 # Multi-stage build for SearchOS.
 #
-#   docker build --target gateway . -t searchos/gateway:0.1.1
-#   docker build --target console . -t searchos/console:0.1.1
+#   docker build --target gateway . -t ghcr.io/huifer/searchos-gateway:0.1.1
+#   docker build --target console . -t ghcr.io/huifer/searchos-console:0.1.1
 #   docker compose up --build
 #
 # Targets:
