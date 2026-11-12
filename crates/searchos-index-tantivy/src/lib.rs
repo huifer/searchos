@@ -4,7 +4,16 @@
 //! this index can be dropped and rebuilt from document chunks (ADR-022).
 //! Index writes flow through the transactional outbox; this adapter also
 //! serves direct BM25 queries for the retrieval layer.
+//!
+//! User text is analyzed with the SearchOS analyzer (see [`analyzer`]): CJK
+//! runs become character bigrams, Latin runs are stemmed. Queries are built
+//! as literal analyzer terms — tantivy query syntax is never interpreted
+//! from user input, so a URL or a stray `:` in a query can never fail the
+//! request.
 
+pub mod analyzer;
+
+use analyzer::{register_analyzers, SEARCHOS_TOKENIZER};
 use async_trait::async_trait;
 use searchos_domain::retrieval::{
     IndexedDocument, RetrievalCandidate, RetrievalQuery, RetrievalSource,
@@ -15,8 +24,9 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use tantivy::collector::TopDocs;
-use tantivy::query::{BooleanQuery, Query, QueryParser, TermQuery};
+use tantivy::query::{BooleanQuery, BoostQuery, FuzzyTermQuery, Occur, Query, TermQuery};
 use tantivy::schema::{Field, IndexRecordOption, Schema, TextFieldIndexing, TextOptions, STORED};
+use tantivy::tokenizer::TextAnalyzer;
 use tantivy::{doc, Index, IndexWriter, Term};
 
 /// Tantivy-backed BM25 index.
@@ -64,6 +74,11 @@ impl TantivyIndex {
     }
 
     fn from_index(index: Index, schema: Schema) -> Result<Self, SearchOsError> {
+        // Register the SearchOS analyzer (CJK bigrams + English stemming)
+        // before any writer/searcher is created. Also overrides the legacy
+        // `en_stem` name referenced by pre-CJK index schemas, so writes,
+        // queries and a plain `rebuild_from` all use the new analysis.
+        register_analyzers(&index);
         let writer = index
             .writer(15_000_000)
             .map_err(|e| SearchOsError::Storage(format!("index writer: {e}")))?;
@@ -104,7 +119,7 @@ impl TantivyIndex {
         let text_index = TextOptions::default()
             .set_indexing_options(
                 TextFieldIndexing::default()
-                    .set_tokenizer("en_stem")
+                    .set_tokenizer(SEARCHOS_TOKENIZER)
                     .set_fieldnorms(true)
                     .set_index_option(IndexRecordOption::WithFreqsAndPositions),
             )
@@ -130,30 +145,165 @@ impl TantivyIndex {
         sb.build()
     }
 
-    /// BM25 query parse + filter composition.
-    fn build_query(&self, query: &RetrievalQuery) -> Result<Box<dyn Query>, SearchOsError> {
-        let parser = QueryParser::for_index(&self.index, vec![self.f_title, self.f_body]);
-        let user_q = parser
-            .parse_query(&query.text)
-            .map_err(|e| SearchOsError::Retrieval(format!("query parse: {e}")))?;
-        let mut clauses: Vec<(tantivy::query::Occur, Box<dyn Query>)> =
-            vec![(tantivy::query::Occur::Must, Box::new(user_q))];
-        // Workspace scope: the requesting workspace OR the global `*`
-        // namespace (RFC-013 8.7). Other workspaces are never included, so
-        // requester isolation is preserved.
-        if let Some(ws) = &query.workspace_id {
+    /// Resolves the text analyzer the stored schema actually references, so
+    /// index and query analysis always agree (legacy indexes override the
+    /// `en_stem` name; fresh ones use [`analyzer::SEARCHOS_TOKENIZER`]).
+    fn body_analyzer(&self) -> Result<TextAnalyzer, SearchOsError> {
+        let schema = self.index.schema();
+        let name = match schema.get_field_entry(self.f_body).field_type() {
+            tantivy::schema::FieldType::Str(options) => options
+                .get_indexing_options()
+                .map(|o| o.tokenizer().to_string())
+                .unwrap_or_default()
+                .to_string(),
+            _ => SEARCHOS_TOKENIZER.to_string(),
+        };
+        self.index
+            .tokenizers()
+            .get(&name)
+            .ok_or_else(|| SearchOsError::Retrieval(format!("analyzer {name} not registered")))
+    }
+
+    /// Extracts literal query terms with the index analyzer.
+    ///
+    /// Tantivy query syntax is never interpreted from user input: a URL, a
+    /// colon, an unclosed quote or a trailing `AND` used to fail the whole
+    /// search (`Field does not exist: 'https'` → HTTP 500). Literal analyzer
+    /// terms also match the remote-backend contract — the Elasticsearch
+    /// adapter sends `multi_match`, which analyzes the raw text too.
+    fn query_terms(&self, text: &str) -> Result<Vec<String>, SearchOsError> {
+        let mut analyzer = self.body_analyzer()?;
+        let mut stream = analyzer.token_stream(text);
+        let mut terms: Vec<String> = Vec::new();
+        while let Some(token) = stream.next() {
+            let term = token.text.clone();
+            if !terms.contains(&term) {
+                terms.push(term);
+            }
+            if terms.len() >= analyzer::MAX_QUERY_TERMS {
+                break;
+            }
+        }
+        Ok(terms)
+    }
+
+    /// Typo-tolerant fallback query: edit-distance-1 OR across title+body
+    /// for long ASCII terms only. `None` when no term qualifies (then the
+    /// caller keeps the empty exact result — honest zero, not noise).
+    fn build_fuzzy_query(
+        &self,
+        query: &RetrievalQuery,
+    ) -> Result<Option<Box<dyn Query>>, SearchOsError> {
+        let terms = self.query_terms(&query.text)?;
+        let mut clauses: Vec<(Occur, Box<dyn Query>)> = Vec::new();
+        for term in &terms {
+            let is_long_ascii = term.is_ascii() && term.chars().count() >= 4;
+            if !is_long_ascii {
+                continue;
+            }
             clauses.push((
-                tantivy::query::Occur::Must,
+                Occur::Should,
+                Box::new(FuzzyTermQuery::new(
+                    Term::from_field_text(self.f_body, term),
+                    1,
+                    true,
+                )),
+            ));
+            clauses.push((
+                Occur::Should,
+                Box::new(FuzzyTermQuery::new(
+                    Term::from_field_text(self.f_title, term),
+                    1,
+                    true,
+                )),
+            ));
+        }
+        if clauses.is_empty() {
+            return Ok(None);
+        }
+        let terms_query = BooleanQuery::new(clauses);
+        let mut top: Vec<(Occur, Box<dyn Query>)> = vec![(Occur::Must, Box::new(terms_query))];
+        if let Some(ws) = &query.workspace_id {
+            top.push((
+                Occur::Must,
                 Box::new(BooleanQuery::new(vec![
                     (
-                        tantivy::query::Occur::Should,
+                        Occur::Should,
                         Box::new(TermQuery::new(
                             Term::from_field_text(self.f_workspace, ws),
                             IndexRecordOption::Basic,
                         )) as Box<dyn Query>,
                     ),
                     (
-                        tantivy::query::Occur::Should,
+                        Occur::Should,
+                        Box::new(TermQuery::new(
+                            Term::from_field_text(self.f_workspace, "*"),
+                            IndexRecordOption::Basic,
+                        )) as Box<dyn Query>,
+                    ),
+                ])),
+            ));
+        }
+        Ok(Some(Box::new(BooleanQuery::new(top))))
+    }
+
+    /// Builds the query: literal analyzer terms OR'd across title+body,
+    /// scoped to the requesting workspace (plus the global `*` namespace,
+    /// RFC-013 8.7) and the requested language. Other workspaces are never
+    /// included, so requester isolation is preserved.
+    fn build_query(&self, query: &RetrievalQuery) -> Result<Box<dyn Query>, SearchOsError> {
+        let terms = self.query_terms(&query.text)?;
+        if terms.is_empty() {
+            // Nothing analyzable (punctuation-only or empty query): match
+            // nothing rather than the whole workspace.
+            return Ok(Box::new(tantivy::query::EmptyQuery));
+        }
+        let mut clauses: Vec<(Occur, Box<dyn Query>)> = Vec::with_capacity(3);
+        // The user terms form their own OR-only BooleanQuery: a Should
+        // clause alongside a Must clause would be optional (scoring only),
+        // so it must be nested under Must to actually filter.
+        // Field-weighted ranking (BM25F-lite): title terms carry an explicit
+        // boost so a title hit outranks the same terms buried in the body.
+        // Aligned with the Elasticsearch adapter's `title^2`.
+        let title_boost = if query.title_boost > 0.0 {
+            query.title_boost
+        } else {
+            2.0
+        };
+        let mut user_clauses: Vec<(Occur, Box<dyn Query>)> = Vec::with_capacity(terms.len() * 2);
+        for term in &terms {
+            user_clauses.push((
+                Occur::Should,
+                Box::new(BoostQuery::new(
+                    Box::new(TermQuery::new(
+                        Term::from_field_text(self.f_title, term),
+                        IndexRecordOption::WithFreqsAndPositions,
+                    )),
+                    title_boost,
+                )),
+            ));
+            user_clauses.push((
+                Occur::Should,
+                Box::new(TermQuery::new(
+                    Term::from_field_text(self.f_body, term),
+                    IndexRecordOption::WithFreqsAndPositions,
+                )),
+            ));
+        }
+        clauses.push((Occur::Must, Box::new(BooleanQuery::new(user_clauses))));
+        if let Some(ws) = &query.workspace_id {
+            clauses.push((
+                Occur::Must,
+                Box::new(BooleanQuery::new(vec![
+                    (
+                        Occur::Should,
+                        Box::new(TermQuery::new(
+                            Term::from_field_text(self.f_workspace, ws),
+                            IndexRecordOption::Basic,
+                        )) as Box<dyn Query>,
+                    ),
+                    (
+                        Occur::Should,
                         Box::new(TermQuery::new(
                             Term::from_field_text(self.f_workspace, "*"),
                             IndexRecordOption::Basic,
@@ -164,8 +314,8 @@ impl TantivyIndex {
         }
         if let Some(lang) = &query.language {
             clauses.push((
-                tantivy::query::Occur::Must,
-                Box::new(tantivy::query::TermQuery::new(
+                Occur::Must,
+                Box::new(TermQuery::new(
                     Term::from_field_text(self.f_language, lang),
                     IndexRecordOption::Basic,
                 )),
@@ -220,6 +370,14 @@ impl TantivyIndex {
     /// Current index version (invalidates retrieval caches on change).
     pub fn version(&self) -> u64 {
         self.index_version.load(Ordering::SeqCst)
+    }
+
+    /// Whether the index's stored schema uses the current SearchOS analyzer.
+    /// `false` for indexes created before CJK analysis existed: they keep
+    /// working (the analyzer is registered under the legacy `en_stem` name),
+    /// but old CJK rows only become searchable after `searchos index rebuild`.
+    pub fn analyzer_is_current(&self) -> bool {
+        analyzer::schema_uses_current_analyzer(&self.index.schema(), self.f_body)
     }
 
     /// Authoritative committed doc count from the tantivy searcher.
@@ -291,9 +449,29 @@ impl SearchIndex for TantivyIndex {
         let searcher = reader.searcher();
         let q = self.build_query(query)?;
         let top = TopDocs::with_limit(query.top_k.max(1)).order_by_score();
-        let hits = searcher
+        let mut hits = searcher
             .search(&q, &top)
             .map_err(|e| SearchOsError::Retrieval(format!("search: {e}")))?;
+        if hits.is_empty() {
+            // Typo tolerance (RFC-007 recall): when no exact term matches,
+            // retry once with edit-distance-1 terms. Only long ASCII terms
+            // participate — short/CJK bigram terms would match noise.
+            if let Some(fuzzy) = self.build_fuzzy_query(query)? {
+                hits = searcher
+                    .search(&fuzzy, &top)
+                    .map_err(|e| SearchOsError::Retrieval(format!("search: fuzzy {e}")))?;
+            }
+        }
+
+        // Query-matched snippet/highlight (RFC-007 7.1 result shaping): the
+        // returned passage is the region around the MATCH, not the first 400
+        // characters of the body. Best-effort — an analysis hiccup degrades
+        // to the leading window, never fails the search.
+        let mut snippet_gen =
+            tantivy::snippet::SnippetGenerator::create(&searcher, q.as_ref(), self.f_body).ok();
+        if let Some(gen) = snippet_gen.as_mut() {
+            gen.set_max_num_chars(400);
+        }
 
         let mut out = Vec::with_capacity(hits.len());
         for (score, addr) in hits {
@@ -319,16 +497,21 @@ impl SearchIndex for TantivyIndex {
                     }
                 })
                 .unwrap_or_else(|| chrono::Utc::now().timestamp());
+            let body = get(self.f_body).unwrap_or_default();
+            let (snippet, highlight) = match snippet_gen.as_ref().map(|gen| gen.snippet(&body)) {
+                Some(s) if !s.is_empty() => {
+                    let marked = s.to_html();
+                    let plain: String = marked.replace("<b>", "").replace("</b>", "");
+                    (plain, Some(marked))
+                }
+                _ => (body.chars().take(400).collect(), None),
+            };
             out.push(RetrievalCandidate {
                 chunk_id: ChunkId::new(get(self.f_chunk_id).unwrap_or_default()),
                 document_id: DocumentId::new(get(self.f_document_id).unwrap_or_default()),
                 version_id: DocumentVersionId::new(get(self.f_version_id).unwrap_or_default()),
                 title: get(self.f_title).filter(|s| !s.is_empty()),
-                snippet: get(self.f_body)
-                    .unwrap_or_default()
-                    .chars()
-                    .take(400)
-                    .collect(),
+                snippet,
                 url: get(self.f_url).unwrap_or_default(),
                 score,
                 source: RetrievalSource::Bm25,
@@ -337,6 +520,7 @@ impl SearchIndex for TantivyIndex {
                 bm25_score: Some(score),
                 workspace_id: get(self.f_workspace),
                 language: get(self.f_language),
+                highlight,
             });
         }
         Ok(out)
@@ -431,6 +615,240 @@ mod tests {
             "top hit: {}",
             hits[0].snippet
         );
+    }
+
+    fn doc_titled(chunk: &str, title: &str, body: &str) -> IndexedDocument {
+        IndexedDocument {
+            chunk_id: ChunkId::new(chunk),
+            document_id: DocumentId::new(format!("doc_{chunk}")),
+            version_id: DocumentVersionId::new(format!("docv_{chunk}")),
+            title: Some(title.into()),
+            body: body.into(),
+            url: "https://example.com".into(),
+            language: Some("en".into()),
+            workspace_id: "ws_test".into(),
+            fetched_at: Utc::now(),
+        }
+    }
+
+    fn zh_doc(chunk: &str, title: &str, body: &str) -> IndexedDocument {
+        IndexedDocument {
+            chunk_id: ChunkId::new(chunk),
+            document_id: DocumentId::new("doc_zh"),
+            version_id: DocumentVersionId::new("docv_zh"),
+            title: Some(title.into()),
+            body: body.into(),
+            url: "searchos-local://ws/zh".into(),
+            language: Some("zh".into()),
+            workspace_id: "ws_test".into(),
+            fetched_at: Utc::now(),
+        }
+    }
+
+    #[tokio::test]
+    async fn cjk_content_is_retrievable() {
+        // Regression: the old `en_stem` chain tokenized this sentence body to
+        // ZERO terms (RemoveLongFilter counts bytes; 3 bytes/char), so every
+        // Chinese query returned `insufficient_evidence`.
+        let idx = TantivyIndex::in_memory().unwrap();
+        idx.index(zh_doc(
+            "zh1",
+            "本地优先检索引擎",
+            "这是关于本地优先检索引擎的详细说明。系统会先在本地知识库解析问题。",
+        ))
+        .await
+        .unwrap();
+        idx.commit().await.unwrap();
+
+        for q in ["本地优先检索引擎", "检索引擎", "知识库解析", "本地知识库"]
+        {
+            let hits = idx.search(&RetrievalQuery::new(q, 5)).await.unwrap();
+            assert!(!hits.is_empty(), "CJK query {q:?} must match");
+            assert!(hits[0].bm25_score.is_some());
+        }
+    }
+
+    #[tokio::test]
+    async fn cjk_subphrase_matches_with_lower_score_than_full_phrase() {
+        let idx = TantivyIndex::in_memory().unwrap();
+        idx.index(zh_doc(
+            "zh1",
+            "本地优先检索引擎",
+            "这是关于本地优先检索引擎的详细说明",
+        ))
+        .await
+        .unwrap();
+        idx.index(zh_doc("zh2", "检索", "其他检索相关的独立内容"))
+            .await
+            .unwrap();
+        idx.commit().await.unwrap();
+        let hits = idx
+            .search(&RetrievalQuery::new("本地优先检索引擎", 5))
+            .await
+            .unwrap();
+        // The doc containing the full phrase outranks the partial match.
+        assert_eq!(hits[0].chunk_id.as_str(), "zh1");
+    }
+
+    #[tokio::test]
+    async fn query_with_url_does_not_fail_and_still_matches() {
+        // Regression: `QueryParser` interpreted `https:` as a field selector
+        // and the whole search failed with `Field does not exist: 'https'`.
+        let idx = TantivyIndex::in_memory().unwrap();
+        idx.index(doc("c1", "see the tokio runtime docs for rust async"))
+            .await
+            .unwrap();
+        idx.commit().await.unwrap();
+        let hits = idx
+            .search(&RetrievalQuery::new(
+                "see https://tokio.rs/tokio for rust",
+                5,
+            ))
+            .await
+            .unwrap();
+        assert!(!hits.is_empty(), "URL-bearing query must degrade to terms");
+    }
+
+    #[tokio::test]
+    async fn malformed_query_syntax_never_fails_the_search() {
+        let idx = TantivyIndex::in_memory().unwrap();
+        idx.index(doc("c1", "rust is a programming language"))
+            .await
+            .unwrap();
+        idx.commit().await.unwrap();
+        for raw in [
+            "rust \"unclosed",
+            "rust AND",
+            "rust OR",
+            "field:x rust",
+            "rust -rust",
+            "!!!",
+            "",
+        ] {
+            let result = idx.search(&RetrievalQuery::new(raw, 5)).await;
+            assert!(
+                result.is_ok(),
+                "query {raw:?} must not error: {:?}",
+                result.err()
+            );
+        }
+        // Punctuation-only query matches nothing (not the whole workspace).
+        let hits = idx.search(&RetrievalQuery::new("!!!", 5)).await.unwrap();
+        assert!(hits.is_empty());
+    }
+
+    #[tokio::test]
+    async fn title_hit_outranks_body_hit() {
+        // BM25F-lite: identical query terms; the title match must win.
+        let idx = TantivyIndex::in_memory().unwrap();
+        idx.index(doc("in_body", "rust tokio runtime"))
+            .await
+            .unwrap();
+        idx.index(doc_titled(
+            "in_title",
+            "rust tokio runtime",
+            "unrelated body",
+        ))
+        .await
+        .unwrap();
+        idx.commit().await.unwrap();
+        let hits = idx
+            .search(&RetrievalQuery::new("rust tokio runtime", 5))
+            .await
+            .unwrap();
+        assert_eq!(hits[0].chunk_id.as_str(), "in_title");
+    }
+
+    #[tokio::test]
+    async fn typo_query_falls_back_to_edit_distance_one() {
+        let idx = TantivyIndex::in_memory().unwrap();
+        idx.index(doc(
+            "c1",
+            "tokio provides an asynchronous runtime for rust applications",
+        ))
+        .await
+        .unwrap();
+        idx.commit().await.unwrap();
+        // Both terms misspelled ("asynchronus" / "runtme"): the exact pass
+        // finds nothing, and the built-in fuzzy fallback recovers the
+        // document. No spelling-corrected "did you mean" round trip needed.
+        let fuzzy = idx
+            .search(&RetrievalQuery::new("asynchronus runtme", 5))
+            .await
+            .unwrap();
+        assert_eq!(fuzzy.len(), 1, "one-char typos must still match");
+        assert_eq!(fuzzy[0].chunk_id.as_str(), "c1");
+    }
+
+    #[tokio::test]
+    async fn snippet_is_query_matched_with_highlight() {
+        let idx = TantivyIndex::in_memory().unwrap();
+        let filler = "filler ".repeat(80);
+        idx.index(doc_titled(
+            "s1",
+            "needle doc",
+            &format!("{filler}NEEDLE {filler}second {filler}"),
+        ))
+        .await
+        .unwrap();
+        idx.commit().await.unwrap();
+        let hits = idx.search(&RetrievalQuery::new("needle", 5)).await.unwrap();
+        assert_eq!(hits.len(), 1);
+        // Regression: the old snippet was the leading 400 chars and did not
+        // contain the match at all.
+        assert!(
+            hits[0].snippet.contains("NEEDLE"),
+            "snippet must contain the matched term: {}",
+            hits[0].snippet
+        );
+        assert!(hits[0].highlight.is_some());
+        let marked = hits[0].highlight.as_ref().unwrap();
+        assert!(
+            marked.contains("<b>"),
+            "highlight carries markers: {marked}"
+        );
+        assert!(
+            marked.to_lowercase().contains("<b>needle</b>"),
+            "got {marked}"
+        );
+        // The plain snippet is the same passage with markers removed.
+        assert_eq!(
+            hits[0].snippet,
+            marked.replace("<b>", "").replace("</b>", "")
+        );
+    }
+
+    #[tokio::test]
+    async fn unrelated_documents_do_not_match_cjk_queries() {
+        // Regression: Should terms nested beside a Must clause are optional
+        // in tantivy (scoring only), so the workspace filter alone matched
+        // every document regardless of terms. The term query must be its
+        // own Must-wrapped OR block.
+        let idx = TantivyIndex::in_memory().unwrap();
+        idx.index(zh_doc(
+            "zh1",
+            "本地优先检索引擎",
+            "这是关于本地优先检索引擎的详细说明",
+        ))
+        .await
+        .unwrap();
+        idx.index(doc("en1", "tokio and axum are rust frameworks"))
+            .await
+            .unwrap();
+        idx.commit().await.unwrap();
+
+        let hits = idx
+            .search(&RetrievalQuery::new("熊猫篮球比赛", 5))
+            .await
+            .unwrap();
+        assert!(hits.is_empty(), "nonsense query must not match: {hits:?}");
+
+        let hits = idx
+            .search(&RetrievalQuery::new("本地优先检索引擎", 5))
+            .await
+            .unwrap();
+        assert_eq!(hits.len(), 1, "only the CJK doc matches");
+        assert_eq!(hits[0].chunk_id.as_str(), "zh1");
     }
 
     #[tokio::test]

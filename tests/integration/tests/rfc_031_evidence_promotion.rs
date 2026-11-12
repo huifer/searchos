@@ -798,6 +798,7 @@ mod pipeline {
                 negative_cache: runtime.negative_cache.clone(),
                 semantic_dedup: true,
                 incremental: true,
+                session_store: None,
                 query_expansion: true,
                 reranking: true,
                 allow_external: true,

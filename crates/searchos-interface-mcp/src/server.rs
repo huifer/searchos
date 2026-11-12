@@ -26,9 +26,47 @@ pub fn tools() -> Vec<Value> {
                     "mode": { "type": "string", "enum": ["local_only","local_first","external_first","external_only","hybrid"] },
                     "workspace_id": { "type": "string" },
                     "max_external_queries": { "type": "integer", "minimum": 0 },
+                    "max_acquisition_rounds": { "type": "integer", "minimum": 1, "maximum": 5, "description": "Bounded iterative retrieval rounds; total query and cost caps remain cumulative." },
                     "max_total_cost": { "type": "number", "minimum": 0 },
                     "max_results": { "type": "integer", "minimum": 1, "maximum": 100 },
                     "request_id": { "type": "string", "description": "Client idempotency key; replaying it does not re-run or re-bill an external search." }
+                },
+                "required": ["query"]
+            }
+        }),
+        json!({
+            "name": "research",
+            "description": "Multi-turn research search: runs the quality-gated search with bounded iterative acquisition rounds, records the turn in an agent session and returns the open requirements so the next turn can target them. Use `search` for a single-shot query.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "Research question" },
+                    "profile": { "type": "string", "enum": ["general","technical","latest","research","exact","offline"] },
+                    "mode": { "type": "string", "enum": ["local_only","local_first","external_first","external_only","hybrid"] },
+                    "workspace_id": { "type": "string" },
+                    "session_id": { "type": "string", "description": "Session to continue; a new one is created when omitted." },
+                    "focus_requirements": { "type": "array", "items": { "type": "string" }, "description": "Open requirements to target; defaults to the previous turn's gaps." },
+                    "max_acquisition_rounds": { "type": "integer", "minimum": 1, "maximum": 5 },
+                    "max_external_queries": { "type": "integer", "minimum": 0 },
+                    "max_total_cost": { "type": "number", "minimum": 0 },
+                    "max_results": { "type": "integer", "minimum": 1, "maximum": 100 }
+                },
+                "required": ["query"]
+            }
+        }),
+        json!({
+            "name": "plan",
+            "description": "Plan-only: shows which queries WOULD be executed for a question, the open requirements and the estimated cost. No external call is made and nothing is billed.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string" },
+                    "profile": { "type": "string", "enum": ["general","technical","latest","research","exact","offline"] },
+                    "mode": { "type": "string", "enum": ["local_only","local_first","external_first","external_only","hybrid"] },
+                    "workspace_id": { "type": "string" },
+                    "focus_requirements": { "type": "array", "items": { "type": "string" } },
+                    "max_external_queries": { "type": "integer", "minimum": 0 },
+                    "max_total_cost": { "type": "number", "minimum": 0 }
                 },
                 "required": ["query"]
             }
@@ -147,6 +185,8 @@ pub fn tools() -> Vec<Value> {
 /// Tool catalogue constant (name list).
 pub const TOOLS: &[&str] = &[
     "search",
+    "research",
+    "plan",
     "fetch",
     "extract",
     "ingest_text",
@@ -252,6 +292,9 @@ async fn call_tool(runtime: Arc<SearchOsRuntime>, params: &Value) -> Result<Valu
             if let Some(n) = args.get("max_external_queries").and_then(|n| n.as_u64()) {
                 req.budget.max_external_queries = n as u32;
             }
+            if let Some(n) = args.get("max_acquisition_rounds").and_then(|n| n.as_u64()) {
+                req.budget.max_acquisition_rounds = (n as u32).clamp(1, 5);
+            }
             if let Some(c) = args.get("max_total_cost").and_then(|c| c.as_f64()) {
                 req.budget.max_total_cost_micros = (c * 1_000_000.0).round() as i64;
             }
@@ -272,6 +315,111 @@ async fn call_tool(runtime: Arc<SearchOsRuntime>, params: &Value) -> Result<Valu
                     .truncate(searchos_domain::request::clamp_max_results(max as u32) as usize);
             }
             serde_json::to_value(resp)
+                .map_err(|e| json!({ "code": -32603, "message": e.to_string() }))?
+        }
+        "research" => {
+            let query = args
+                .get("query")
+                .and_then(|q| q.as_str())
+                .unwrap_or("")
+                .to_string();
+            if query.trim().is_empty() {
+                return Err(rpc_error(-32602, "VALIDATION_FAILED", "query required"));
+            }
+            let profile = args
+                .get("profile")
+                .and_then(|p| p.as_str())
+                .map(ProfileId::new)
+                .unwrap_or_else(ProfileId::general);
+            let mode = match args.get("mode").and_then(|m| m.as_str()) {
+                None => SearchMode::LocalFirst,
+                Some(value) => SearchMode::parse(value)
+                    .map_err(|message| rpc_error(-32602, "VALIDATION_FAILED", message))?,
+            };
+            let ws = args
+                .get("workspace_id")
+                .and_then(|w| w.as_str())
+                .map(WorkspaceId::new)
+                .unwrap_or_else(|| WorkspaceId::new("default"));
+            let mut req = SearchRequest::new(query, profile, mode, ws)
+                .map_err(|e| rpc_error(-32602, "VALIDATION_FAILED", e.to_string()))?;
+            req.session_id = args
+                .get("session_id")
+                .and_then(|s| s.as_str())
+                .filter(|s| !s.trim().is_empty())
+                .map(|s| s.to_string());
+            if let Some(focus) = args.get("focus_requirements").and_then(|f| f.as_array()) {
+                req.focus_requirements = focus
+                    .iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect();
+            }
+            if let Some(n) = args.get("max_acquisition_rounds").and_then(|n| n.as_u64()) {
+                req.budget.max_acquisition_rounds = (n as u32).clamp(1, 5);
+            }
+            if let Some(n) = args.get("max_external_queries").and_then(|n| n.as_u64()) {
+                req.budget.max_external_queries = n as u32;
+            }
+            if let Some(c) = args.get("max_total_cost").and_then(|c| c.as_f64()) {
+                req.budget.max_total_cost_micros = (c * 1_000_000.0).round() as i64;
+            }
+            if let Some(max) = args.get("max_results").and_then(|m| m.as_u64()) {
+                req = req.with_max_results(max as u32);
+            }
+            let resp = runtime
+                .application
+                .search_service
+                .search(req)
+                .await
+                .map_err(|e| rpc_error(-32603, e.class().code, e.to_string()))?;
+            serde_json::to_value(resp)
+                .map_err(|e| json!({ "code": -32603, "message": e.to_string() }))?
+        }
+        "plan" => {
+            let query = args
+                .get("query")
+                .and_then(|q| q.as_str())
+                .unwrap_or("")
+                .to_string();
+            if query.trim().is_empty() {
+                return Err(rpc_error(-32602, "VALIDATION_FAILED", "query required"));
+            }
+            let profile = args
+                .get("profile")
+                .and_then(|p| p.as_str())
+                .map(ProfileId::new)
+                .unwrap_or_else(ProfileId::general);
+            let mode = match args.get("mode").and_then(|m| m.as_str()) {
+                None => SearchMode::LocalFirst,
+                Some(value) => SearchMode::parse(value)
+                    .map_err(|message| rpc_error(-32602, "VALIDATION_FAILED", message))?,
+            };
+            let ws = args
+                .get("workspace_id")
+                .and_then(|w| w.as_str())
+                .map(WorkspaceId::new)
+                .unwrap_or_else(|| WorkspaceId::new("default"));
+            let mut req = SearchRequest::new(query, profile, mode, ws)
+                .map_err(|e| rpc_error(-32602, "VALIDATION_FAILED", e.to_string()))?;
+            if let Some(focus) = args.get("focus_requirements").and_then(|f| f.as_array()) {
+                req.focus_requirements = focus
+                    .iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect();
+            }
+            if let Some(n) = args.get("max_external_queries").and_then(|n| n.as_u64()) {
+                req.budget.max_external_queries = n as u32;
+            }
+            if let Some(c) = args.get("max_total_cost").and_then(|c| c.as_f64()) {
+                req.budget.max_total_cost_micros = (c * 1_000_000.0).round() as i64;
+            }
+            let report = runtime
+                .application
+                .search_service
+                .plan(&req)
+                .await
+                .map_err(|e| rpc_error(-32603, e.class().code, e.to_string()))?;
+            serde_json::to_value(report)
                 .map_err(|e| json!({ "code": -32603, "message": e.to_string() }))?
         }
         "fetch" => {
@@ -566,15 +714,23 @@ mod tests {
             TOOLS.iter().map(|s| s.to_string()).collect::<Vec<_>>()
         );
         // RFC-021 names seven tools; `search_trace` is the single
-        // documented compatibility alias, and RFC-029 adds two ingestion
-        // tools (follow-up amendment to RFC-021).
-        assert_eq!(names.len(), 10, "tool catalogue drifted: {names:?}");
+        // documented compatibility alias, RFC-029 adds two ingestion tools
+        // and the agent surface adds `research` + `plan`.
+        assert_eq!(names.len(), 12, "tool catalogue drifted: {names:?}");
+        for expected in ["research", "plan"] {
+            assert!(
+                names.iter().any(|n| n == expected),
+                "agent tool '{expected}' is missing: {names:?}"
+            );
+        }
         assert_eq!(
             names
                 .iter()
                 .filter(|n| n.as_str() != "search_trace"
                     && n.as_str() != "ingest_text"
-                    && n.as_str() != "ingest_file")
+                    && n.as_str() != "ingest_file"
+                    && n.as_str() != "research"
+                    && n.as_str() != "plan")
                 .count(),
             7,
             "RFC-021 tool count drifted"

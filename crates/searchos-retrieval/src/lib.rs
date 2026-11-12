@@ -8,10 +8,14 @@
 
 pub mod fusion;
 pub mod rerank;
+pub mod reranker_adapters;
 pub mod traits;
 
 pub use fusion::{rrf_fuse, RrfConfig};
 pub use rerank::{NeverReranker, Reranker, RerankerPolicy};
+pub use reranker_adapters::{
+    build_reranker, default_policy, FeatureReranker, RemoteReranker, RemoteRerankerConfig,
+};
 pub use traits::{SearchIndex, VectorIndex};
 
 use searchos_domain::retrieval::{RetrievalCandidate, RetrievalQuery};
@@ -40,6 +44,16 @@ impl HybridRetriever {
             reranker: None,
             policy: RerankerPolicy::default(),
         }
+    }
+
+    /// Whether a reranker is attached (runtime wiring diagnostics).
+    pub fn has_reranker(&self) -> bool {
+        self.reranker.is_some()
+    }
+
+    /// Model id of the attached reranker, billed to the cost ledger.
+    pub fn reranker_model_id(&self) -> Option<&str> {
+        self.reranker.as_ref().map(|r| r.model_id())
     }
 
     /// Attaches an optional reranker and its trigger policy (RFC-007 7.7).

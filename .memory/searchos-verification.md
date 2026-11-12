@@ -40,7 +40,28 @@ The SearchOS implementation (`~/git_repo/searchos`) is verified by these command
 - Release build: `cargo build --release --bin searchos` (15m09s, 0 errors/warnings, 273M binary); the release binary passes init/search/doctor/gateway smoke tests.
 - Full clean rebuild verified: `cargo clean` (removed 59.1GiB) → `cargo build --workspace --all-targets` (575 crates, 5m55s, 0 errors/warnings) → `cargo test --workspace` (253 passed) → `cargo clippy --workspace --all-targets` (0 warnings) → `cargo fmt --all -- --check` clean.
 
-- **RFC-031 verification (implemented 2026-11):** `cargo test --workspace` → 510 passed / 0 failed; the RFC gate is `cargo test -p searchos-integration-tests --test rfc_031_evidence_promotion` (16 tests: promotion state machine, rejected-never-indexed, robots/`fetch_failed` skip reasons, per-task cap, reuse accounting, disabled promotion, pipeline acquisition, ledger == planned calls, negative-cache honest replay + ExternalOnly/strict-freshness bypass). Migration gate: `cargo test -p searchos-storage-sqlite migrations` (includes `semicolon_inside_a_comment_does_not_split_statements`). Route/contract gates: `cargo test -p searchos-interface-http --lib openapi` + `SRC_DIR=crates/searchos-interface-http/src bash ~/.agents/skills/axum-route-conflict/scripts/scan-routes.sh`. Live: `SEARCHOS_DATA_DIR=$(mktemp -d) searchos evidence list` / `searchos evidence stats` (empty state prints zero counts, exit 0); gateway `GET /evidence/acquisitions|/evidence/reuse` behind the bearer token.
+- **RFC-031 verification (implemented 2026-11, re-verified on commit 799a2c4; retrieval + agent hardening pass on top of it):** `cargo test --workspace` → 554 passed / 0 failed (70 suites); the RFC gate is `cargo test -p searchos-integration-tests --test rfc_031_evidence_promotion` (17 tests: promotion state machine, rejected-never-indexed, robots/`fetch_failed` skip reasons, per-task cap, reuse accounting, disabled promotion, pipeline acquisition, ledger == planned calls, negative-cache honest replay + ExternalOnly/strict-freshness bypass). Migration gate: `cargo test -p searchos-storage-sqlite migrations` (includes `semicolon_inside_a_comment_does_not_split_statements`). Route/contract gates: `cargo test -p searchos-interface-http --lib openapi` + `SRC_DIR=crates/searchos-interface-http/src bash ~/.agents/skills/axum-route-conflict/scripts/scan-routes.sh`. Live: `SEARCHOS_DATA_DIR=$(mktemp -d) searchos evidence list` / `searchos evidence stats` (empty state prints zero counts, exit 0); gateway `GET /evidence/acquisitions|/evidence/reuse` behind the bearer token.
+
+- **Agent + retrieval gates (2026-11):** `cargo test --workspace --locked` → 554
+  passed / 0 failed (70 suites); `cargo clippy --workspace --all-targets -- -D
+  warnings` clean; `cargo fmt --all -- --check` clean; route-conflict scan
+  clean; OpenAPI route-table parity green (the two new agent routes
+  `/search/plan` + `/search/follow-up` are documented in `docs/openapi.yaml`).
+  Ranking gate: `python3 fixtures/evaluations/generate_seed.py --limit 40`,
+  ingest `fixtures/evaluations/seed` AND `fixtures/evaluations/seed_zh`, then
+  `searchos --format json eval run --dataset fixtures/evaluations/dataset-zh.jsonl
+  --limit 12 --out report.json` + `python3 scripts/check_eval_gate.py
+  report.json --min-questions 12 --min-mrr 0.8 --min-ndcg 0.8 --min-recall 0.8`
+  (observed MRR/nDCG@5/Recall@5 = 1.0). The English gate stays
+  `dataset-v1.jsonl --limit 20` with the default thresholds. Two
+  `searchos-fetch` tests need live internet (`example.com`); they fail in an
+  offline sandbox and are unrelated to the code.
+- **Agent surface gates:** `POST /search/plan` (no execution, no billing),
+  `POST /search/follow-up` (404 for an unknown session), MCP `tools/list`
+  reports 12 tools (`research` + `plan` added), CLI
+  `--session` / `--focus-requirements` round-trip the session, and the
+  response carries `coverage_gaps`, `session_id`, `focus_requirements` and a
+  `<b>…</b>` `highlight`.
 
 **Known environment notes:**
 - LanceDB requires `protoc` at build time (`brew install protobuf`).

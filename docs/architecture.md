@@ -102,7 +102,7 @@ remote backends are opt-in and user-configured under `storage.remote.<backend>`:
 
 | `storage.fulltext` | Engine | Adapter crate | Notes |
 |---|---|---|---|
-| `tantivy` (default) | Tantivy BM25 | `searchos-index-tantivy` | zero-dependency, offline |
+| `tantivy` (default) | Tantivy BM25 | `searchos-index-tantivy` | zero-dependency, offline; SearchOS analyzer (CJK bigrams + English stemming), literal-term queries |
 | `elasticsearch` | Elasticsearch REST | `searchos-index-remote` | BM25 multi_match, `refresh=wait_for` |
 | `meilisearch` | Meilisearch REST | `searchos-index-remote` | task-queue writes awaited |
 | `postgres` | PostgreSQL FTS | `searchos-index-remote` | GIN tsvector, `ts_rank_cd` |
@@ -117,6 +117,41 @@ workspace isolation (`requester OR *`) is enforced server-side or re-checked cli
 BM25 + Vector + Metadata → **RRF Fusion** → Reranker → Top-K. Embedding must record model id,
 version, dimensions, normalization, and generation time so models can be swapped and indexes
 rebuilt safely.
+
+The embedded index analyzes text with the SearchOS analyzer: CJK runs become overlapping
+character bigrams, Latin runs are lowercased and English-stemmed. User queries are analyzed
+into literal terms (never parsed as index query syntax) and OR'd across title and body.
+
+The transactional outbox populates **both** legs: each indexed chunk is embedded and upserted
+into LanceDB (and deleted from it on delete), so hybrid retrieval has a real vector candidate
+list rather than an empty one. `searchos index rebuild` rebuilds full-text and vectors
+together from the object store. The runtime's `EmbeddingProvider` instance is shared with the
+vector adapter, so stored vectors and query vectors come from the same model.
+
+`memory.embedding.provider: local` uses the offline deterministic hashing embedder (256 dims);
+`remote` uses an OpenAI-compatible `/v1/embeddings` endpoint whose API key is read from the
+environment variable named by `api_key_env`. The LanceDB Arrow schema follows the model's
+dimension, so switching models requires only a rebuild.
+
+A real reranker is attached to the hybrid retriever (RFC-007 7.7): the default
+`FeatureReranker` is offline (title/body term coverage, phrase, recency), while
+`RemoteReranker` targets cross-encoder endpoints. Reranking is billed as a `Reranking` cost
+event. Title terms carry an explicit boost in the local backend (BM25F-lite, aligned with ES
+`title^2`), an edit-distance-1 fallback recovers misspelled queries, and result snippets are
+generated around the matched region with `<b>…</b>` highlights.
+
+### Agent surface
+
+`POST /search/plan` returns the queries that WOULD run, the open requirements and the
+estimated cost — no external call, no billing, no document write. `POST /search/follow-up`
+continues a recorded session on exactly the requirements the previous turn left open. MCP
+exposes `research` (bounded iterative rounds + session recording) and `plan` alongside the
+single-shot `search`. The session store is bounded and in-process (MCP stdio and the gateway
+are single processes); it never shortcuts a search.
+
+Evaluation now includes ranking quality: MRR, nDCG@5, Recall@5 and Precision@5 measured
+against per-question qrels (`relevant_urls`), plus a Chinese seed corpus and dataset so CJK
+retrieval regressions are visible in CI.
 
 ## Local ingestion (RFC-029)
 
@@ -230,7 +265,7 @@ Local Mode 不得依赖 Redis、PostgreSQL、Kafka、NATS 或 Docker。
 
 | `storage.fulltext` | 引擎 | Adapter crate | 说明 |
 |---|---|---|---|
-| `tantivy`（默认） | Tantivy BM25 | `searchos-index-tantivy` | 零额外依赖、离线可用 |
+| `tantivy`（默认） | Tantivy BM25 | `searchos-index-tantivy` | 零额外依赖、离线可用；SearchOS 分析器（CJK bigram + 英文词干），字面词项查询 |
 | `elasticsearch` | Elasticsearch REST | `searchos-index-remote` | BM25 multi_match，`refresh=wait_for` |
 | `meilisearch` | Meilisearch REST | `searchos-index-remote` | 写入等待任务队列完成 |
 | `postgres` | PostgreSQL FTS | `searchos-index-remote` | GIN tsvector，`ts_rank_cd` |
@@ -244,6 +279,32 @@ outbox/`rebuild_index` 路径重建（ADR-022）；workspace 隔离（`requester
 
 BM25 + 向量 + 元数据 → **RRF 融合** → Reranker → Top-K。Embedding 必须记录模型 id、
 版本、维度、归一化方式和生成时间，才能安全地更换模型并重建索引。
+
+内嵌索引使用 SearchOS 分析器：CJK 连续文本切分为重叠字符 bigram，拉丁文本做小写与英文词干。
+用户查询只被分析为字面词项（绝不当作索引查询语法解析），在 title 与 body 上做 OR。
+
+事务性 outbox 同时写入**两条腿**：每个入库 chunk 都会被嵌入并 upsert 到 LanceDB（删除时同步删除），
+因此混合检索拥有真实的向量候选集而非空列表。`searchos index rebuild` 会同时从对象存储重建全文与向量。
+runtime 的 `EmbeddingProvider` 实例与向量适配器共享，保证存储向量与查询向量出自同一模型。
+
+`memory.embedding.provider: local` 使用离线确定性哈希嵌入器（256 维）；`remote` 使用
+OpenAI 兼容的 `/v1/embeddings` 端点，API key 只从 `api_key_env` 指定的环境变量读取。
+LanceDB 的 Arrow schema 跟随模型维度，切换模型只需一次重建。
+
+混合检索器上挂接了真实 reranker（RFC-007 7.7）：默认 `FeatureReranker`（离线，title/body
+词项覆盖、短语、时效），`RemoteReranker` 支持 cross-encoder 端点。重排序以 `Reranking`
+成本事件计费。本地后端的 title 词项带显式加权（BM25F-lite，与 ES `title^2` 对齐），
+编辑距离 1 的回退查询可恢复拼写错误，结果 snippet 生成于命中区域并带 `<b>…</b>` 高亮。
+
+### Agent 接口
+
+`POST /search/plan` 返回「将要执行」的查询、未覆盖需求与预估成本 —— 不发起外部调用、不计费、
+不写文档。`POST /search/follow-up` 沿上一轮留下的未覆盖需求继续会话。MCP 除单趟 `search`
+外提供 `research`（有界迭代 + 会话记录）和 `plan`。会话存储为进程内有界结构，只承载跟进契约，
+绝不用于跳过搜索。
+
+评测新增排序质量：基于每道题 qrels（`relevant_urls`）的 MRR、nDCG@5、Recall@5、Precision@5，
+并附带中文种子语料与数据集，使 CJK 检索回归在 CI 中可见。
 
 ### 本地导入（RFC-029）
 

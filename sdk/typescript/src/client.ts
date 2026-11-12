@@ -35,6 +35,12 @@ export interface SearchRequest {
   max_results?: number;
   max_external_queries?: number;
   max_total_cost?: number;
+  /** Bounded iterative retrieval rounds (total query/cost caps stay cumulative). */
+  max_acquisition_rounds?: number;
+  /** Agent session id; turns are recorded so a follow-up can target open gaps. */
+  session_id?: string;
+  /** Explicit follow-up requirements (replaces the derived decomposition). */
+  focus_requirements?: string[];
 }
 
 export interface SearchResultItem {
@@ -44,6 +50,8 @@ export interface SearchResultItem {
   score: number;
   published_at?: string | null;
   source: string;
+  /** Query-matched passage with `<b>…</b>` markers, when available. */
+  highlight?: string | null;
 }
 
 export interface QualityReport {
@@ -52,6 +60,15 @@ export interface QualityReport {
   coverage?: string;
   score?: number;
   failed_constraints?: string[];
+}
+
+export interface CoverageGap {
+  question: string;
+  missing_kind: string;
+  status?: string;
+  priority?: string;
+  strategy?: string;
+  requirement_id: string;
 }
 
 export interface SearchResponse {
@@ -66,6 +83,13 @@ export interface SearchResponse {
   trace_id?: string;
   task_id?: string | null;
   replayed?: boolean;
+  /** Open sub-questions from the final quality gate; a search agent can use
+   * `requirement_id` to issue a targeted follow-up query. */
+  coverage_gaps?: CoverageGap[];
+  /** Agent session this turn belongs to. */
+  session_id?: string | null;
+  /** Open requirements a follow-up turn should target. */
+  focus_requirements?: string[];
   /** Tavily compatibility only: present when the request was routed through the compat layer. */
   unsupported_features?: string[];
   /** Tavily compatibility only: always null, SearchOS never generates answers. */

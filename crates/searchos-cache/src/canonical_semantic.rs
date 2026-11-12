@@ -264,6 +264,7 @@ mod tests {
             bm25_score: None,
             workspace_id: None,
             language: None,
+            highlight: None,
         }
     }
 

@@ -106,6 +106,13 @@ impl FreshnessRequirement {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SearchBudget {
     pub max_external_queries: u32,
+    /// Bounded acquisition rounds for agent-style iterative retrieval. Each
+    /// round re-plans one targeted query per still-open coverage gap; the
+    /// `max_external_queries` / `max_total_cost_micros` caps remain TOTAL
+    /// caps across all rounds, so iteration can never re-buy covered
+    /// requirements or exceed the budget (RFC-004 v1.1 6.8, INV-30-04).
+    #[serde(default = "default_max_acquisition_rounds")]
+    pub max_acquisition_rounds: u32,
     pub max_fetch_pages: u32,
     /// Maximum total cost in micro units of [`Self::currency`].
     pub max_total_cost_micros: i64,
@@ -115,10 +122,15 @@ pub struct SearchBudget {
     pub currency: String,
 }
 
+fn default_max_acquisition_rounds() -> u32 {
+    2
+}
+
 impl Default for SearchBudget {
     fn default() -> Self {
         Self {
             max_external_queries: 5,
+            max_acquisition_rounds: default_max_acquisition_rounds(),
             max_fetch_pages: 10,
             max_total_cost_micros: 100_000, // 0.10 USD
             max_execution_time_ms: 30_000,
@@ -192,6 +204,18 @@ pub struct SearchRequest {
     /// enforces it before the response is returned (INV-30-19).
     #[serde(default = "default_max_results")]
     pub max_results: u32,
+    /// Agent session id (RFC-013-style reuse across turns). When present,
+    /// the application layer records the turn — query, trace, status and
+    /// the open requirements left after the final gate — into the bounded
+    /// in-process session store so a follow-up turn can target the gaps.
+    #[serde(default)]
+    pub session_id: Option<String>,
+    /// Explicit focus requirements for a follow-up turn. When non-empty,
+    /// these REPLACE the derived sub-questions for coverage analysis, so a
+    /// follow-up can target exactly the requirements a previous turn left
+    /// open instead of re-deriving them from scratch.
+    #[serde(default)]
+    pub focus_requirements: Vec<String>,
 }
 
 impl SearchRequest {
@@ -237,6 +261,8 @@ impl SearchRequest {
             budget: SearchBudget::default(),
             constraints: SearchConstraints::default(),
             max_results: DEFAULT_MAX_RESULTS,
+            session_id: None,
+            focus_requirements: Vec::new(),
         })
     }
 }

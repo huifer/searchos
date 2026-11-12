@@ -31,6 +31,10 @@ pub struct LanceVectorIndex {
     db: lancedb::connection::Connection,
     table_name: String,
     embedder: Arc<dyn EmbeddingProvider>,
+    /// Vector dimension is derived from the embedder, never hard-coded: a
+    /// remote model (e.g. 768/1536 dims) must produce a matching Arrow
+    /// schema. Changing the model requires `searchos index rebuild`.
+    dim: usize,
 }
 
 impl LanceVectorIndex {
@@ -42,20 +46,25 @@ impl LanceVectorIndex {
             .execute()
             .await
             .map_err(|e| SearchOsError::Storage(format!("lancedb connect: {e}")))?;
+        let embedder: Arc<dyn EmbeddingProvider> = Arc::new(HashingEmbedder::new(256));
+        let dim = embedder.dimension();
         Ok(Self {
             db,
             table_name: table_name.to_string(),
-            embedder: Arc::new(HashingEmbedder::new(256)),
+            embedder,
+            dim,
         })
     }
 
-    /// Custom embedder (pluggable model provider).
+    /// Custom embedder (pluggable model provider). The Arrow schema follows
+    /// the model dimension so stored and query vectors always share a space.
     pub fn with_embedder(mut self, embedder: Arc<dyn EmbeddingProvider>) -> Self {
+        self.dim = embedder.dimension();
         self.embedder = embedder;
         self
     }
 
-    fn arrow_schema() -> Arc<ArrowSchema> {
+    fn arrow_schema(&self) -> Arc<ArrowSchema> {
         Arc::new(ArrowSchema::new(vec![
             ArrowField::new("chunk_id", DataType::Utf8, false),
             ArrowField::new("document_id", DataType::Utf8, false),
@@ -70,7 +79,7 @@ impl LanceVectorIndex {
             ArrowField::new("fetched_at", DataType::UInt64, false),
             ArrowField::new(
                 "vector",
-                DataType::new_fixed_size_list(DataType::Float32, 256, true),
+                DataType::new_fixed_size_list(DataType::Float32, self.dim as i32, true),
                 false,
             ),
         ]))
@@ -91,15 +100,15 @@ impl LanceVectorIndex {
                 .map_err(|e| SearchOsError::Storage(format!("open table: {e}")))
         } else {
             self.db
-                .create_empty_table(&self.table_name, Self::arrow_schema())
+                .create_empty_table(&self.table_name, self.arrow_schema())
                 .execute()
                 .await
                 .map_err(|e| SearchOsError::Storage(format!("create table: {e}")))
         }
     }
 
-    fn batch_from(documents: &[IndexedVec], schema: &Arc<ArrowSchema>) -> RecordBatch {
-        let dim = documents.first().map(|d| d.vector.len()).unwrap_or(256);
+    fn batch_from(&self, documents: &[IndexedVec], schema: &Arc<ArrowSchema>) -> RecordBatch {
+        let dim = self.dim;
         let mut flat = Vec::with_capacity(documents.len() * dim);
         for d in documents {
             flat.extend_from_slice(&d.vector);
@@ -192,29 +201,6 @@ impl LanceVectorIndex {
             self.embedder.dimension(),
         )
     }
-
-    /// Rebuilds by deleting everything and re-upserting (ADR-022).
-    pub async fn rebuild_from(&self, documents: &[IndexedVec]) -> Result<u64, SearchOsError> {
-        let table = self.table().await?;
-        // Delete all rows (predicate matches everything).
-        table
-            .delete("true")
-            .await
-            .map_err(|e| SearchOsError::Storage(format!("delete all: {e}")))?;
-        if !documents.is_empty() {
-            let schema = Self::arrow_schema();
-            let batch = Self::batch_from(documents, &schema);
-            let stream = RecordBatchIterator::new(vec![Ok(batch)].into_iter(), schema);
-            let reader: Box<dyn lancedb::arrow::arrow::record_batch::RecordBatchReader + Send> =
-                Box::new(stream);
-            table
-                .add(reader)
-                .execute()
-                .await
-                .map_err(|e| SearchOsError::Storage(format!("add: {e}")))?;
-        }
-        Ok(documents.len() as u64)
-    }
 }
 
 /// Single-element string array containing NULL (for nullable columns).
@@ -222,21 +208,9 @@ fn arrow_str_null() -> StringArray {
     StringArray::from(vec![None::<&str>])
 }
 
-/// A chunk with its embedding, ready for the vector store.
-pub struct IndexedVec {
-    pub chunk_id: String,
-    pub document_id: String,
-    pub version_id: String,
-    pub title: Option<String>,
-    pub body: String,
-    pub url: String,
-    pub language: Option<String>,
-    pub workspace_id: String,
-    pub model_id: String,
-    pub model_version: String,
-    pub fetched_at: u64,
-    pub vector: Vec<f32>,
-}
+/// Re-export: the vector payload lives in the domain so the [`VectorIndex`]
+/// trait can reference it across adapters.
+pub use searchos_domain::retrieval::IndexedVec;
 
 #[async_trait]
 impl VectorIndex for LanceVectorIndex {
@@ -253,8 +227,14 @@ impl VectorIndex for LanceVectorIndex {
             .delete(&format!("chunk_id = '{chunk_id}'"))
             .await
             .map_err(|e| SearchOsError::Storage(format!("delete stale: {e}")))?;
-        let schema = Self::arrow_schema();
+        let schema = self.arrow_schema();
         let dim = vector.len();
+        if dim != self.dim {
+            return Err(SearchOsError::Retrieval(format!(
+                "embedding dimension mismatch: model produces {dim}, index expects {}",
+                self.dim
+            )));
+        }
         let batch = RecordBatch::try_new(
             schema.clone(),
             vec![
@@ -387,6 +367,7 @@ impl VectorIndex for LanceVectorIndex {
                     } else {
                         Some(languages.value(i).to_string())
                     },
+                    highlight: None,
                 });
             }
         }
@@ -435,6 +416,61 @@ impl VectorIndex for LanceVectorIndex {
             .await
             .map_err(|e| SearchOsError::Storage(format!("delete: {e}")))?;
         Ok(())
+    }
+
+    async fn delete_by_chunk_ids(&self, chunk_ids: &[ChunkId]) -> Result<(), SearchOsError> {
+        if chunk_ids.is_empty() {
+            return Ok(());
+        }
+        let list = chunk_ids
+            .iter()
+            .map(|id| format!("'{}'", id.as_str().replace('\'', "''")))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let table = self.table().await?;
+        table
+            .delete(&format!("chunk_id IN ({list})"))
+            .await
+            .map_err(|e| SearchOsError::Storage(format!("delete by chunk ids: {e}")))?;
+        Ok(())
+    }
+
+    /// Rebuilds by recreating the table with the current embedder dimension
+    /// and re-upserting (ADR-022). Recreating (rather than deleting rows) is
+    /// what makes an embedding-model change safe: Arrow's fixed-size vector
+    /// column cannot change width in place.
+    async fn rebuild_from(&self, documents: &[IndexedVec]) -> Result<u64, SearchOsError> {
+        let names = self
+            .db
+            .table_names()
+            .execute()
+            .await
+            .map_err(|e| SearchOsError::Storage(format!("table names: {e}")))?;
+        if names.iter().any(|n| n.as_str() == self.table_name) {
+            self.db
+                .drop_table(&self.table_name, &[])
+                .await
+                .map_err(|e| SearchOsError::Storage(format!("drop table: {e}")))?;
+        }
+        let table = self
+            .db
+            .create_empty_table(&self.table_name, self.arrow_schema())
+            .execute()
+            .await
+            .map_err(|e| SearchOsError::Storage(format!("create table: {e}")))?;
+        if !documents.is_empty() {
+            let schema = self.arrow_schema();
+            let batch = self.batch_from(documents, &schema);
+            let stream = RecordBatchIterator::new(vec![Ok(batch)].into_iter(), schema);
+            let reader: Box<dyn lancedb::arrow::arrow::record_batch::RecordBatchReader + Send> =
+                Box::new(stream);
+            table
+                .add(reader)
+                .execute()
+                .await
+                .map_err(|e| SearchOsError::Storage(format!("add: {e}")))?;
+        }
+        Ok(documents.len() as u64)
     }
 
     async fn count(&self) -> Result<u64, SearchOsError> {
@@ -517,5 +553,48 @@ mod tests {
             hits[0].chunk_id
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+    #[tokio::test]
+    async fn vector_dimension_follows_the_embedder() {
+        // Remote models do not all produce 256 dims; the Arrow schema must
+        // follow the configured model or cosine search compares nothing.
+        let dir = std::env::temp_dir().join(format!(
+            "lance-dim-{}-{}",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let embedder = Arc::new(HashingEmbedder::new(64));
+        let idx = LanceVectorIndex::open(&dir, "embeddings")
+            .await
+            .unwrap()
+            .with_embedder(embedder.clone());
+        assert_eq!(idx.dim, 64);
+        let field = idx
+            .arrow_schema()
+            .field_with_name("vector")
+            .unwrap()
+            .clone();
+        match field.data_type() {
+            DataType::FixedSizeList(_, width) => assert_eq!(*width, 64),
+            other => panic!("unexpected vector type: {other:?}"),
+        }
+
+        let v = embedder.embed_one("dimension probe text");
+        idx.upsert("c1", "doc_1", v.clone(), "hashing-mvp")
+            .await
+            .unwrap();
+        assert_eq!(idx.count().await.unwrap(), 1);
+        let hits = idx
+            .search(&RetrievalQuery::new("dimension probe text", 5))
+            .await
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+
+        // A vector from a different model width is rejected explicitly
+        // rather than corrupting the table.
+        let bad = HashingEmbedder::new(256).embed_one("wrong width");
+        assert!(idx.upsert("c2", "doc_2", bad, "other").await.is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

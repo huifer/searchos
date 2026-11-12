@@ -50,7 +50,12 @@ SearchOS 用一套统一的基础设施解决这些问题。
 - **Tavily 兼容 API**——把现有客户端指向 `http://127.0.0.1:8787` 即可，工作流无需改动。
 - **本地优先搜索**——优先从本地索引与记忆中返回答案，再决定是否访问外部搜索。
 - **搜索记忆（Search Memory）**——搜索历史、文档版本、语义记忆、研究记忆都是一等公民级、可持续积累的资产。
-- **混合检索（Hybrid Retrieval）**——BM25 + 向量 + 元数据，经 Reciprocal Rank Fusion（RRF）融合，并支持可插拔重排序。
+- **混合检索（Hybrid Retrieval）**——BM25 + 向量 + 元数据，经 Reciprocal Rank Fusion（RRF）融合，
+  并接入真实 reranker（离线特征重排序或 cross-encoder 端点）。中文按字符 bigram 切分，title 词项
+  带字段加权，拼写错误回退到编辑距离匹配。
+- **搜索 Agent 接口**——有界迭代检索（查询数与成本上限跨轮累计）、每次响应都带 `coverage_gaps`、
+  `POST /search/plan`（先规划不花钱）、`POST /search/follow-up` 与 MCP `research`/`plan`
+  支撑多轮研究。
 - **可扩展核心**——Manifest 生命周期、权限、故障隔离的发现与隔离；原生 Provider 与网站爬虫随主程序编译。
 - **成本感知路由**——综合质量、新鲜度、延迟、成本、可用性进行评分选择；并提供 Singleflight 请求合并。
 - **分布式就绪（Distributed-ready）**——从数据模型与接口层面第一天就为多节点设计，但不在 v1 强制引入分布式复杂度。

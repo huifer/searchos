@@ -123,6 +123,7 @@ impl ChunkDoc {
             } else {
                 Some(self.language.clone())
             },
+            highlight: None,
         }
     }
 }

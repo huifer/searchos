@@ -72,6 +72,7 @@ fn rebuild_deps(runtime: &Arc<searchos_core::SearchOsRuntime>) -> Arc<SearchDepe
         reranking: true,
         allow_external: false,
         promotion: None,
+        session_store: None,
     })
 }
 
@@ -408,4 +409,41 @@ async fn rebuild_restores_imported_documents() {
         resp.results
     );
     let _ = doc;
+}
+
+/// Hybrid retrieval must actually have a vector leg at runtime (G-02):
+/// `VectorIndex::upsert` used to have zero production callers, so the
+/// LanceDB table stayed empty and RRF fused BM25 against nothing. The
+/// outbox write path must populate vectors for every indexed chunk — and
+/// remove them again on delete.
+#[tokio::test]
+async fn runtime_write_path_populates_and_clears_vectors() {
+    let h = Harness::new().await;
+    use searchos_retrieval::VectorIndex as _;
+
+    let mut req = IngestRequest::new(WorkspaceId::new("default"));
+    req.source_key = Some("vec/hybrid".into());
+    req.title = Some("Hybrid vector wiring".into());
+    let doc = h
+        .runtime
+        .application
+        .ingest_service
+        .ingest_text(
+            req,
+            "Unique hybrid recall probe: vectorupsert wrote a dense row for this chunk.",
+        )
+        .await
+        .unwrap();
+    h.drain().await;
+
+    let after_upsert = h.runtime.lancedb.count().await.unwrap();
+    assert!(
+        after_upsert >= doc.chunk_count as u64,
+        "vector rows must exist after the outbox drain, got {after_upsert}"
+    );
+
+    // Delete removes both legs.
+    h.runtime.delete_document(&doc.document_id).await.unwrap();
+    let after_delete = h.runtime.lancedb.count().await.unwrap();
+    assert_eq!(after_delete, 0, "vector rows must be removed on delete");
 }

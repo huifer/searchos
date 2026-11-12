@@ -223,6 +223,9 @@ pub struct SearchDependencies {
     pub allow_external: bool,
     /// RFC-031 external evidence promotion. `None` = promotion disabled.
     pub promotion: Option<Arc<dyn EvidencePromotionService>>,
+    /// Bounded in-process agent session store. `None` disables turn
+    /// recording; the runtime wires one so MCP/gateway share it.
+    pub session_store: Option<Arc<crate::session::SessionStore>>,
 }
 
 /// Records search task rows (Part 17 search_tasks; every task gets a row).
@@ -346,6 +349,14 @@ pub trait CostEventSink: Send + Sync {
 #[async_trait]
 pub trait SearchService: Send + Sync {
     async fn search(&self, request: SearchRequest) -> Result<SearchResponse, SearchOsError>;
+
+    /// Plan-only report (no external call, no billing). Adapters that do not
+    /// support planning return an explicit error instead of a fake plan.
+    async fn plan(&self, _request: &SearchRequest) -> Result<SearchPlanReport, SearchOsError> {
+        Err(SearchOsError::Internal(
+            "plan-only is not supported by this search service".into(),
+        ))
+    }
 }
 
 /// The concrete orchestrator.
@@ -358,6 +369,153 @@ impl SearchServiceImpl {
     pub fn new(deps: Arc<SearchDependencies>) -> Self {
         Self { deps }
     }
+
+    /// Plan-only report: what WOULD be searched, without buying anything.
+    /// No external call, no cost event, no document write — an agent can
+    /// inspect the plan (and its estimated cost) before committing budget.
+    pub async fn plan_report(
+        &self,
+        req: &SearchRequest,
+    ) -> Result<SearchPlanReport, SearchOsError> {
+        let deps = &self.deps;
+        let analysis = analyze(&req.query);
+        let required = if req.focus_requirements.is_empty() {
+            required_subquestions(&analysis)
+        } else {
+            req.focus_requirements.clone()
+        };
+        let profile = deps
+            .profiles
+            .get(req.profile.as_str())
+            .cloned()
+            .ok_or_else(|| {
+                SearchOsError::validation("profile", format!("unknown profile {}", req.profile))
+            })?;
+        let source_policy = deps.source.clone().with_constraints(
+            &req.constraints.required_domains,
+            &req.constraints.excluded_domains,
+        );
+        let freshness_label = effective_freshness_label(req, &profile);
+        let fp = fingerprint(&QueryFingerprintParts {
+            normalized_query: analysis.normalized.clone(),
+            language: analysis.language.clone(),
+            profile_version: profile.version.clone(),
+            freshness_policy: deps.freshness.version.clone(),
+            source_policy: deps.source.version.clone(),
+            workspace_scope: req.workspace_id.to_string(),
+            mode: req.mode.as_str().to_string(),
+            freshness_requirement: freshness_label.clone(),
+        });
+        let task_id = TaskId::new("plan");
+        let hits = retrieve_local_candidates(
+            deps,
+            req,
+            &analysis,
+            &profile,
+            &source_policy,
+            &fp,
+            &task_id,
+        )
+        .await?;
+
+        // Coverage of the required sub-questions against local knowledge.
+        let covered_texts: Vec<String> = hits
+            .iter()
+            .map(|c| {
+                format!(
+                    "{} {} {}",
+                    c.title.as_deref().unwrap_or(""),
+                    c.url,
+                    c.snippet
+                )
+            })
+            .collect();
+        let needs = searchos_decision::GapAnalyzer::analyze(
+            &required,
+            &covered_texts,
+            &req.constraints.required_domains,
+            false,
+            false,
+        );
+        let estimator = CostEstimator::from_config(&deps.cost_config);
+        let provider_id = deps
+            .router
+            .route(true, req.budget.max_total_cost_micros)
+            .await
+            .ok()
+            .and_then(|sel| sel.first().map(|e| e.id.clone()))
+            .unwrap_or_else(|| "tavily".to_string());
+        let per_query_cost = estimator.estimate_request(&provider_id).amount_micros;
+        let plan = searchos_decision::build_external_plan(
+            &needs,
+            req.request_id.as_str(),
+            req.budget.max_external_queries,
+            req.budget.max_total_cost_micros,
+            per_query_cost,
+            &req.constraints.required_domains,
+            &req.constraints.excluded_domains,
+        );
+        let open_requirements: Vec<searchos_domain::decision::CoverageGap> = needs
+            .iter()
+            .filter(|n| n.is_open())
+            .map(|n| searchos_domain::decision::CoverageGap {
+                question: n.description.clone(),
+                missing_kind: "evidence".into(),
+                status: n.status,
+                priority: n.priority,
+                strategy: n.strategy,
+                requirement_id: n.id.clone(),
+            })
+            .collect();
+        Ok(SearchPlanReport {
+            query: req.query.clone(),
+            mode: req.mode.as_str().to_string(),
+            decision_path: if req.mode.allows_local() {
+                "local_first"
+            } else {
+                "external"
+            }
+            .into(),
+            decision_reason: "plan_only".into(),
+            local_candidates: hits.len(),
+            required_requirements: required,
+            open_requirements,
+            planned_queries: plan
+                .queries
+                .iter()
+                .map(|q| PlannedQueryReport {
+                    query: q.query.clone(),
+                    requirement_id: q.requirement_id.clone(),
+                    strategy: format!("{:?}", q.strategy),
+                })
+                .collect(),
+            estimated_cost_micros: plan.estimated_cost_micros,
+            currency: req.budget.currency.clone(),
+        })
+    }
+}
+
+/// One planned external query in a plan-only report.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PlannedQueryReport {
+    pub query: String,
+    pub requirement_id: String,
+    pub strategy: String,
+}
+
+/// Plan-only report returned to agents before any budget is spent.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SearchPlanReport {
+    pub query: String,
+    pub mode: String,
+    pub decision_path: String,
+    pub decision_reason: String,
+    pub local_candidates: usize,
+    pub required_requirements: Vec<String>,
+    pub open_requirements: Vec<searchos_domain::decision::CoverageGap>,
+    pub planned_queries: Vec<PlannedQueryReport>,
+    pub estimated_cost_micros: i64,
+    pub currency: String,
 }
 
 /// Builds the external query plan: one targeted query per open requirement,
@@ -443,6 +601,71 @@ fn plan_external_queries(
     }
     planned.truncate(req.budget.max_external_queries.max(1) as usize);
     planned
+}
+
+/// Plans a bounded follow-up round from the FINAL gate's open requirements.
+///
+/// Unlike the initial plan (which may expand a proven gap), a follow-up is
+/// strictly one targeted query per still-open requirement, and it never
+/// repeats a query already bought. Costs and query caps remain cumulative
+/// through [`AcquisitionState`] (RFC-004 v1.1 6.8, INV-30-04).
+fn plan_follow_up_queries(
+    gaps: &[searchos_domain::decision::CoverageGap],
+    state: &AcquisitionState,
+    remaining: usize,
+    base_query: &str,
+) -> Vec<PlannedQuery> {
+    // A follow-up must REFORMULATE, not repeat: the initial plan already
+    // bought one query per gap. `QueryExpander` produces the documented
+    // reformulation family (base+gap, gap alone, official/documentation/
+    // release-notes variants); anything already bought is filtered out by
+    // `executed_queries`, so a covered requirement is never re-purchased.
+    let expander = QueryExpander::new(ExpansionConfig {
+        enabled: true,
+        require_coverage_gap: true,
+        max_expansions: 5,
+        ..Default::default()
+    });
+    let mut seen: std::collections::HashSet<String> = state.executed_queries.clone();
+    let mut out = Vec::new();
+    for gap in gaps {
+        for query in expander.expand(base_query, &gap.question) {
+            let key = query.to_lowercase();
+            if query.trim().is_empty() || !seen.insert(key) {
+                continue;
+            }
+            out.push(PlannedQuery {
+                query,
+                origin: QueryOrigin::Expansion,
+                requirement_id: Some(gap.requirement_id.clone()),
+                strategy: Some(gap.strategy),
+            });
+            if out.len() >= remaining {
+                return out;
+            }
+        }
+    }
+    out
+}
+
+/// Whether a second acquisition round is justified. A conflict is
+/// unresolvable by more search, a passed gate is done, and a local-only
+/// decision must never buy anything (INV-30-01).
+fn should_replan(
+    decision: &SearchDecision,
+    verdict: &searchos_decision::QualityVerdict,
+    req: &SearchRequest,
+    state: &AcquisitionState,
+    round: u32,
+) -> bool {
+    round < req.budget.max_acquisition_rounds
+        && decision.requires_external()
+        && !verdict.passed()
+        && verdict.status != QualityStatus::Conflict
+        && verdict.conflicts.is_empty()
+        && !verdict.coverage_gaps.is_empty()
+        && state.remaining_queries(req) > 0
+        && state.spent_micros < req.budget.max_total_cost_micros
 }
 
 /// Attributes each acquired external item to the final quality gate verdict
@@ -718,9 +941,17 @@ async fn retrieve_local_candidates(
     profile: &SearchProfile,
     source_policy: &SourcePolicy,
     fp: &str,
+    task_id: &TaskId,
 ) -> Result<Vec<RetrievalCandidate>, SearchOsError> {
     let metrics = searchos_observability::MetricsRegistry::global();
     let top_k = clamp_max_results(req.max_results.max(10)) as usize;
+    // Candidate pool (RFC-007 7.1): freshness/source filtering happens at
+    // the application layer AFTER retrieval, so the index must return more
+    // candidates than the response cap — otherwise stale documents ranked
+    // above fresh ones crowd the fresh ones out of the truncated candidate
+    // window entirely (verified: 12 stale + 1 fresh, strict freshness →
+    // fresh doc absent from a top-k=10 pool).
+    let pool_k = top_k.saturating_mul(4).clamp(top_k, 200);
     let freshness_label = effective_freshness_label(req, profile);
     let policy_version = format!(
         "{}|{}|{}",
@@ -751,12 +982,12 @@ async fn retrieve_local_candidates(
         return Ok(cached);
     }
     if deps.incremental {
-        if let Some(cached) = deps.retrieval_cache.get(fp, top_k, &policy_version) {
+        if let Some(cached) = deps.retrieval_cache.get(fp, pool_k, &policy_version) {
             return Ok(cached);
         }
     }
 
-    let mut query = RetrievalQuery::new(&analysis.normalized, top_k);
+    let mut query = RetrievalQuery::new(&analysis.normalized, pool_k);
     query.workspace_id = Some(req.workspace_id.to_string());
     query.language = req.constraints.language.clone();
     query.required_domains = req.constraints.required_domains.clone();
@@ -784,6 +1015,39 @@ async fn retrieve_local_candidates(
     };
     let ids: Vec<&str> = candidates.iter().map(|c| c.chunk_id.as_str()).collect();
     if deps.reranking {
+        // RFC-007 7.7: a real reranker may have reordered the fused set.
+        // Its cost is billed through the same ledger as every other stage
+        // (estimates stay estimates; `is_estimate` is never rewritten).
+        if candidates
+            .iter()
+            .any(|c| c.source == RetrievalSource::Reranked)
+        {
+            let estimator = CostEstimator::from_config(&deps.cost_config);
+            let cost =
+                estimator.estimate_cpu_millis(2u64.saturating_mul(candidates.len() as u64).max(1));
+            let _ = deps
+                .cost_sink
+                .append(CostEvent {
+                    id: searchos_domain::ids::CostEventId::generate(),
+                    task_id: task_id.clone(),
+                    workspace_id: req.workspace_id.clone(),
+                    agent_id: req.agent_id.clone(),
+                    operation: CostOperation::Reranking,
+                    provider_id: Some("reranker".into()),
+                    input_units: candidates.len() as u64,
+                    output_units: candidates.len() as u64,
+                    estimated_cost: cost,
+                    actual_cost: None,
+                    duration_ms: 0,
+                    occurred_at: Utc::now(),
+                    trace_id: None,
+                    shared: false,
+                    pricing_model_version: "1".into(),
+                    status: Default::default(),
+                    error_code: None,
+                })
+                .await;
+        }
         if let Some(order) = deps.rerank_cache.get("rrf", &ids, &policy_version) {
             candidates = order;
         } else {
@@ -983,6 +1247,7 @@ fn local_results_and_evidence(
             score: normalize_candidate_score(c),
             published_at: None,
             source: "local".into(),
+            highlight: c.highlight.clone(),
         });
         evidence.push(Evidence {
             id: searchos_domain::ids::EvidenceId::generate(),
@@ -1010,6 +1275,12 @@ fn local_results_and_evidence(
 
 #[async_trait]
 impl SearchService for SearchServiceImpl {
+    /// Plan-only entry point (trait object): delegates to the inherent
+    /// implementation so every transport gets the same plan.
+    async fn plan(&self, req: &SearchRequest) -> Result<SearchPlanReport, SearchOsError> {
+        SearchServiceImpl::plan_report(self, req).await
+    }
+
     async fn search(&self, mut req: SearchRequest) -> Result<SearchResponse, SearchOsError> {
         let default_limit = DEFAULT_MAX_RESULTS;
         req.max_results = clamp_max_results(if req.max_results == 0 {
@@ -1298,6 +1569,14 @@ async fn run_pipeline(
     let estimator = CostEstimator::from_config(&deps.cost_config);
     let mut warnings: Vec<String> = Vec::new();
     let analysis = analyze(&req.query);
+    // Coverage sub-questions: explicit follow-up focus replaces the derived
+    // decomposition so an agent can target exactly what the previous turn
+    // left open (RFC-005 5.6 contract for multi-turn research).
+    let required = if req.focus_requirements.is_empty() {
+        required_subquestions(&analysis)
+    } else {
+        req.focus_requirements.clone()
+    };
     let profile = deps
         .profiles
         .get(req.profile.as_str())
@@ -1324,12 +1603,23 @@ async fn run_pipeline(
 
     // Hybrid retrieval + cache layers, then application-level constraint
     // filtering BEFORE any result/evidence is served (Part 30 INV-30-01).
+    // Decision input cap: the retrieval pool is oversized for freshness, but
+    // the engine must judge the same top_k it did before the pool existed.
+    let decision_top_k = clamp_max_results(req.max_results.max(10)) as usize;
     let source_policy = deps.source.clone().with_constraints(
         &req.constraints.required_domains,
         &req.constraints.excluded_domains,
     );
-    let all_hits =
-        retrieve_local_candidates(&deps, &req, &analysis, &profile, &source_policy, &fp).await?;
+    let all_hits = retrieve_local_candidates(
+        &deps,
+        &req,
+        &analysis,
+        &profile,
+        &source_policy,
+        &fp,
+        &task_id,
+    )
+    .await?;
     let freshness_policy = deps.freshness.clone();
     let evals: Vec<LocalCandidateEval> = all_hits
         .iter()
@@ -1344,9 +1634,15 @@ async fn run_pipeline(
             }
         })
         .collect();
+    // The retrieval pool is oversized so freshness/source filtering can
+    // recover servable documents ranked below stale ones. The DECISION input
+    // is still capped at the original top_k: otherwise a large pool of weak
+    // candidates dilutes the quality gate's average relevance and falsely
+    // escalates a covered local query to external acquisition.
     let servable_evals: Vec<LocalCandidateEval> = evals
         .iter()
         .filter(|e| e.freshness_ok && e.source_ok)
+        .take(decision_top_k)
         .cloned()
         .collect();
     let servable_hits: Vec<RetrievalCandidate> =
@@ -1356,6 +1652,7 @@ async fn run_pipeline(
     let stale_hits: Vec<RetrievalCandidate> = evals
         .iter()
         .filter(|e| !e.freshness_ok && e.source_ok)
+        .take(decision_top_k)
         .map(|e| e.candidate.clone())
         .collect();
     let stale_document_ids: Vec<searchos_domain::ids::DocumentId> =
@@ -1389,7 +1686,7 @@ async fn run_pipeline(
         local_candidates,
         estimated_external_cost_micros: estimated_external,
         currency: req.budget.currency.clone(),
-        required_subquestions: required_subquestions(&analysis),
+        required_subquestions: required.clone(),
         required_domains: req.constraints.required_domains.clone(),
         excluded_domains: req.constraints.excluded_domains.clone(),
         stale_document_ids: stale_document_ids.clone(),
@@ -1490,6 +1787,12 @@ async fn run_pipeline(
     // RFC-031: what was bought this task, kept out of the index until the
     // final quality gate has judged it.
     let mut external_outcomes: Vec<ExternalQueryOutcome> = Vec::new();
+    let mut acquisition = AcquisitionState::default();
+    let mut acquisition_failed = false;
+    let svc = SearchServiceImplStub {
+        deps: Arc::clone(&deps),
+        estimator: searchos_cost::CostEstimator::from_config(&deps.cost_config),
+    };
 
     match &decision {
         SearchDecision::LocalOnly { .. } => {
@@ -1536,6 +1839,7 @@ async fn run_pipeline(
                     score: normalize_candidate_score(c),
                     published_at: None,
                     source: "local_partial".into(),
+                    highlight: c.highlight.clone(),
                 });
             }
             warnings.push(format!("rejected: {}", reason.code()));
@@ -1588,12 +1892,14 @@ async fn run_pipeline(
                 evidence.extend(l_ev);
             }
 
-            let svc = SearchServiceImplStub {
-                deps: Arc::clone(&deps),
-                estimator: searchos_cost::CostEstimator::from_config(&deps.cost_config),
-            };
             let execution = svc
-                .execute_external(&req, &planned_queries, &trace_id, &task_id)
+                .execute_external(
+                    &req,
+                    &planned_queries,
+                    &trace_id,
+                    &task_id,
+                    &mut acquisition,
+                )
                 .await;
             match execution {
                 Ok((outcomes, evs, calls, spent)) => {
@@ -1630,6 +1936,10 @@ async fn run_pipeline(
                         "external_execution_failed:{}:{}",
                         e.error_code, e.spent_micros
                     ));
+                    // A provider failure is not a coverage gap: re-buying from
+                    // a failing provider only burns the budget. Report
+                    // honestly instead of iterating.
+                    acquisition_failed = true;
                 }
             }
             // RFC-031 D1/D2: external results are NOT indexed here. Promotion
@@ -1683,8 +1993,10 @@ async fn run_pipeline(
     }
 
     // ---- Evidence merge (RFC-004 v1.1 6.11) ---------------------------
-    let (merged_evidence, merge_report): (Vec<Evidence>, MergeReport) =
-        merge_evidence(evidence, Vec::new());
+    // `evidence` is retained (cloned) so a bounded follow-up round can merge
+    // the accumulated set again without losing earlier acquisitions.
+    let (mut merged_evidence, merge_report): (Vec<Evidence>, MergeReport) =
+        merge_evidence(evidence.clone(), Vec::new());
     for c in &merge_report.conflicts {
         warnings.push(c.clone());
     }
@@ -1713,17 +2025,90 @@ async fn run_pipeline(
                 .unwrap_or(0.6)
         })
         .collect();
-    let mut verdict = gate.evaluate_set(
-        &merged_evidence,
-        &relevances,
-        &required_subquestions(&analysis),
-    );
+    let mut verdict = gate.evaluate_set(&merged_evidence, &relevances, &required);
     if !merge_report.conflicts.is_empty() {
         verdict.status = QualityStatus::Conflict;
         verdict
             .failed_constraints
             .push("unresolved_evidence_conflict".into());
     }
+
+    // ---- Bounded iterative acquisition (search-agent loop) -------------
+    // If the final gate still has OPEN requirements, re-plan one targeted
+    // query per gap and acquire again. Query/cost caps are cumulative via
+    // `acquisition`, idempotency and the singleflight leader path are
+    // unchanged (this all happens before the response is cached), and a
+    // conflict never triggers re-buying — more search cannot resolve a
+    // contradiction.
+    let mut round = 1u32;
+    while !acquisition_failed && should_replan(&decision, &verdict, &req, &acquisition, round) {
+        let follow_up = plan_follow_up_queries(
+            &verdict.coverage_gaps,
+            &acquisition,
+            acquisition.remaining_queries(&req),
+            &req.query,
+        );
+        if follow_up.is_empty() {
+            break;
+        }
+        let execution = svc
+            .execute_external(&req, &follow_up, &trace_id, &task_id, &mut acquisition)
+            .await;
+        match execution {
+            Ok((outcomes, evs, _calls, spent)) => {
+                for outcome in outcomes {
+                    results.extend(outcome.items.clone());
+                    external_outcomes.push(outcome);
+                }
+                evidence.extend(evs);
+                cost_spent = Money {
+                    amount_micros: spent,
+                    currency: req.budget.currency.clone(),
+                };
+            }
+            Err(e) => {
+                tracing::warn!(
+                    code = %e.error_code,
+                    round,
+                    "follow-up acquisition failed after partial spend"
+                );
+                cost_spent = Money {
+                    amount_micros: e.spent_micros,
+                    currency: req.budget.currency.clone(),
+                };
+                warnings.push(format!("follow_up_failed:{}:{}", round, e.error_code));
+                break;
+            }
+        }
+        round += 1;
+        warnings.push(format!("acquisition_round:{round}"));
+
+        let (re_merged, re_report) = merge_evidence(evidence.clone(), Vec::new());
+        merged_evidence = re_merged;
+        for c in &re_report.conflicts {
+            if !warnings.contains(c) {
+                warnings.push(c.clone());
+            }
+        }
+        let re_relevances: Vec<f32> = merged_evidence
+            .iter()
+            .map(|ev| {
+                results
+                    .iter()
+                    .find(|r| r.url == ev.url)
+                    .map(|r| r.score.clamp(0.05, 1.0))
+                    .unwrap_or(0.6)
+            })
+            .collect();
+        verdict = gate.evaluate_set(&merged_evidence, &re_relevances, &required);
+        if !re_report.conflicts.is_empty() {
+            verdict.status = QualityStatus::Conflict;
+            verdict
+                .failed_constraints
+                .push("unresolved_evidence_conflict".into());
+        }
+    }
+
     if verdict.status == QualityStatus::Passed {
         deps.cost_sink.record_quality_pass(task_id.as_str()).await?;
         metrics.inc_coverage_pass();
@@ -1782,6 +2167,39 @@ async fn run_pipeline(
         &task_id,
         status,
     );
+    // Agent-facing contract: expose the open requirements so a caller can
+    // decide between a targeted follow-up query and giving up (RFC-005 5.6).
+    response.coverage_gaps = verdict.coverage_gaps.clone();
+
+    // ---- Agent session turn recording (best-effort) --------------------
+    // Runs after the response exists so the session can round-trip the
+    // follow-up contract (next focus requirements) onto the response.
+    if let Some(session_id) = req.session_id.as_deref() {
+        if let Some(store) = &deps.session_store {
+            store.create_or_get(session_id, req.workspace_id.as_str());
+            let turn = crate::session::SessionTurn {
+                query: req.query.clone(),
+                trace_id: trace_id.clone(),
+                status: status.as_str().to_string(),
+                decision_path: decision.path_name().to_string(),
+                open_requirements: verdict.coverage_gaps.len(),
+                recorded_at: Utc::now().to_rfc3339(),
+            };
+            if let Some(session) = store.record_turn(
+                session_id,
+                req.workspace_id.as_str(),
+                turn,
+                verdict.coverage_gaps.clone(),
+            ) {
+                response.session_id = Some(session.session_id);
+                response.focus_requirements = session
+                    .open_requirements
+                    .iter()
+                    .map(|g| g.question.clone())
+                    .collect();
+            }
+        }
+    }
     // Shared transport result cap (Part 30 INV-30-19).
     response.results.truncate(max_results);
     response.provenance.truncate(max_results);
@@ -1790,7 +2208,11 @@ async fn run_pipeline(
 
 fn normalize_candidate_score(c: &RetrievalCandidate) -> f32 {
     match c.source {
-        RetrievalSource::Hybrid => (c.score * 61.0 / 2.0).clamp(0.05, 1.0), // RRF ~2/61 → 1.0
+        // RRF ~2/61 → 1.0. Reranked candidates keep the fused RRF score
+        // (rerankers only reorder), so both branches share one scale.
+        RetrievalSource::Hybrid | RetrievalSource::Reranked => {
+            (c.score * 61.0 / 2.0).clamp(0.05, 1.0)
+        }
         _ => (c.score / 3.0).clamp(0.05, 1.0),
     }
 }
@@ -1836,6 +2258,9 @@ fn build_response(
         warnings,
         task_id: Some(task_id.to_string()),
         replayed: false,
+        coverage_gaps: Vec::new(),
+        session_id: None,
+        focus_requirements: Vec::new(),
     }
 }
 
@@ -1860,6 +2285,26 @@ struct ExternalQueryOutcome {
     items: Vec<SearchResultItem>,
 }
 
+/// Cumulative acquisition state across bounded iterative rounds. The query
+/// and cost caps are TOTAL caps: no round may re-buy covered requirements or
+/// exceed the reservation (INV-30-04 / RFC-004 v1.1 6.8).
+#[derive(Default, Debug, Clone)]
+struct AcquisitionState {
+    calls: u64,
+    spent_micros: i64,
+    /// Lowercased queries already executed; a follow-up round never repeats
+    /// a query that was just bought.
+    executed_queries: std::collections::HashSet<String>,
+}
+
+impl AcquisitionState {
+    fn remaining_queries(&self, req: &SearchRequest) -> usize {
+        req.budget
+            .max_external_queries
+            .saturating_sub(self.calls as u32) as usize
+    }
+}
+
 /// Thin internal handle to reuse execute_external from the pipeline.
 struct SearchServiceImplStub {
     deps: Arc<SearchDependencies>,
@@ -1877,16 +2322,22 @@ impl SearchServiceImplStub {
         planned: &[PlannedQuery],
         trace_id: &TraceId,
         task_id: &TaskId,
+        state: &mut AcquisitionState,
     ) -> Result<(Vec<ExternalQueryOutcome>, Vec<Evidence>, u64, i64), ExternalExecutionError> {
         let mut outcomes: Vec<ExternalQueryOutcome> = Vec::new();
         let mut evidence = Vec::new();
-        let mut calls = 0u64;
-        let mut spent = Money::zero(&req.budget.currency);
+        let mut calls = state.calls;
+        let mut spent = Money {
+            amount_micros: state.spent_micros,
+            currency: req.budget.currency.clone(),
+        };
         let max_results = clamp_max_results(req.max_results) as usize;
         let mut provider_id: Option<String> = None;
 
         macro_rules! fail {
             ($code:expr, $message:expr) => {{
+                state.calls = calls;
+                state.spent_micros = spent.amount_micros;
                 let err = ExternalExecutionError {
                     spent_micros: spent.amount_micros,
                     error_code: $code.to_string(),
@@ -1946,7 +2397,14 @@ impl SearchServiceImplStub {
 
         let mut queries: Vec<PlannedQuery> = planned.to_vec();
         queries.retain(|q| !q.query.trim().is_empty());
-        queries.truncate(req.budget.max_external_queries.max(1) as usize);
+        if state.calls == 0 {
+            // First round: preserve the legacy single-call fallback. Only
+            // follow-up rounds de-duplicate against what was already bought.
+            queries.truncate(req.budget.max_external_queries.max(1) as usize);
+        } else {
+            queries.retain(|q| !state.executed_queries.contains(&q.query.to_lowercase()));
+            queries.truncate(state.remaining_queries(req));
+        }
         if queries.is_empty() {
             queries.push(PlannedQuery {
                 query: req.query.clone(),
@@ -1965,6 +2423,7 @@ impl SearchServiceImplStub {
                 break;
             }
             let q = &planned_query.query;
+            state.executed_queries.insert(q.to_lowercase());
             let params = SearchParams {
                 query: q.clone(),
                 max_results: req.max_results,
@@ -2024,6 +2483,7 @@ impl SearchServiceImplStub {
                     score: entry.score,
                     published_at: entry.published_at,
                     source: provider.id().to_string(),
+                    highlight: None,
                 });
                 evidence.push(Evidence {
                     id: searchos_domain::ids::EvidenceId::generate(),
@@ -2054,6 +2514,8 @@ impl SearchServiceImplStub {
                 items: call_items,
             });
         }
+        state.calls = calls;
+        state.spent_micros = spent.amount_micros;
         Ok((outcomes, evidence, calls, spent.amount_micros))
     }
 }

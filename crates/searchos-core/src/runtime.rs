@@ -31,6 +31,38 @@ use searchos_storage_sqlite::store::SqliteStore;
 
 use crate::config::{SearchOsConfig, CONSUMED_CONFIG_FIELDS, DEPRECATED_CONFIG_FIELDS};
 
+/// Builds the single embedding provider shared by the vector index, memory
+/// retrieval and the semantic cache. `local` keeps the offline deterministic
+/// hashing embedder; `remote` uses an OpenAI-compatible HTTP endpoint whose
+/// API key comes only from the environment (never from config files).
+fn build_embedder(
+    cfg: &crate::config::EmbeddingConfig,
+) -> Result<Arc<dyn EmbeddingProvider>, SearchOsError> {
+    if cfg.provider == "remote" {
+        let remote = searchos_provider::embedding::RemoteEmbeddingProvider::new(
+            searchos_provider::embedding::RemoteEmbeddingConfig {
+                endpoint: cfg.url.trim().to_string(),
+                model: cfg.model.clone(),
+                api_key_env: cfg.api_key_env.clone(),
+                dimensions: cfg.dimensions,
+                timeout_seconds: cfg.timeout_seconds,
+                model_version: cfg.model_version.clone(),
+                normalized: true,
+                max_batch_size: cfg.max_batch_size,
+            },
+        )
+        .map_err(|e| SearchOsError::Internal(format!("embedding config: {e}")))?;
+        tracing::info!(
+            model = %cfg.model,
+            dimensions = cfg.dimensions,
+            "remote embedding provider enabled"
+        );
+        Ok(Arc::new(remote))
+    } else {
+        Ok(Arc::new(HashingEmbedder::new(256)))
+    }
+}
+
 /// The assembled runtime.
 pub struct SearchOsRuntime {
     pub config: SearchOsConfig,
@@ -65,6 +97,8 @@ pub struct SearchOsRuntime {
     pub negative_cache: Arc<ExactQueryCache>,
     /// Singleflight coordinator, kept for cache/index invalidation.
     pub singleflight: Arc<SingleflightCoordinator>,
+    /// Bounded in-process agent session store (multi-turn research state).
+    pub session_store: Arc<searchos_application::session::SessionStore>,
     /// RFC-031 external evidence promotion service (capture worker input).
     pub promotion:
         Option<Arc<dyn searchos_application::promotion_service::EvidencePromotionService>>,
@@ -153,9 +187,15 @@ impl SearchOsRuntime {
             ),
         };
 
-        // Vector index (rebuildable).
+        // Vector index (rebuildable). The runtime's embedder is created
+        // first and shared with the index adapter: stored chunk vectors and
+        // query vectors must come from the SAME model instance, otherwise
+        // nearest-neighbor search silently compares different spaces.
+        let embedder: Arc<dyn EmbeddingProvider> = build_embedder(&config.memory.embedding)?;
         let lancedb = Arc::new(
-            searchos_vector_lancedb::LanceVectorIndex::open(lancedb_path, "embeddings").await?,
+            searchos_vector_lancedb::LanceVectorIndex::open(lancedb_path, "embeddings")
+                .await?
+                .with_embedder(Arc::clone(&embedder)),
         );
 
         // Content store.
@@ -233,6 +273,34 @@ impl SearchOsRuntime {
             config.search.incremental.to_string(),
         );
         config_consumption.insert(
+            "search.max_acquisition_rounds".into(),
+            config.search.max_acquisition_rounds.to_string(),
+        );
+        config_consumption.insert(
+            "intelligence.reranker_provider".into(),
+            config.intelligence.reranker_provider.clone(),
+        );
+        config_consumption.insert(
+            "intelligence.reranker_url".into(),
+            config.intelligence.reranker_url.clone(),
+        );
+        config_consumption.insert(
+            "intelligence.reranker_model".into(),
+            config.intelligence.reranker_model.clone(),
+        );
+        config_consumption.insert(
+            "intelligence.reranker_api_key_env".into(),
+            config.intelligence.reranker_api_key_env.clone(),
+        );
+        config_consumption.insert(
+            "intelligence.reranker_timeout_seconds".into(),
+            config.intelligence.reranker_timeout_seconds.to_string(),
+        );
+        config_consumption.insert(
+            "intelligence.reranker_top_n".into(),
+            config.intelligence.reranker_top_n.to_string(),
+        );
+        config_consumption.insert(
             "indexes.rebuild_on_start".into(),
             config.indexes.rebuild_on_start.to_string(),
         );
@@ -255,6 +323,30 @@ impl SearchOsRuntime {
         config_consumption.insert(
             "memory.embedding.model".into(),
             config.memory.embedding.model.clone(),
+        );
+        config_consumption.insert(
+            "memory.embedding.url".into(),
+            config.memory.embedding.url.clone(),
+        );
+        config_consumption.insert(
+            "memory.embedding.api_key_env".into(),
+            config.memory.embedding.api_key_env.clone(),
+        );
+        config_consumption.insert(
+            "memory.embedding.dimensions".into(),
+            config.memory.embedding.dimensions.to_string(),
+        );
+        config_consumption.insert(
+            "memory.embedding.timeout_seconds".into(),
+            config.memory.embedding.timeout_seconds.to_string(),
+        );
+        config_consumption.insert(
+            "memory.embedding.model_version".into(),
+            config.memory.embedding.model_version.clone(),
+        );
+        config_consumption.insert(
+            "memory.embedding.max_batch_size".into(),
+            config.memory.embedding.max_batch_size.to_string(),
         );
         metrics.set_gauge(
             "config.unconsumed_field_total",
@@ -411,13 +503,30 @@ impl SearchOsRuntime {
         let retrieval_cache = Arc::new(RetrievalCache::new(cache_ttl));
         let embedding_cache = Arc::new(EmbeddingCache::default());
         let rerank_cache = Arc::new(RerankCache::new(cache_ttl));
-        let embedder: Arc<dyn EmbeddingProvider> = Arc::new(HashingEmbedder::new(256));
         let vector: Arc<dyn VectorIndex> = lancedb.clone();
-        let hybrid = Arc::new(HybridRetriever::new(
+        let mut hybrid = HybridRetriever::new(
             Arc::clone(&fulltext),
             Some(Arc::clone(&vector)),
             RrfConfig::default(),
-        ));
+        );
+        // RFC-007 7.7: a real reranker is attached when enabled. `local` is
+        // offline-safe; `remote` uses a cross-encoder endpoint and degrades
+        // to local when unconfigured (never to a no-op).
+        if config.intelligence.reranking {
+            let reranker = searchos_retrieval::build_reranker(
+                &config.intelligence.reranker_provider,
+                &searchos_retrieval::RemoteRerankerConfig {
+                    endpoint: config.intelligence.reranker_url.clone(),
+                    model: config.intelligence.reranker_model.clone(),
+                    api_key_env: config.intelligence.reranker_api_key_env.clone(),
+                    timeout_seconds: config.intelligence.reranker_timeout_seconds,
+                    top_n: config.intelligence.reranker_top_n,
+                },
+            );
+            tracing::info!(model = %reranker.model_id(), "reranker attached");
+            hybrid = hybrid.with_reranker(reranker, searchos_retrieval::default_policy());
+        }
+        let hybrid = Arc::new(hybrid);
 
         let singleflight = Arc::new(SingleflightCoordinator::new());
         // RFC-031 D10: bounded negative-result cache, same family as the exact
@@ -461,6 +570,10 @@ impl SearchOsRuntime {
                 })),
                 &cost_config,
                 searchos_application::promotion_service::PromotionConfig::default(),
+            )
+            .with_vector_index(
+                Some(Arc::clone(&vector) as Arc<dyn searchos_retrieval::VectorIndex>),
+                Some(Arc::clone(&embedder)),
             ),
         );
         let promotion_for_runtime: Option<
@@ -469,6 +582,12 @@ impl SearchOsRuntime {
         let promotion_service: Option<
             Arc<dyn searchos_application::promotion_service::EvidencePromotionService>,
         > = Some(promotion_impl as _);
+
+        // Bounded in-process agent session store (MCP stdio and the gateway
+        // share one process, so the store is shared by both transports).
+        let session_store = Arc::new(searchos_application::session::SessionStore::new(
+            searchos_application::session::SessionLimits::default(),
+        ));
 
         let deps = Arc::new(searchos_application::search_service::SearchDependencies {
             profiles: searchos_policy::ProfileRegistry::builtin(),
@@ -508,6 +627,7 @@ impl SearchOsRuntime {
             reranking: config.intelligence.reranking,
             allow_external: config.tavily_api_key().is_some() || config.brave_api_key().is_some(),
             promotion: promotion_service,
+            session_store: Some(Arc::clone(&session_store)),
         });
 
         let search_service: Arc<dyn searchos_application::search_service::SearchService> =
@@ -534,13 +654,7 @@ impl SearchOsRuntime {
         // Memory service backed by sqlite, using the configured embedding
         // provider/model label and a local deterministic embedder (G-05).
         let memory_embedding_provider = config.memory.embedding.provider.clone();
-        let memory_embedding_model = config.memory.embedding.model.clone();
-        if memory_embedding_provider != "local" {
-            tracing::warn!(
-                provider = %memory_embedding_provider,
-                "remote memory embeddings not wired; using local hashing embedder"
-            );
-        }
+        let memory_embedding_model = embedder.model_id().to_string();
         let memory_sqlite = Arc::new(SqliteMemoryStore {
             store: Arc::clone(&sqlite),
             embedder: Arc::clone(&embedder),
@@ -600,6 +714,7 @@ impl SearchOsRuntime {
             negative_cache,
             singleflight,
             promotion: promotion_for_runtime,
+            session_store,
             config_consumption,
             metrics_enabled: config.observability.metrics_enabled,
             trace_retention_days: config.observability.trace_retention_days,
@@ -612,6 +727,19 @@ impl SearchOsRuntime {
         if config.indexes.rebuild_on_start {
             if let Err(e) = runtime.rebuild_index().await {
                 tracing::warn!(%e, "rebuild_on_start failed");
+            }
+        }
+        // Analyzer schema drift: indexes created before CJK analysis existed
+        // store the built-in `en_stem` tokenizer in their schema. They keep
+        // working (the SearchOS analyzer is registered under the legacy
+        // name), but rows written before the upgrade are only re-tokenized
+        // by a rebuild — surface that instead of failing silently.
+        if let Some(t) = &runtime.tantivy {
+            if !t.analyzer_is_current() {
+                tracing::warn!(
+                    "index analyzer schema drifted; run `searchos index rebuild` \
+                     to re-tokenize rows written before CJK analysis (search still works)"
+                );
             }
         }
         if config.indexes.verify_on_start {
@@ -835,6 +963,40 @@ impl SearchOsRuntime {
         }
         let n = docs.len() as u64;
         self.fulltext.rebuild_from(&docs).await?;
+        // Dense vectors must follow the full-text rebuild, or hybrid
+        // retrieval serves stale/deleted chunk vectors from LanceDB.
+        let model_id = self.embedder.model_id().to_string();
+        let model_version = self.embedder.model_version().to_string();
+        let mut vecs = Vec::with_capacity(docs.len());
+        for d in &docs {
+            let text = match &d.title {
+                Some(title) => format!("{title} {}", d.body),
+                None => d.body.clone(),
+            };
+            let mut vectors = self
+                .embedder
+                .embed(std::slice::from_ref(&text))
+                .await
+                .map_err(|e| SearchOsError::Retrieval(format!("embed chunk: {e}")))?;
+            let Some(vector) = vectors.pop() else {
+                continue;
+            };
+            vecs.push(searchos_vector_lancedb::IndexedVec {
+                chunk_id: d.chunk_id.as_str().to_string(),
+                document_id: d.document_id.as_str().to_string(),
+                version_id: d.version_id.as_str().to_string(),
+                title: d.title.clone(),
+                body: d.body.clone(),
+                url: d.url.clone(),
+                language: d.language.clone(),
+                workspace_id: d.workspace_id.clone(),
+                model_id: model_id.clone(),
+                model_version: model_version.clone(),
+                fetched_at: d.fetched_at.timestamp().max(0) as u64,
+                vector,
+            });
+        }
+        self.vector.rebuild_from(&vecs).await?;
         Ok(n)
     }
 
@@ -880,8 +1042,41 @@ impl SearchOsRuntime {
         Ok(processed)
     }
 
-    /// Processes pending outbox rows into the full-text index (RFC-006 6.7).
-    /// Returns (processed, dead).
+    /// Embeds one chunk payload and upserts it into the vector index.
+    /// Idempotent: LanceDB upsert deletes the stale row for the chunk id
+    /// before adding. `Ok(())` with no embedder configured means the vector
+    /// leg is disabled.
+    async fn embed_and_upsert_vector(
+        &self,
+        payload: &searchos_domain::retrieval::IndexedDocument,
+    ) -> Result<(), SearchOsError> {
+        let text = match &payload.title {
+            Some(title) => format!("{title} {}", payload.body),
+            None => payload.body.clone(),
+        };
+        let mut vectors = self
+            .embedder
+            .embed(std::slice::from_ref(&text))
+            .await
+            .map_err(|e| SearchOsError::Retrieval(format!("embed chunk: {e}")))?;
+        let vector = vectors
+            .pop()
+            .ok_or_else(|| SearchOsError::Retrieval("empty embedding".into()))?;
+        self.vector
+            .upsert(
+                payload.chunk_id.as_str(),
+                payload.document_id.as_str(),
+                vector,
+                self.embedder.model_id(),
+            )
+            .await
+    }
+
+    /// Processes pending outbox rows into the full-text and vector indexes
+    /// (RFC-006 6.7, RFC-007 7.5 hybrid). The vector leg was never
+    /// populated before: hybrid retrieval fused BM25 against an always-empty
+    /// vector list. The backend-agnostic helper below owns both legs so the
+    /// normal gateway worker and explicit test drains have identical behavior.
     pub async fn process_outbox(&self, limit: u32) -> Result<(u64, u64), SearchOsError> {
         self.process_outbox_with_index(self.fulltext.clone(), limit)
             .await
@@ -920,8 +1115,12 @@ impl SearchOsRuntime {
             .reindex_current_version(document_id, workspace_id)
             .await?;
         let mut written = 0usize;
-        for payload in payloads {
-            if self.fulltext.index(payload).await.is_ok() {
+        for payload in &payloads {
+            // Vector first (idempotent upsert), then full-text (append).
+            if let Err(e) = self.embed_and_upsert_vector(payload).await {
+                tracing::warn!(code = %e.class().code, "reindex vector upsert failed");
+            }
+            if self.fulltext.index(payload.clone()).await.is_ok() {
                 written += 1;
             }
         }
@@ -949,8 +1148,8 @@ impl SearchOsRuntime {
             }
             let outcome = if row.operation == "delete" {
                 // Delete outbox rows carry chunk_id, not document_id. Keep
-                // identifier space explicit and only mark processed when the
-                // index confirms deletion (INV-30-08).
+                // identifier space explicit and only mark processed when
+                // BOTH index legs confirm deletion.
                 let chunk_ids: Vec<searchos_domain::ids::ChunkId> = row
                     .payload
                     .as_deref()
@@ -960,11 +1159,16 @@ impl SearchOsRuntime {
                     .unwrap_or_else(|| {
                         vec![searchos_domain::ids::ChunkId::new(row.entity_id.clone())]
                     });
-                let deleted = index.delete_by_chunk_ids(&chunk_ids).await.is_ok();
-                if deleted {
+                let vector_deleted = self.vector.delete_by_chunk_ids(&chunk_ids).await;
+                let fulltext_deleted = if vector_deleted.is_ok() {
+                    index.delete_by_chunk_ids(&chunk_ids).await.is_ok()
+                } else {
+                    false
+                };
+                if fulltext_deleted {
                     self.invalidate_caches().await;
                 }
-                deleted
+                fulltext_deleted
             } else if row.operation == "refresh" {
                 // RFC-004 v1.1 10.1: re-fetch the existing source instead of
                 // deleting authoritative knowledge or buying a full search.
@@ -1002,10 +1206,16 @@ impl SearchOsRuntime {
                                         .reindex_current_version(&doc.document_id, &workspace)
                                         .await
                                         .unwrap_or_default();
+                                    let mut ok = true;
                                     for p in payloads {
-                                        let _ = index.index(p).await;
+                                        if self.embed_and_upsert_vector(&p).await.is_err()
+                                            || index.index(p).await.is_err()
+                                        {
+                                            ok = false;
+                                            break;
+                                        }
                                     }
-                                    index.commit().await.is_ok()
+                                    ok && index.commit().await.is_ok()
                                 } else {
                                     true
                                 }
@@ -1018,6 +1228,19 @@ impl SearchOsRuntime {
             } else if let Ok(payload) =
                 repos::parse_index_payload(row.payload.as_deref().unwrap_or(""))
             {
+                // Vector upsert is best-effort: an embedding failure must
+                // not block full-text indexing (BM25 search stays correct),
+                // and a local `rebuild` restores any drifted vectors. The
+                // reverse is not true — a stale vector for a deleted chunk
+                // would keep serving deleted content — which is why delete
+                // rows below require BOTH legs to confirm.
+                if let Err(e) = self.embed_and_upsert_vector(&payload).await {
+                    tracing::warn!(
+                        code = %e.class().code,
+                        chunk = %payload.chunk_id.as_str(),
+                        "vector upsert failed; full-text indexing continues"
+                    );
+                }
                 index.index(payload).await.is_ok()
             } else {
                 false

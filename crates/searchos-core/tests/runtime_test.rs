@@ -123,3 +123,25 @@ async fn delete_outbox_retry_after_index_failure() {
     assert_eq!(status, "pending");
     assert_eq!(attempts, 1, "failure is retried, not silently processed");
 }
+
+/// RFC-007 7.7: the runtime attaches a REAL reranker (not NeverReranker) when
+/// enabled, and honors the disable switch.
+#[tokio::test]
+async fn reranker_is_wired_into_the_hybrid_retriever() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = searchos_core::SearchOsConfig::default();
+    cfg.app.data_dir = dir.path().to_path_buf();
+    let rt = searchos_core::SearchOsRuntime::init(cfg).await.unwrap();
+    assert!(
+        rt.hybrid.has_reranker(),
+        "a reranker must be attached by default"
+    );
+    assert_eq!(rt.hybrid.reranker_model_id(), Some("feature-reranker-v1"));
+
+    let dir2 = tempfile::tempdir().unwrap();
+    let mut cfg2 = searchos_core::SearchOsConfig::default();
+    cfg2.app.data_dir = dir2.path().to_path_buf();
+    cfg2.intelligence.reranking = false;
+    let rt2 = searchos_core::SearchOsRuntime::init(cfg2).await.unwrap();
+    assert!(!rt2.hybrid.has_reranker(), "disable switch is honored");
+}

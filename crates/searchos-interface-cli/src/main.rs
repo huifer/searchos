@@ -87,6 +87,15 @@ enum Command {
         /// Cap on external search queries for this request
         #[arg(long)]
         max_external_queries: Option<u32>,
+        /// Bounded iterative retrieval rounds (1 disables follow-up queries)
+        #[arg(long)]
+        max_acquisition_rounds: Option<u32>,
+        /// Agent session id: turns are recorded for a later follow-up
+        #[arg(long)]
+        session: Option<String>,
+        /// Comma-separated requirements to focus on (follow-up turns)
+        #[arg(long)]
+        focus_requirements: Option<String>,
         /// Cap on total estimated cost for this request (major units)
         #[arg(long)]
         max_cost: Option<f64>,
@@ -725,6 +734,9 @@ async fn run(cli: Cli) -> Result<(), SearchOsError> {
             mode,
             workspace,
             max_external_queries,
+            max_acquisition_rounds,
+            session,
+            focus_requirements,
             max_cost,
             max_results,
             request_id,
@@ -739,6 +751,21 @@ async fn run(cli: Cli) -> Result<(), SearchOsError> {
             )?;
             if let Some(n) = max_external_queries {
                 req.budget.max_external_queries = *n;
+            }
+            if let Some(n) = max_acquisition_rounds {
+                req.budget.max_acquisition_rounds = (*n).clamp(1, 5);
+            }
+            if let Some(sid) = session.as_deref() {
+                if !sid.trim().is_empty() {
+                    req.session_id = Some(sid.to_string());
+                }
+            }
+            if let Some(focus) = focus_requirements.as_deref() {
+                req.focus_requirements = focus
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
             }
             if let Some(c) = max_cost {
                 req.budget.max_total_cost_micros = (c * 1_000_000.0).round() as i64;
@@ -1134,6 +1161,7 @@ async fn run(cli: Cli) -> Result<(), SearchOsError> {
                             cost_micros: (resp.cost.estimated * 1_000_000.0).round() as i64,
                             latency_ms: started.elapsed().as_millis() as u64,
                             evidence_text,
+                            ranked_urls: resp.results.iter().map(|r| r.url.clone()).collect(),
                         })
                     }
                 })

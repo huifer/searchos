@@ -37,6 +37,10 @@ def main() -> int:
     parser.add_argument("--min-pass-rate", type=float, default=0.5)
     parser.add_argument("--min-questions", type=int, default=20)
     parser.add_argument("--max-latency-p95-ms", type=float, default=5_000.0)
+    parser.add_argument("--min-mrr", type=float, default=0.5)
+    parser.add_argument("--min-ndcg", type=float, default=0.5)
+    parser.add_argument("--min-recall", type=float, default=0.5)
+    parser.add_argument("--min-qrel-questions", type=int, default=1)
     args = parser.parse_args()
 
     if not args.report.exists():
@@ -73,6 +77,23 @@ def main() -> int:
     if latencies:
         idx = max(0, min(len(latencies) - 1, (len(latencies) * 95 + 99) // 100 - 1))
         check("latency p95 (ms)", float(latencies[idx]), args.max_latency_p95_ms, lambda a, e: a <= e)
+
+    # Ranking quality (nDCG/MRR/Recall@k) against per-question qrels. Older
+    # reports without `ranking` are accepted with an explicit note so the gate
+    # stays backwards compatible; datasets WITH judgments must pass.
+    ranking = run.get("ranking")
+    if isinstance(ranking, dict) and ranking.get("questions_with_qrels", 0) > 0:
+        check(
+            "questions with relevance judgments",
+            ranking.get("questions_with_qrels"),
+            args.min_qrel_questions,
+            lambda a, e: a >= e,
+        )
+        check("MRR", ranking.get("mrr"), args.min_mrr, lambda a, e: a >= e)
+        check("nDCG@5", ranking.get("ndcg_at_k"), args.min_ndcg, lambda a, e: a >= e)
+        check("Recall@5", ranking.get("recall_at_k"), args.min_recall, lambda a, e: a >= e)
+    else:
+        print("  note   no relevance judgments in this dataset; ranking metrics skipped")
 
     # Baseline A/B are analytic estimates; only baseline C is a live run, so it
     # is the one allowed to carry a non-estimate cost figure.

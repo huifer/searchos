@@ -486,6 +486,9 @@ mod tests {
             warnings: vec![],
             task_id: None,
             replayed: false,
+            coverage_gaps: Vec::new(),
+            session_id: None,
+            focus_requirements: Vec::new(),
         };
         let out = TavilySearchResponse::from_domain(&core, 5, vec![], 10);
         let json = serde_json::to_value(&out).unwrap();
@@ -525,6 +528,7 @@ mod tests {
                 score: 1.0,
                 published_at: Some(Utc::now()),
                 source: "local".into(),
+                highlight: None,
             }],
             quality: QualityReport {
                 status: QualityStatus::Passed,
@@ -544,6 +548,9 @@ mod tests {
             warnings: vec![],
             task_id: None,
             replayed: false,
+            coverage_gaps: Vec::new(),
+            session_id: None,
+            focus_requirements: Vec::new(),
         };
         let out = TavilySearchResponse::from_domain(&core, 5, vec![], 120);
         assert_eq!(out.results.len(), 1);

@@ -21,6 +21,8 @@ pub struct QuestionOutcome {
     /// Keyword coverage ratio in [0,1].
     pub keyword_coverage: f32,
     pub latency_ms: u64,
+    /// Reciprocal rank of the first relevant URL (0 when none/qrels absent).
+    pub reciprocal_rank: f64,
 }
 
 /// Aggregated run outcome.
@@ -28,6 +30,10 @@ pub struct QuestionOutcome {
 pub struct RunOutcome {
     pub dataset_id: String,
     pub total_questions: usize,
+    /// Aggregated ranking quality against per-question qrels. Zeros when the
+    /// dataset carries no `relevant_urls` (metrics are undefined without
+    /// judgments and are never fabricated).
+    pub ranking: crate::ranking::RankingReport,
     pub local_resolutions: usize,
     pub quality_pass_count: usize,
     pub quality_pass_rate: f64,
@@ -52,6 +58,8 @@ pub struct QueryResult {
     pub latency_ms: u64,
     /// Returned result snippets/URLs/titles joined for keyword matching.
     pub evidence_text: String,
+    /// Result URLs in rank order (for ranking metrics against qrels).
+    pub ranked_urls: Vec<String>,
 }
 
 /// Executes every question through `f` and aggregates the outcome.
@@ -65,12 +73,40 @@ where
 {
     let mut outcome = RunOutcome {
         dataset_id: dataset.dataset_id.clone(),
+        ranking: crate::ranking::RankingReport::default(),
         ..Default::default()
     };
+    let mut ranking_questions = 0usize;
+    let mut ranking_mrr = 0.0f64;
+    let mut ranking_ndcg = 0.0f64;
+    let mut ranking_recall = 0.0f64;
+    let mut ranking_precision = 0.0f64;
     for q in &dataset.questions {
         let result = f(QueryRequest { question: q }).await?;
         let coverage = keyword_coverage(&result.evidence_text, &q.expected_keywords);
         let passed = result.quality_status == "passed";
+        if !q.relevant_urls.is_empty() {
+            ranking_questions += 1;
+            ranking_mrr +=
+                crate::ranking::first_relevant_rank(&result.ranked_urls, &q.relevant_urls)
+                    .map(|r| 1.0 / r as f64)
+                    .unwrap_or(0.0);
+            ranking_ndcg += crate::ranking::ndcg_at_k(
+                &result.ranked_urls,
+                &q.relevant_urls,
+                crate::ranking::RANKING_K,
+            );
+            ranking_recall += crate::ranking::recall_at_k(
+                &result.ranked_urls,
+                &q.relevant_urls,
+                crate::ranking::RANKING_K,
+            );
+            ranking_precision += crate::ranking::precision_at_k(
+                &result.ranked_urls,
+                &q.relevant_urls,
+                crate::ranking::RANKING_K,
+            );
+        }
         outcome.total_questions += 1;
         if passed {
             outcome.quality_pass_count += 1;
@@ -90,7 +126,22 @@ where
             cost_micros: result.cost_micros,
             keyword_coverage: coverage,
             latency_ms: result.latency_ms,
+            reciprocal_rank: crate::ranking::first_relevant_rank(
+                &result.ranked_urls,
+                &q.relevant_urls,
+            )
+            .map(|r| 1.0 / r as f64)
+            .unwrap_or(0.0),
         });
+    }
+    if ranking_questions > 0 {
+        outcome.ranking = crate::ranking::RankingReport {
+            questions_with_qrels: ranking_questions,
+            mrr: ranking_mrr / ranking_questions as f64,
+            ndcg_at_k: ranking_ndcg / ranking_questions as f64,
+            recall_at_k: ranking_recall / ranking_questions as f64,
+            precision_at_k: ranking_precision / ranking_questions as f64,
+        };
     }
     if outcome.total_questions > 0 {
         outcome.quality_pass_rate =
@@ -144,6 +195,7 @@ mod tests {
                     expected_keywords: vec!["tokio".into()],
                     time_sensitive: false,
                     profile: None,
+                    relevant_urls: vec![],
                 },
                 EvalQuestion {
                     id: "q2".into(),
@@ -152,6 +204,7 @@ mod tests {
                     expected_keywords: vec![],
                     time_sensitive: true,
                     profile: None,
+                    relevant_urls: vec![],
                 },
             ],
         };
@@ -166,6 +219,7 @@ mod tests {
                     cost_micros: if n == 1 { 100 } else { 5000 },
                     latency_ms: 10,
                     evidence_text: "tokio runtime".into(),
+                    ranked_urls: vec![],
                 })
             }
         })
@@ -177,5 +231,59 @@ mod tests {
         assert_eq!(outcome.external_call_total, 1);
         assert_eq!(outcome.cost_micros_total, 5100);
         assert!((outcome.local_resolution_rate - 0.5).abs() < 1e-9);
+    }
+
+    #[tokio::test]
+    async fn ranking_metrics_are_aggregated_from_qrels() {
+        let ds = EvaluationDataset {
+            dataset_id: "rank".into(),
+            created_at: String::new(),
+            questions: vec![
+                EvalQuestion {
+                    id: "q1".into(),
+                    question: "q1".into(),
+                    category: DatasetCategory::StaticTechKnowledge,
+                    expected_keywords: vec![],
+                    time_sensitive: false,
+                    profile: None,
+                    relevant_urls: vec!["https://a".into()],
+                },
+                EvalQuestion {
+                    id: "q2".into(),
+                    question: "q2".into(),
+                    category: DatasetCategory::StaticTechKnowledge,
+                    expected_keywords: vec![],
+                    time_sensitive: false,
+                    profile: None,
+                    relevant_urls: vec!["https://b".into()],
+                },
+            ],
+        };
+        let outcome = run_dataset(&ds, |req| {
+            let id = req.question.id.clone();
+            async move {
+                let ranked_urls = if id == "q1" {
+                    vec!["https://a".into(), "https://x".into()]
+                } else {
+                    vec!["https://x".into(), "https://b".into()]
+                };
+                Ok(QueryResult {
+                    quality_status: "passed".into(),
+                    local_resolved: true,
+                    external_calls: 0,
+                    cost_micros: 0,
+                    latency_ms: 1,
+                    evidence_text: String::new(),
+                    ranked_urls,
+                })
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(outcome.ranking.questions_with_qrels, 2);
+        // q1 rank 1 (RR=1), q2 rank 2 (RR=0.5).
+        assert!((outcome.ranking.mrr - 0.75).abs() < 1e-9);
+        assert!((outcome.ranking.recall_at_k - 1.0).abs() < 1e-9);
+        assert!(outcome.ranking.ndcg_at_k > 0.0 && outcome.ranking.ndcg_at_k < 1.0);
     }
 }

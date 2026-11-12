@@ -8,6 +8,9 @@ description = "BM25 + vector + metadata filtering + RRF hybrid retrieval and opt
 
 [dependencies]
 serde = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }
+tracing = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
 tokio = { workspace = true }

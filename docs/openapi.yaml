@@ -95,6 +95,56 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '429': { $ref: '#/components/responses/RateLimited' }
 
+  /search/plan:
+    post:
+      tags: [Search]
+      summary: Plan a search without executing it
+      description: |
+        Agent-facing plan: shows which queries WOULD be executed, the open
+        requirements and the estimated cost. No external call is made, no
+        provider is billed and no document is written.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchRequest'
+      responses:
+        '200':
+          description: Plan computed (nothing was executed).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchPlanReport'
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /search/follow-up:
+    post:
+      tags: [Search]
+      summary: Continue an agent session on its open requirements
+      description: |
+        Continues a recorded session. Without `focus_requirements`, the turn
+        targets exactly the requirements the previous turn left open (the
+        `coverage_gaps` of that turn). The turn is recorded back into the
+        session, so multi-turn research keeps its coverage state.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchRequest'
+      responses:
+        '200':
+          description: Follow-up turn completed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchResponse'
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
   /search:
     post:
       tags: [Search]
@@ -1009,6 +1059,19 @@ components:
         max_results: { type: integer, minimum: 1 }
         max_external_queries: { type: integer, minimum: 0 }
         max_total_cost: { type: number, format: double }
+        max_acquisition_rounds:
+          type: integer
+          minimum: 1
+          maximum: 5
+          default: 2
+          description: Bounded iterative acquisition rounds; total query and cost caps stay cumulative.
+        session_id:
+          type: string
+          description: Agent session id; turns are recorded so a follow-up can target the open requirements.
+        focus_requirements:
+          type: array
+          items: { type: string }
+          description: Explicit requirements for a follow-up turn; replaces the derived decomposition.
     SearchResponse:
       type: object
       required: [query, results, status]
@@ -1050,6 +1113,32 @@ components:
         trace_id: { type: string }
         task_id: { type: string, nullable: true }
         replayed: { type: boolean }
+        session_id:
+          type: string
+          nullable: true
+          description: Agent session this turn belongs to.
+        focus_requirements:
+          type: array
+          items: { type: string }
+          description: Open requirements a follow-up turn should target.
+        coverage_gaps:
+          description: >-
+            Sub-questions the final quality gate found uncovered. This is the
+            agent-facing contract for "what is still missing": each entry
+            carries the open question, its coverage state, resolution
+            priority, minimal acquisition strategy and a stable requirement
+            id so a follow-up query can target it directly.
+          type: array
+          items:
+            type: object
+            required: [question, missing_kind, requirement_id]
+            properties:
+              question: { type: string }
+              missing_kind: { type: string }
+              status: { type: string }
+              priority: { type: string }
+              strategy: { type: string }
+              requirement_id: { type: string }
         # Present only when the request was routed through the Tavily
         # compatibility layer. Always an array, possibly empty.
         unsupported_features:
@@ -1058,6 +1147,34 @@ components:
         # Tavily compatibility: always null (SearchOS never fabricates an answer).
         answer: { type: string, nullable: true }
         response_time: { type: number, format: double }
+    SearchPlanReport:
+      type: object
+      required: [query, planned_queries, estimated_cost_micros]
+      properties:
+        query: { type: string }
+        mode: { type: string }
+        decision_path: { type: string }
+        decision_reason: { type: string }
+        local_candidates: { type: integer, format: int64 }
+        required_requirements:
+          type: array
+          items: { type: string }
+        open_requirements:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        planned_queries:
+          type: array
+          items:
+            type: object
+            required: [query]
+            properties:
+              query: { type: string }
+              requirement_id: { type: string }
+              strategy: { type: string }
+        estimated_cost_micros: { type: integer, format: int64 }
+        currency: { type: string }
     SearchResultItem:
       type: object
       properties:
@@ -1067,6 +1184,10 @@ components:
         score: { type: number, format: float }
         published_at: { type: string, nullable: true }
         source: { type: string }
+        highlight:
+          type: string
+          nullable: true
+          description: Query-matched passage with `<b>…</b>` markers.
     ExtractRequest:
       type: object
       required: [url]

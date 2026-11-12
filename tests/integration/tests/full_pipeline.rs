@@ -86,6 +86,7 @@ fn rebuild_deps(runtime: &Arc<searchos_core::SearchOsRuntime>) -> Arc<SearchDepe
         reranking: true,
         allow_external: false,
         promotion: None,
+        session_store: Some(runtime.session_store.clone()),
     })
 }
 
@@ -694,4 +695,127 @@ async fn stale_knowledge_is_refreshed_not_deleted() {
             .is_empty(),
         "authoritative local knowledge is preserved"
     );
+}
+
+/// Agent-facing contract (RFC-005 5.6): a partially covered comparison query
+/// exposes WHICH requirement is still open — question, priority, minimal
+/// acquisition strategy and a stable requirement id — so a caller can issue a
+/// targeted follow-up query instead of re-searching blindly.
+#[tokio::test]
+async fn partial_coverage_exposes_open_requirements() {
+    let h = Harness::new().await;
+    h.seed(
+        "tokio1",
+        "Tokio is an asynchronous runtime for the Rust language",
+        "https://tokio.rs/tokio/tutorial",
+    )
+    .await;
+
+    let resp = h
+        .service
+        .search(request(
+            "Compare tokio and raft consensus",
+            SearchMode::LocalOnly,
+        ))
+        .await
+        .unwrap();
+
+    assert!(
+        matches!(
+            resp.quality.coverage,
+            searchos_domain::response::CoverageStatus::Partial
+                | searchos_domain::response::CoverageStatus::Insufficient
+        ),
+        "got coverage {:?}",
+        resp.quality.coverage
+    );
+    assert!(
+        !resp.coverage_gaps.is_empty(),
+        "open requirements must be exposed, got {:?}",
+        resp.quality.coverage
+    );
+    let questions: Vec<&str> = resp
+        .coverage_gaps
+        .iter()
+        .map(|g| g.question.as_str())
+        .collect();
+    assert!(
+        questions.iter().any(|q| q.to_lowercase().contains("raft")),
+        "the uncovered entity must appear in the gaps: {questions:?}"
+    );
+    assert!(
+        resp.coverage_gaps
+            .iter()
+            .all(|g| !g.requirement_id.is_empty()),
+        "every gap carries a stable requirement id"
+    );
+    let _ = &h.dir;
+}
+
+/// Agent session contract: a turn records its open requirements, and the
+/// follow-up turn targets exactly those requirements instead of re-deriving
+/// them (RFC-005 5.6 multi-turn research).
+#[tokio::test]
+async fn session_turns_carry_open_requirements_into_the_follow_up() {
+    let h = Harness::new().await;
+    h.seed(
+        "tokio1",
+        "Tokio is an asynchronous runtime for the Rust language",
+        "https://tokio.rs/tokio/tutorial",
+    )
+    .await;
+
+    let mut first = request("Compare tokio and raft consensus", SearchMode::LocalOnly);
+    first.session_id = Some("sess-1".into());
+    let resp = h.service.search(first).await.unwrap();
+
+    assert_eq!(resp.session_id.as_deref(), Some("sess-1"));
+    assert!(
+        !resp.coverage_gaps.is_empty(),
+        "the comparison leaves an uncovered requirement"
+    );
+    assert_eq!(
+        resp.focus_requirements,
+        resp.coverage_gaps
+            .iter()
+            .map(|g| g.question.clone())
+            .collect::<Vec<_>>(),
+        "the response carries the follow-up focus"
+    );
+
+    // The session recorded the turn.
+    let session = h.runtime.session_store.get("sess-1").expect("session");
+    assert_eq!(session.turns.len(), 1);
+    assert_eq!(session.open_requirements.len(), resp.coverage_gaps.len());
+
+    // A follow-up turn with explicit focus requirements uses them verbatim.
+    let mut follow = request("continue", SearchMode::LocalOnly);
+    follow.session_id = Some("sess-1".into());
+    follow.focus_requirements = vec!["raft consensus".into()];
+    let follow_resp = h.service.search(follow).await.unwrap();
+    assert_eq!(follow_resp.session_id.as_deref(), Some("sess-1"));
+    let session = h.runtime.session_store.get("sess-1").unwrap();
+    assert_eq!(session.turns.len(), 2, "the follow-up is recorded too");
+    let _ = &h.dir;
+}
+
+/// Plan-only: the plan lists the queries that WOULD run and their cost, and
+/// nothing is executed (no provider call, no cost event).
+#[tokio::test]
+async fn plan_reports_queries_and_cost_without_executing() {
+    let h = Harness::new().await;
+    h.seed(
+        "tokio1",
+        "Tokio is an asynchronous runtime for the Rust language",
+        "https://tokio.rs/tokio/tutorial",
+    )
+    .await;
+
+    let mut req = request("Compare tokio and raft consensus", SearchMode::ExternalOnly);
+    req.budget.max_external_queries = 3;
+    let report = h.service.plan(&req).await.unwrap();
+    assert!(!report.planned_queries.is_empty(), "plan has queries");
+    assert!(report.estimated_cost_micros > 0, "the plan is costed");
+    assert!(!report.open_requirements.is_empty(), "gaps are exposed");
+    let _ = &h.dir;
 }

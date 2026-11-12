@@ -821,6 +821,7 @@ mod tests {
                 bm25_score: Some(5.0),
                 workspace_id: None,
                 language: None,
+                highlight: None,
             },
             relevance: 0.9,
             freshness_ok: fresh,

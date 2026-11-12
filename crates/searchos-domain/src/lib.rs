@@ -46,7 +46,9 @@ pub use request::{
 pub use response::{
     CostReport, DecisionReport, QualityReport, SearchResponse, SearchResultItem, SearchStatus,
 };
-pub use retrieval::{IndexedDocument, RetrievalCandidate, RetrievalQuery, SearchCacheKey};
+pub use retrieval::{
+    IndexedDocument, IndexedVec, RetrievalCandidate, RetrievalQuery, SearchCacheKey,
+};
 
 use chrono::{DateTime, Utc};
 

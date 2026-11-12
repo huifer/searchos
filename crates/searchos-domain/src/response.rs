@@ -2,6 +2,7 @@
 //!
 //! `actual: null` in cost means "no real bill data yet", never zero cost.
 
+use crate::decision::CoverageGap;
 use crate::evidence::Evidence;
 use crate::ids::TraceId;
 use serde::{Deserialize, Serialize};
@@ -74,6 +75,9 @@ pub struct SearchResultItem {
     pub score: f32,
     pub published_at: Option<chrono::DateTime<chrono::Utc>>,
     pub source: String,
+    /// Query-matched passage with `<b>…</b>` markers, when available.
+    #[serde(default)]
+    pub highlight: Option<String>,
 }
 
 /// Explicit outcome of a search task (RFC-002 2.8, RFC-004 v1.1 6.12).
@@ -137,6 +141,20 @@ pub struct SearchResponse {
     /// Set when this response was replayed from the idempotency ledger.
     #[serde(default)]
     pub replayed: bool,
+    /// Sub-questions the final quality gate found uncovered (RFC-005 5.6,
+    /// RFC-004 v1.1 6.7). This is the agent-facing contract for "what is
+    /// still missing": each entry carries the open question, its coverage
+    /// state, priority, minimal acquisition strategy and a stable
+    /// requirement id so a follow-up query can target it directly.
+    #[serde(default)]
+    pub coverage_gaps: Vec<CoverageGap>,
+    /// Agent session this turn belongs to (when the caller supplied one).
+    #[serde(default)]
+    pub session_id: Option<String>,
+    /// Open requirements a follow-up turn should target (same content as
+    /// `coverage_gaps[].question`, flattened for convenience).
+    #[serde(default)]
+    pub focus_requirements: Vec<String>,
 }
 
 impl CoverageStatus {

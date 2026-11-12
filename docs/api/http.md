@@ -170,7 +170,8 @@ Response (RFC-012 12.6):
   "status": "completed",
   "warnings": [],
   "task_id": "task_xxx",
-  "replayed": false
+  "replayed": false,
+  "coverage_gaps": []
 }
 ```
 
@@ -178,9 +179,31 @@ Response (RFC-012 12.6):
 `status` is explicit: `completed | completed_with_warnings | partial |
 insufficient_evidence | budget_exhausted | failed | cancelled` (RFC-002 2.8).
 `replayed: true` means the response came from the `request_id` idempotency
-ledger; no new external search or bill was created. `trace show` /
+ledger; no new external search or bill was created. `coverage_gaps` lists the
+open sub-questions from the final quality gate, with a stable
+`requirement_id`, priority and minimal acquisition strategy for a targeted
+follow-up by a search agent. `trace show` /
 `/trace/{id}` returns `stages[]` with structured stage records,
 `final_strategy` and `final_outcome` (RFC-004 v1.1 11.1).
+
+## Search-agent surfaces
+
+`POST /search/plan` — plan-only: analyzes the query, retrieves local knowledge
+and returns the queries that WOULD be executed, the open requirements and the
+estimated cost. **No external call, no provider bill, no document write.** An
+agent can inspect the plan and its cost before committing budget.
+
+`POST /search/follow-up` — continues a recorded session. Without
+`focus_requirements`, the turn targets exactly the requirements the previous
+turn left open (its `coverage_gaps`). The turn is recorded back into the
+session, so multi-turn research keeps its coverage state.
+
+`POST /search` accepts `max_acquisition_rounds` (bounded iterative retrieval;
+total query and cost caps stay cumulative), `session_id` (turn recording) and
+`focus_requirements` (explicit follow-up requirements, replacing the derived
+decomposition). Responses carry `coverage_gaps`, `session_id` and
+`focus_requirements`; local results also carry a query-matched `content`
+passage and `<b>…</b>` `highlight`.
 
 ## Local data ingestion (RFC-029)
 
@@ -408,16 +431,30 @@ MCP 取消不属于停机问题（见 [`docs/mcp.md`](../mcp.md)）；SSE 是唯
   "status": "completed",
   "warnings": [],
   "task_id": "task_xxx",
-  "replayed": false
+  "replayed": false,
+  "coverage_gaps": []
 }
 ```
 
 `actual: null` 表示还没有真实账单数据 —— 绝不表示“成本为零”。`status` 是显式的：
 `completed | completed_with_warnings | partial | insufficient_evidence |
 budget_exhausted | failed | cancelled`（RFC-002 2.8）。`replayed: true` 表示响应来自
-`request_id` 幂等账本，没有产生新的外部搜索或账单。`trace show` / `/trace/{id}`
+`request_id` 幂等账本，没有产生新的外部搜索或账单。`coverage_gaps` 列出最终质量门发现的
+未覆盖子问题，并提供稳定的 `requirement_id`、优先级与最小获取策略，供搜索 agent 发起定向
+follow-up。`trace show` / `/trace/{id}`
 返回带 `stages[]` 结构化阶段记录、`final_strategy` 与 `final_outcome` 的结果
 （RFC-004 v1.1 11.1）。
+
+## 搜索 Agent 接口
+
+`POST /search/plan` 只做规划：分析查询、检索本地知识，返回「将要执行」的查询、未覆盖需求与
+预估成本，**不发起外部调用、不计费、不写文档**。`POST /search/follow-up` 延续已记录的会话，
+未指定 `focus_requirements` 时自动锁定上一轮留下的未覆盖需求。
+
+`POST /search` 接受 `max_acquisition_rounds`（有界迭代检索，查询数与成本上限跨轮累计）、
+`session_id`（记录轮次）和 `focus_requirements`（显式跟进需求）。响应包含
+`coverage_gaps`、`session_id` 与 `focus_requirements`；本地结果同时返回命中区域的
+`content` 与带 `<b>…</b>` 标记的 `highlight`。
 
 ## 本地数据导入（RFC-029）
 

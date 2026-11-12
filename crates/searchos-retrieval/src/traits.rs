@@ -1,7 +1,7 @@
 //! Index traits (RFC-002 2.4, RFC-007 7.5).
 
 use async_trait::async_trait;
-use searchos_domain::retrieval::{IndexedDocument, RetrievalCandidate, RetrievalQuery};
+use searchos_domain::retrieval::{IndexedDocument, IndexedVec, RetrievalCandidate, RetrievalQuery};
 use searchos_domain::{ChunkId, DocumentId, SearchOsError};
 
 /// Full-text search index (rebuildable, RFC-002 2.4 SearchIndex).
@@ -64,6 +64,24 @@ pub trait VectorIndex: Send + Sync {
 
     /// Deletes all vectors of a document.
     async fn delete_document(&self, document_id: &str) -> Result<(), SearchOsError>;
+
+    /// Deletes exactly the vectors identified by their chunk ids. The outbox
+    /// uses chunk-id space (Part 30 INV-30-08); adapters that cannot support
+    /// this return an error so the outbox row stays pending for retry.
+    async fn delete_by_chunk_ids(&self, _chunk_ids: &[ChunkId]) -> Result<(), SearchOsError> {
+        Err(SearchOsError::Retrieval(
+            "delete_by_chunk_ids is not supported by this vector backend".into(),
+        ))
+    }
+
+    /// Drops and rebuilds the whole vector table from embedded chunks
+    /// (ADR-022 rebuildable). Adapters that cannot support this return an
+    /// error so a rebuild stays explicit rather than silently partial.
+    async fn rebuild_from(&self, _documents: &[IndexedVec]) -> Result<u64, SearchOsError> {
+        Err(SearchOsError::Retrieval(
+            "rebuild_from is not supported by this vector backend".into(),
+        ))
+    }
 
     /// Vector count for diagnostics.
     async fn count(&self) -> Result<u64, SearchOsError>;

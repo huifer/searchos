@@ -10,9 +10,11 @@
 pub mod baselines;
 pub mod dataset;
 pub mod noninferiority;
+pub mod ranking;
 pub mod runner;
 
 pub use baselines::{BaselineComparison, BaselineKind, BaselineResult};
 pub use dataset::{DatasetCategory, EvalQuestion, EvaluationDataset};
 pub use noninferiority::{check_noninferiority, NonInferiorityConfig, NonInferiorityVerdict};
+pub use ranking::{ndcg_at_k, recall_at_k, RankingReport, RANKING_K};
 pub use runner::{run_dataset, RunOutcome};

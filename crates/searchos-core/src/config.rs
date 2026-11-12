@@ -33,9 +33,15 @@ pub struct SearchOsConfig {
 #[serde(default)]
 pub struct IntelligenceConfig {
     pub query_expansion: bool,
-    /// Gates the RRF result cache (not a model reranker). No `Reranker`
-    /// provider is attached in v0.1.1; RFC-007 7.7 leaves reranking off by default.
+    /// Attaches a real reranker to the hybrid retriever (RFC-007 7.7).
     pub reranking: bool,
+    /// `local` (offline feature reranker) | `remote` (cross-encoder endpoint).
+    pub reranker_provider: String,
+    pub reranker_url: String,
+    pub reranker_model: String,
+    pub reranker_api_key_env: String,
+    pub reranker_timeout_seconds: u64,
+    pub reranker_top_n: usize,
     /// SearchOS returns evidence, never a fabricated final answer.
     pub answer_generation: bool,
 }
@@ -44,6 +50,12 @@ impl Default for IntelligenceConfig {
         Self {
             query_expansion: true,
             reranking: true,
+            reranker_provider: "local".into(),
+            reranker_url: String::new(),
+            reranker_model: "cross-encoder".into(),
+            reranker_api_key_env: "SEARCHOS_RERANKER_API_KEY".into(),
+            reranker_timeout_seconds: 15,
+            reranker_top_n: 30,
             answer_generation: false,
         }
     }
@@ -376,6 +388,9 @@ pub struct SearchConfig {
     pub semantic_dedup: bool,
     pub incremental: bool,
     pub max_external_queries: u32,
+    /// Bounded acquisition rounds for agent-style iterative retrieval.
+    /// Total query/cost caps stay cumulative across rounds.
+    pub max_acquisition_rounds: u32,
     /// Cache TTL seconds for the exact query cache.
     pub cache_ttl_seconds: u64,
     /// RFC-031 D10: TTL seconds for the negative-result cache (terminal
@@ -390,6 +405,7 @@ impl Default for SearchConfig {
             semantic_dedup: true,
             incremental: true,
             max_external_queries: 3,
+            max_acquisition_rounds: 2,
             cache_ttl_seconds: 3600,
             negative_cache_ttl_seconds: 300,
         }
@@ -434,9 +450,22 @@ impl Default for MemoryConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EmbeddingConfig {
-    /// `local` (hashing embedder) | `remote`.
+    /// `local` (hashing embedder) | `remote` (OpenAI-compatible endpoint).
+    /// Shared by the search vector leg and memory retrieval: both must use
+    /// the SAME model or stored/query vectors would compare different spaces.
     pub provider: String,
     pub model: String,
+    /// Full embeddings endpoint for `remote` (e.g.
+    /// `https://api.openai.com/v1/embeddings`). Never contains secrets.
+    pub url: String,
+    /// Environment variable name holding the API key. The key itself is
+    /// never read into config, serialized, or logged.
+    pub api_key_env: String,
+    /// Expected vector width. A mismatch is rejected at request time.
+    pub dimensions: usize,
+    pub timeout_seconds: u64,
+    pub model_version: String,
+    pub max_batch_size: usize,
 }
 
 impl Default for EmbeddingConfig {
@@ -444,6 +473,12 @@ impl Default for EmbeddingConfig {
         Self {
             provider: "local".into(),
             model: "bge-m3".into(),
+            url: String::new(),
+            api_key_env: "SEARCHOS_EMBEDDING_API_KEY".into(),
+            dimensions: 1536,
+            timeout_seconds: 15,
+            model_version: "v1".into(),
+            max_batch_size: 32,
         }
     }
 }
@@ -656,6 +691,7 @@ pub const ALL_CONFIG_FIELDS: &[&str] = &[
     "search.semantic_dedup",
     "search.incremental",
     "search.max_external_queries",
+    "search.max_acquisition_rounds",
     "search.cache_ttl_seconds",
     "search.negative_cache_ttl_seconds",
     "ingest.max_bytes_per_document",
@@ -663,8 +699,20 @@ pub const ALL_CONFIG_FIELDS: &[&str] = &[
     "memory.enabled",
     "memory.embedding.provider",
     "memory.embedding.model",
+    "memory.embedding.url",
+    "memory.embedding.api_key_env",
+    "memory.embedding.dimensions",
+    "memory.embedding.timeout_seconds",
+    "memory.embedding.model_version",
+    "memory.embedding.max_batch_size",
     "intelligence.query_expansion",
     "intelligence.reranking",
+    "intelligence.reranker_provider",
+    "intelligence.reranker_url",
+    "intelligence.reranker_model",
+    "intelligence.reranker_api_key_env",
+    "intelligence.reranker_timeout_seconds",
+    "intelligence.reranker_top_n",
     "intelligence.answer_generation",
     "indexes.rebuild_on_start",
     "indexes.verify_on_start",
@@ -746,6 +794,7 @@ pub const CONSUMED_CONFIG_FIELDS: &[&str] = &[
     "search.semantic_dedup",
     "search.incremental",
     "search.max_external_queries",
+    "search.max_acquisition_rounds",
     "search.cache_ttl_seconds",
     "search.negative_cache_ttl_seconds",
     "ingest.max_bytes_per_document",
@@ -753,8 +802,20 @@ pub const CONSUMED_CONFIG_FIELDS: &[&str] = &[
     "memory.enabled",
     "memory.embedding.provider",
     "memory.embedding.model",
+    "memory.embedding.url",
+    "memory.embedding.api_key_env",
+    "memory.embedding.dimensions",
+    "memory.embedding.timeout_seconds",
+    "memory.embedding.model_version",
+    "memory.embedding.max_batch_size",
     "intelligence.query_expansion",
     "intelligence.reranking",
+    "intelligence.reranker_provider",
+    "intelligence.reranker_url",
+    "intelligence.reranker_model",
+    "intelligence.reranker_api_key_env",
+    "intelligence.reranker_timeout_seconds",
+    "intelligence.reranker_top_n",
     "indexes.rebuild_on_start",
     "indexes.verify_on_start",
     "policies.default_profile",

@@ -46,6 +46,10 @@ pub struct EvalQuestion {
     /// Optional profile override.
     #[serde(default)]
     pub profile: Option<String>,
+    /// Relevance judgments for ranking metrics: URLs that a correct answer
+    /// must retrieve, in no particular order (binary qrels by URL).
+    #[serde(default)]
+    pub relevant_urls: Vec<String>,
 }
 
 /// A loaded dataset.

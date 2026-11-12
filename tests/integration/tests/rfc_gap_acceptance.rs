@@ -312,6 +312,7 @@ fn deps(
         reranking: true,
         allow_external,
         promotion: None,
+        session_store: None,
     })
 }
 
@@ -1019,7 +1020,7 @@ fn cost_parse_failure_is_reported() {
 /// G-02: BM25 + vector recall are fused into one hybrid result set.
 #[tokio::test]
 async fn hybrid_retrieval_fuses_bm25_and_vector_candidates() {
-    use searchos_retrieval::{HybridRetriever, RrfConfig};
+    use searchos_retrieval::{HybridRetriever, RrfConfig, VectorIndex as _};
 
     let dir = tempfile::tempdir().unwrap();
     let bm25 = Arc::new(searchos_index_tantivy::TantivyIndex::in_memory().unwrap());
@@ -1134,4 +1135,146 @@ async fn memory_semantic_recall_and_workspace_isolation() {
         .await
         .unwrap();
     assert!(cross.is_empty(), "private memory does not cross workspaces");
+}
+
+/// Bounded iterative acquisition: when the final quality gate still has OPEN
+/// requirements, the pipeline re-plans reformulated queries and buys a second
+/// round. Total query/cost caps are cumulative, no query is re-bought, and a
+/// single-round budget never iterates.
+struct ReformulationAwareProvider {
+    calls: Arc<AtomicUsize>,
+    /// Queries actually executed, for the "never re-buy" assertion.
+    queries: Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl ReformulationAwareProvider {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            calls: Arc::new(AtomicUsize::new(0)),
+            queries: Arc::new(std::sync::Mutex::new(Vec::new())),
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl SearchProvider for ReformulationAwareProvider {
+    fn id(&self) -> &str {
+        "tavily"
+    }
+
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities {
+            search: true,
+            ..Default::default()
+        }
+    }
+
+    async fn search(&self, params: &SearchParams) -> Result<ProviderResult, ProviderError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.queries.lock().unwrap().push(params.query.clone());
+        // Only the reformulated ("official"/"documentation") follow-up finds
+        // the missing evidence; the first round comes back empty-handed.
+        let reformulated = params.query.contains("official")
+            || params.query.contains("documentation")
+            || params.query.contains("release notes");
+        let entries = if reformulated {
+            vec![
+                SearchResultEntry {
+                    title: Some("Alpha consensus".into()),
+                    url: "https://docs.example.com/alpha".into(),
+                    content:
+                        "Alpha consensus provides the alpha protocol details and quorum rules."
+                            .into(),
+                    score: 0.95,
+                    published_at: None,
+                    raw_content: None,
+                },
+                SearchResultEntry {
+                    title: Some("Beta consensus".into()),
+                    url: "https://docs.example.com/beta".into(),
+                    content: "Beta consensus provides the beta protocol details and quorum rules."
+                        .into(),
+                    score: 0.95,
+                    published_at: None,
+                    raw_content: None,
+                },
+            ]
+        } else {
+            Vec::new()
+        };
+        Ok(ProviderResult {
+            entries,
+            duration_ms: 1,
+            bytes_transferred: 0,
+        })
+    }
+}
+
+#[tokio::test]
+async fn iterative_acquisition_replans_open_requirements_within_total_budget() {
+    let h = Harness::new().await;
+    let provider = ReformulationAwareProvider::new();
+    let service = Arc::new(SearchServiceImpl::new(deps(
+        &h.runtime,
+        h.runtime.cost_sink(),
+        mock_router(),
+        vec![provider.clone() as Arc<dyn SearchProvider>],
+        true,
+    )));
+
+    let mut req = request("Compare Alpha and Beta consensus", SearchMode::ExternalOnly);
+    req.budget.max_acquisition_rounds = 2;
+    req.budget.max_external_queries = 4;
+    req.budget.max_total_cost_micros = 100_000;
+
+    let resp = service.search(req).await.unwrap();
+    let calls = provider.calls.load(Ordering::SeqCst);
+    assert!(
+        calls >= 2,
+        "a second acquisition round must run, got {calls} calls"
+    );
+    assert!(
+        resp.warnings.iter().any(|w| w == "acquisition_round:2"),
+        "the round must be visible in warnings: {:?}",
+        resp.warnings
+    );
+    assert!(
+        resp.quality.coverage == searchos_domain::response::CoverageStatus::Sufficient,
+        "the reformulated round must close the gaps: {:?}",
+        resp.quality
+    );
+
+    // No query is ever bought twice, and total calls stay under the cap.
+    let queries = provider.queries.lock().unwrap().clone();
+    let unique: HashSet<String> = queries.iter().map(|q| q.to_lowercase()).collect();
+    assert_eq!(
+        unique.len(),
+        queries.len(),
+        "no query is re-bought: {queries:?}"
+    );
+    assert!(calls <= 4, "total query cap is cumulative, got {calls}");
+}
+
+#[tokio::test]
+async fn single_round_budget_never_iterates() {
+    let h = Harness::new().await;
+    let provider = ReformulationAwareProvider::new();
+    let service = Arc::new(SearchServiceImpl::new(deps(
+        &h.runtime,
+        h.runtime.cost_sink(),
+        mock_router(),
+        vec![provider.clone() as Arc<dyn SearchProvider>],
+        true,
+    )));
+
+    let mut req = request("Compare Alpha and Beta consensus", SearchMode::ExternalOnly);
+    req.budget.max_acquisition_rounds = 1;
+    req.budget.max_external_queries = 4;
+
+    let resp = service.search(req).await.unwrap();
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1, "only one round");
+    assert!(!resp
+        .warnings
+        .iter()
+        .any(|w| w.starts_with("acquisition_round:")));
 }

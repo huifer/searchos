@@ -74,13 +74,14 @@ jobs:
         run: cargo build --locked --bin searchos
       - name: Generate the deterministic seed corpus
         run: python3 fixtures/evaluations/generate_seed.py --limit 40
-      - name: Ingest the seed corpus
+      - name: Ingest the seed corpora (EN + CJK)
         env:
           SEARCHOS_DATA_DIR: /tmp/searchos-eval
         run: |
           mkdir -p "$SEARCHOS_DATA_DIR"
           ./target/debug/searchos init
           ./target/debug/searchos ingest --dir fixtures/evaluations/seed
+          ./target/debug/searchos ingest --dir fixtures/evaluations/seed_zh
       - name: Run the evaluation
         env:
           SEARCHOS_DATA_DIR: /tmp/searchos-eval
@@ -90,6 +91,17 @@ jobs:
             --limit 20 --out eval-report.json
       - name: Assert quality thresholds
         run: python3 scripts/check_eval_gate.py eval-report.json
+      - name: Run the CJK ranking evaluation
+        env:
+          SEARCHOS_DATA_DIR: /tmp/searchos-eval
+        run: |
+          ./target/debug/searchos --format json eval run \
+            --dataset fixtures/evaluations/dataset-zh.jsonl \
+            --limit 12 --out eval-report-zh.json
+      - name: Assert CJK ranking thresholds (nDCG / MRR / Recall@5)
+        run: |
+          python3 scripts/check_eval_gate.py eval-report-zh.json \
+            --min-questions 12 --min-mrr 0.8 --min-ndcg 0.8 --min-recall 0.8
 
   # Backup/restore drill: the operational rehearsal the deploy runbook
   # references. A broken restore must fail CI, not a recovery attempt.

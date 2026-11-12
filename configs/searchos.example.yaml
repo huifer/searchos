@@ -61,6 +61,8 @@ search:
   semantic_dedup: true
   incremental: true
   max_external_queries: 3
+  # Bounded iterative retrieval rounds; total query/cost caps remain cumulative.
+  max_acquisition_rounds: 2
 
 ingest:
   max_bytes_per_document: 20971520   # 20 MB
@@ -69,16 +71,30 @@ ingest:
 memory:
   enabled: true
   embedding:
-    # v0.1.1 ships a deterministic local HashingEmbedder. A non-local provider
-    # logs a warning and falls back; no remote embedding model is wired yet.
-    provider: local           # local | remote (remote = fallback + warning)
-    model: bge-m3             # label only; the local embedder is model-free
+    # `local` = deterministic offline HashingEmbedder (256 dims).
+    # `remote` = OpenAI-compatible /v1/embeddings endpoint, used by BOTH the
+    # hybrid vector leg and memory retrieval. The API key is read from the
+    # environment variable named below, never from this file.
+    provider: local           # local | remote
+    model: bge-m3             # model id sent to the remote endpoint
+    url: ""                   # e.g. https://api.openai.com/v1/embeddings
+    api_key_env: SEARCHOS_EMBEDDING_API_KEY
+    dimensions: 1536          # must match the model; enforced at request time
+    timeout_seconds: 15
+    model_version: v1         # cache-key version for embedding reuse
+    max_batch_size: 32
 
 intelligence:
   query_expansion: true
-  # Gates the RRF result cache. Reranking itself does not run by default
-  # (RFC-007 7.7): no Reranker provider is attached in v0.1.1.
+  # Attaches a real reranker to hybrid retrieval (RFC-007 7.7). `local` is an
+  # offline feature reranker; `remote` uses a cross-encoder endpoint.
   reranking: true
+  reranker_provider: local     # local | remote
+  reranker_url: ""             # e.g. https://api.jina.ai/v1/rerank
+  reranker_model: cross-encoder
+  reranker_api_key_env: SEARCHOS_RERANKER_API_KEY
+  reranker_timeout_seconds: 15
+  reranker_top_n: 30
   answer_generation: false
 
 indexes:

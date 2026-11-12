@@ -15,6 +15,78 @@ multi-arch images, and attaches the matching section of this file.
 
 ### Added
 
+- **Bounded iterative retrieval (search-agent loop).** When the final quality
+  gate still has open requirements, the pipeline re-plans reformulated queries
+  and acquires a second round (`SearchBudget.max_acquisition_rounds`, default
+  2). Query and cost caps are cumulative across rounds, no query is re-bought,
+  a provider failure never triggers re-buying, and singleflight/idempotency are
+  unchanged. Exposed over HTTP (`max_acquisition_rounds`), MCP and CLI.
+- **Real remote embedding provider.** `RemoteEmbeddingProvider` implements the
+  OpenAI-compatible `/v1/embeddings` contract (batching, index-order
+  restoration, dimension validation, API key from the environment only). The
+  runtime's single embedder is shared by the vector index, memory retrieval
+  and the semantic cache; LanceDB's Arrow schema now follows the model's
+  dimension instead of a hard-coded 256.
+- **Reranker implemented and wired.** `FeatureReranker` (offline, title/body/
+  phrase/freshness features) is attached by default and billed as a
+  `Reranking` cost event; `RemoteReranker` supports cross-encoder endpoints.
+  `NeverReranker` is no longer the runtime path.
+- **Field-weighted BM25 ranking, typo tolerance, highlight.** Title terms get
+  an explicit boost (aligned with `title^2` in Elasticsearch); a one-edit-
+  distance fuzzy pass recovers misspelled queries; snippets are generated
+  around the matched region and returned with `<b>…</b>` highlights.
+- **Agent sessions and plan/follow-up surfaces.** `POST /search/plan`
+  (plan-only: queries + open requirements + estimated cost, no execution or
+  billing), `POST /search/follow-up` (continues a session on its open
+  requirements), MCP `research` / `plan` tools, and a bounded in-process
+  session store. `SearchResponse` gained `session_id` and
+  `focus_requirements`.
+- **Ranking-quality evaluation + Chinese corpus.** `nDCG@5`, MRR, Recall@5
+  and Precision@5 against per-question qrels (`relevant_urls`), a 12-document
+  Chinese seed corpus plus `dataset-zh.jsonl`, and a CI gate that asserts CJK
+  ranking quality. Keyword coverage alone could not detect ranking regressions.
+
+- **Language-aware analysis: CJK content is now searchable.** The embedded
+  Tantivy index switched from the built-in `en_stem` chain to the SearchOS
+  analyzer (`crates/searchos-index-tantivy/src/analyzer.rs`): CJK runs (Han,
+  Kana, Hangul) are split into overlapping character bigrams (Lucene
+  `CJKBigramFilter` semantics) while Latin runs keep the previous lowercasing
+  and English stemming. Before this, a Chinese sentence was one giant token
+  and `RemoveLongFilter(40)` — which counts **bytes** — silently dropped every
+  run longer than 13 characters, so Chinese content was unretrievable end to
+  end. Indexes created before the change keep working (the analyzer is also
+  registered under the legacy `en_stem` name); rows written before the
+  upgrade are re-tokenized by `searchos index rebuild`, and startup logs a
+  warning when that drift is detected.
+- **Agent-facing coverage gaps.** `SearchResponse` gained `coverage_gaps[]`:
+  the final quality gate now exposes each open sub-question with its coverage
+  state, priority, minimal acquisition strategy and a stable `requirement_id`,
+  so a search agent can issue a targeted follow-up instead of re-searching
+  blindly. Previously the gaps were computed and discarded.
+- **Vector writes are wired into the runtime.** The outbox write path now
+  embeds every indexed chunk and upserts it into LanceDB (and removes it on
+  delete); `searchos index rebuild` and document reindexing rebuild vectors
+  too, and RFC-031 promotion captures are vector-indexed. `VectorIndex`
+  gained `delete_by_chunk_ids` and `rebuild_from`. Before this,
+  `VectorIndex::upsert` had zero production callers: the vector table stayed
+  empty and hybrid RRF fused BM25 against nothing. The runtime's embedder
+  instance is now shared with the vector adapter so stored and query vectors
+  come from the same model.
+
+### Fixed
+
+- **Queries are no longer parsed as Tantivy syntax.** User text is analyzed
+  into literal terms (matching the Elasticsearch `multi_match` contract) and
+  OR'd across title+body under a Must-wrapped block. A query containing a
+  URL used to fail with `Field does not exist: 'https'` and HTTP 500; a
+  trailing `AND`/`OR` or an unclosed quote failed the same way. Punctuation-
+  only queries now match nothing instead of relying on parser fallbacks.
+- **The retrieval candidate pool is oversized before freshness filtering.**
+  Freshness/source filtering runs at the application layer after retrieval,
+  so the index now returns up to 4x (capped at 200) the response cap — stale
+  documents ranked above fresh ones could previously occupy the whole
+  truncated window and the fresh document was never returned.
+
 - **RFC-031 external evidence promotion & knowledge compounding**: a purchased
   external answer now becomes a durable, rebuildable document instead of a
   throwaway snippet.

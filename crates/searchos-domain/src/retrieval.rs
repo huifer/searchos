@@ -18,10 +18,31 @@ pub struct IndexedDocument {
     pub fetched_at: DateTime<Utc>,
 }
 
+/// A chunk with its embedding, ready for the vector store (RFC-007 7.6).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IndexedVec {
+    pub chunk_id: String,
+    pub document_id: String,
+    pub version_id: String,
+    pub title: Option<String>,
+    pub body: String,
+    pub url: String,
+    pub language: Option<String>,
+    pub workspace_id: String,
+    pub model_id: String,
+    pub model_version: String,
+    pub fetched_at: u64,
+    pub vector: Vec<f32>,
+}
+
 /// A structured retrieval query passed to a [`crate::retrieval`] index.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RetrievalQuery {
     pub text: String,
+    /// Explicit title-field boost for field-weighted BM25 ranking
+    /// (BM25F-lite). Backend defaults apply when <= 0.
+    #[serde(default = "default_title_boost")]
+    pub title_boost: f32,
     /// Requesting workspace. Implementations should ALSO include the global
     /// `*` namespace so shared knowledge stays retrievable (RFC-013 8.7:
     /// default isolation, explicit sharing).
@@ -37,11 +58,16 @@ pub struct RetrievalQuery {
     pub excluded_domains: Vec<String>,
 }
 
+fn default_title_boost() -> f32 {
+    2.0
+}
+
 impl RetrievalQuery {
     /// Creates a simple top-k query without filters.
     pub fn new(text: impl Into<String>, top_k: usize) -> Self {
         Self {
             text: text.into(),
+            title_boost: default_title_boost(),
             workspace_id: None,
             language: None,
             top_k,
@@ -88,6 +114,11 @@ pub struct RetrievalCandidate {
     /// Stored document language when the adapter can recover it.
     #[serde(default)]
     pub language: Option<String>,
+    /// Query-matched passage with `<b>…</b>` markers. `None` when the
+    /// backend cannot produce highlights. The plain `snippet` is always
+    /// the same passage with markers removed (RFC-007 7.1 result shaping).
+    #[serde(default)]
+    pub highlight: Option<String>,
 }
 
 /// Cache key composition (RFC-007 7.3, Part 30 INV-30-04).

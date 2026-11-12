@@ -329,6 +329,13 @@ fn freshness_status_score(s: FreshnessStatus) -> f32 {
 }
 
 fn host_of(url: &str) -> Option<&str> {
+    // Locally ingested documents have no web host; their canonical URI is
+    // their identity. Counting every `searchos-local://` doc as one source
+    // would make source-diversity checks fail whenever the answer is drawn
+    // from several independent user-owned documents (RFC-029).
+    if url.starts_with("searchos-local://") {
+        return Some(url);
+    }
     let rest = url
         .strip_prefix("https://")
         .or_else(|| url.strip_prefix("http://"))
@@ -592,5 +599,16 @@ mod tests {
             .failed_constraints
             .iter()
             .any(|f| f == "provenance_missing"));
+    }
+
+    #[test]
+    fn locally_ingested_documents_are_independent_sources() {
+        // RFC-029: `searchos-local://` has no web host; its canonical URI is
+        // its identity, so source diversity is not collapsed to one source.
+        assert_eq!(
+            host_of("searchos-local://default/a.md"),
+            Some("searchos-local://default/a.md")
+        );
+        assert_eq!(host_of("https://docs.rs/axum"), Some("docs.rs"));
     }
 }

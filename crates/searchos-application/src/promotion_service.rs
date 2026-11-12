@@ -23,7 +23,8 @@ use searchos_domain::promotion::{EvidenceItem, ExternalAcquisition, PromotionSta
 use searchos_domain::retrieval::IndexedDocument;
 use searchos_domain::{CostEvent, CostOperation, Money, SearchOsError};
 use searchos_observability::MetricsRegistry;
-use searchos_retrieval::SearchIndex;
+use searchos_provider::embedding::EmbeddingProvider;
+use searchos_retrieval::{SearchIndex, VectorIndex};
 
 use crate::fetch_service::FetchService;
 use crate::search_service::CostEventSink;
@@ -176,6 +177,8 @@ pub struct EvidencePromotionServiceImpl {
     store: Arc<dyn PromotionStore>,
     fetch: Arc<dyn FetchService>,
     index: Option<Arc<dyn SearchIndex>>,
+    vector: Option<Arc<dyn VectorIndex>>,
+    embedder: Option<Arc<dyn EmbeddingProvider>>,
     invalidator: Option<Arc<dyn CacheInvalidator>>,
     cost_sink: Option<Arc<dyn CostEventSink>>,
     estimator: searchos_cost::CostEstimator,
@@ -197,11 +200,46 @@ impl EvidencePromotionServiceImpl {
             store,
             fetch,
             index,
+            vector: None,
+            embedder: None,
             invalidator,
             cost_sink,
             estimator: searchos_cost::CostEstimator::from_config(cost_config),
             config,
         }
+    }
+
+    /// Attaches the dense-vector port and embedder so captured evidence is
+    /// vector-indexed (hybrid recall) as well as full-text indexed. The same
+    /// [`EmbeddingProvider`] instance that produces query embeddings must be
+    /// used here, otherwise stored vectors and query vectors come from
+    /// different models and nearest-neighbor search degrades silently.
+    pub fn with_vector_index(
+        mut self,
+        vector: Option<Arc<dyn VectorIndex>>,
+        embedder: Option<Arc<dyn EmbeddingProvider>>,
+    ) -> Self {
+        self.vector = vector;
+        self.embedder = embedder;
+        self
+    }
+
+    /// Embeds one chunk payload with the runtime embedder.
+    async fn embed_chunk(&self, payload: &IndexedDocument) -> Result<Vec<f32>, SearchOsError> {
+        let embedder = self.embedder.as_ref().ok_or_else(|| {
+            SearchOsError::Retrieval("vector index attached without an embedder".into())
+        })?;
+        let text = match &payload.title {
+            Some(title) => format!("{title} {}", payload.body),
+            None => payload.body.clone(),
+        };
+        let mut vectors = embedder
+            .embed(std::slice::from_ref(&text))
+            .await
+            .map_err(|e| SearchOsError::Retrieval(format!("embed chunk: {e}")))?;
+        vectors
+            .pop()
+            .ok_or_else(|| SearchOsError::Retrieval("empty embedding".into()))
     }
 
     /// Maps a capture failure to a stable skip reason.
@@ -327,8 +365,37 @@ impl EvidencePromotionService for EvidencePromotionServiceImpl {
                         .reindex_current_version(&doc.document_id, &workspace)
                         .await
                         .unwrap_or_default();
-                    for payload in payloads {
-                        let _ = index.index(payload).await;
+                    // Vector upsert is idempotent (delete-by-chunk + add), so
+                    // it runs before the full-text add: a retry after a
+                    // partial failure re-upserts vectors without duplicating
+                    // them, mirroring the outbox ordering.
+                    for payload in &payloads {
+                        if let (Some(vector), Some(embedder)) = (&self.vector, &self.embedder) {
+                            match self.embed_chunk(payload).await {
+                                Ok(v) => {
+                                    if let Err(e) = vector
+                                        .upsert(
+                                            payload.chunk_id.as_str(),
+                                            payload.document_id.as_str(),
+                                            v,
+                                            embedder.model_id(),
+                                        )
+                                        .await
+                                    {
+                                        tracing::warn!(
+                                            code = %e.class().code,
+                                            chunk = %payload.chunk_id.as_str(),
+                                            "capture vector upsert failed"
+                                        );
+                                    }
+                                }
+                                Err(e) => tracing::warn!(
+                                    code = %e.class().code,
+                                    "capture embed failed"
+                                ),
+                            }
+                        }
+                        let _ = index.index(payload.clone()).await;
                     }
                     let _ = index.commit().await;
                 }

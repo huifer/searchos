@@ -54,7 +54,12 @@ SearchOS fixes this with one unifying infrastructure.
 - **Search Memory** — search history, document versions, semantic memory, and research
   memory are first-class, durable assets.
 - **Hybrid retrieval** — BM25 + Vector + Metadata fused with Reciprocal Rank Fusion (RRF)
-  and a pluggable reranker.
+  and a real reranker (offline feature reranker, or a cross-encoder endpoint). CJK content
+  is analyzed into character bigrams, title terms are field-weighted, and misspelled
+  queries fall back to edit-distance matching.
+- **Search-agent surface** — bounded iterative acquisition (the query and cost caps stay
+  cumulative), `coverage_gaps` in every response, `POST /search/plan` (plan without
+  spending), `POST /search/follow-up` and MCP `research`/`plan` for multi-turn research.
 - **Extensible core** — manifest lifecycle, permissions, fault-isolated discovery and
   quarantine; native providers and site crawlers are compiled into the binary.
 - **Cost-aware routing** — a scoring model that balances quality, freshness, latency, cost,

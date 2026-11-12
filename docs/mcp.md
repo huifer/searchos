@@ -47,13 +47,23 @@ searchos mcp          # JSON-RPC 2.0 over stdin/stdout
 
 #### Tools
 
-`search`, `fetch`, `extract`, `ingest_text`, `ingest_file`, `memory_search`,
-`document_search`, `cost_summary`, `trace_inspect` (`search_trace` is a
-documented compatibility alias).
+`search`, `research`, `plan`, `fetch`, `extract`, `ingest_text`, `ingest_file`,
+`memory_search`, `document_search`, `cost_summary`, `trace_inspect`
+(`search_trace` is a documented compatibility alias).
 
 `search` accepts snake_case or kebab-case mode names, rejects unknown modes with
 `-32602`, supports a `request_id` idempotency key and a `max_results` cap, and
 its description distinguishes `local_only` from external-capable modes.
+
+`research` is the multi-turn agent entry point: it runs the quality-gated
+search with **bounded iterative acquisition rounds** (the query and cost caps
+stay cumulative), records the turn in an agent session and returns the open
+requirements (`coverage_gaps` / `focus_requirements`) so the next turn can
+target them. Pass `session_id` to continue an existing session.
+
+`plan` is plan-only: it reports which queries WOULD be executed, the open
+requirements and the estimated cost — **no external call, no billing, no
+document write**.
 
 ### 3. Cancellation
 

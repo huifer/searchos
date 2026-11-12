@@ -385,6 +385,9 @@ pub fn api_route_table() -> Vec<RouteSpec> {
         RouteSpec::new("GET", "/health", get(health)),
         RouteSpec::new("GET", "/metrics", get(metrics)),
         RouteSpec::new("POST", "/search", post(search)),
+        // Agent-facing search surface (plan before spending, follow-up turns).
+        RouteSpec::new("POST", "/search/plan", post(search_plan)),
+        RouteSpec::new("POST", "/search/follow-up", post(search_follow_up)),
         RouteSpec::new("POST", "/extract", post(extract)),
         RouteSpec::new("POST", "/ingest", post(ingest)),
         RouteSpec::new("POST", "/ingest/file", post(ingest_file)),
@@ -726,6 +729,9 @@ pub struct SearchDto {
     pub workspace_id: Option<String>,
     #[serde(default)]
     pub max_external_queries: Option<u32>,
+    /// Bounded iterative acquisition rounds (default 2, 1 disables).
+    #[serde(default)]
+    pub max_acquisition_rounds: Option<u32>,
     #[serde(default)]
     pub max_total_cost: Option<f64>,
     /// Client idempotency key (RFC-014 14.7).
@@ -734,6 +740,13 @@ pub struct SearchDto {
     /// Optional output cap, applied after the quality gate.
     #[serde(default)]
     pub max_results: Option<u32>,
+    /// Agent session id: turns are recorded so a follow-up can target the
+    /// requirements the previous turn left open.
+    #[serde(default)]
+    pub session_id: Option<String>,
+    /// Explicit focus requirements for a follow-up turn.
+    #[serde(default)]
+    pub focus_requirements: Option<Vec<String>>,
 }
 
 /// Tavily-shaped bodies are routed through the compatibility layer; plain
@@ -768,6 +781,144 @@ fn is_tavily_extract_request(body: &serde_json::Value) -> bool {
     body.as_object()
         .map(|object| object.contains_key("urls"))
         .unwrap_or(false)
+}
+
+/// `POST /search/plan` — plan-only: what WOULD be searched, at what cost.
+/// No external call, no billing, no document write.
+async fn search_plan(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Response, ApiError> {
+    state.authorize(&headers)?;
+    let dto: SearchDto = serde_json::from_value(body)
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, "VALIDATION_FAILED", e.to_string()))?;
+    if dto.query.trim().is_empty() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "VALIDATION_FAILED",
+            "query must not be empty",
+        ));
+    }
+    state.authorize_workspace(&headers, dto.workspace_id.as_deref().unwrap_or("default"))?;
+    let mode = match dto.mode.as_deref() {
+        None => SearchMode::LocalFirst,
+        Some(value) => SearchMode::parse(value).map_err(|message| {
+            ApiError::new(StatusCode::BAD_REQUEST, "VALIDATION_FAILED", message)
+        })?,
+    };
+    let profile = dto
+        .profile
+        .clone()
+        .map(ProfileId::new)
+        .unwrap_or_else(ProfileId::general);
+    let ws = dto
+        .workspace_id
+        .clone()
+        .map(WorkspaceId::new)
+        .unwrap_or_else(|| WorkspaceId::new("default"));
+    let mut req =
+        SearchRequest::new(dto.query, profile, mode, ws).map_err(|e| ApiError::from_domain(&e))?;
+    if let Some(focus) = dto.focus_requirements.as_ref() {
+        req.focus_requirements = focus.clone();
+    }
+    let report = state
+        .runtime
+        .application
+        .search_service
+        .plan(&req)
+        .await
+        .map_err(|e| ApiError::from_domain(&e))?;
+    Ok((StatusCode::OK, Json(serde_json::json!(report))).into_response())
+}
+
+/// `POST /search/follow-up` — continue a session, focusing on the
+/// requirements the previous turn left open.
+async fn search_follow_up(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Response, ApiError> {
+    state.authorize(&headers)?;
+    let dto: SearchDto = serde_json::from_value(body)
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, "VALIDATION_FAILED", e.to_string()))?;
+    let session_id = dto.session_id.clone().ok_or_else(|| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "VALIDATION_FAILED",
+            "session_id is required for a follow-up",
+        )
+    })?;
+    let session = state
+        .runtime
+        .session_store
+        .get(&session_id)
+        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "NOT_FOUND", "unknown session_id"))?;
+    // The follow-up targets the open requirements of the previous turn
+    // unless the caller narrows them explicitly.
+    let focus = if dto
+        .focus_requirements
+        .as_ref()
+        .is_some_and(|f| !f.is_empty())
+    {
+        dto.focus_requirements.clone().unwrap_or_default()
+    } else {
+        session
+            .open_requirements
+            .iter()
+            .map(|g| g.question.clone())
+            .collect()
+    };
+    let query = if dto.query.trim().is_empty() {
+        session
+            .turns
+            .last()
+            .map(|t| t.query.clone())
+            .unwrap_or_default()
+    } else {
+        dto.query.clone()
+    };
+    if query.trim().is_empty() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "VALIDATION_FAILED",
+            "query must not be empty",
+        ));
+    }
+    let mode = match dto.mode.as_deref() {
+        None => SearchMode::LocalFirst,
+        Some(value) => SearchMode::parse(value).map_err(|message| {
+            ApiError::new(StatusCode::BAD_REQUEST, "VALIDATION_FAILED", message)
+        })?,
+    };
+    let profile = dto
+        .profile
+        .clone()
+        .map(ProfileId::new)
+        .unwrap_or_else(ProfileId::general);
+    let ws = dto
+        .workspace_id
+        .clone()
+        .map(WorkspaceId::new)
+        .unwrap_or_else(|| WorkspaceId::new("default"));
+    let mut req =
+        SearchRequest::new(query, profile, mode, ws).map_err(|e| ApiError::from_domain(&e))?;
+    req.session_id = Some(session_id);
+    req.focus_requirements = focus;
+    if let Some(n) = dto.max_external_queries {
+        req.budget.max_external_queries = n;
+    }
+    if let Some(n) = dto.max_acquisition_rounds {
+        req.budget.max_acquisition_rounds = n.max(1);
+    }
+    let resp = state
+        .runtime
+        .application
+        .search_service
+        .search(req)
+        .await
+        .map_err(|e| ApiError::from_domain(&e))?;
+    Ok((StatusCode::OK, Json(serde_json::json!(resp))).into_response())
 }
 
 async fn search(
@@ -811,6 +962,17 @@ async fn search(
         SearchRequest::new(dto.query, profile, mode, ws).map_err(|e| ApiError::from_domain(&e))?;
     if let Some(n) = dto.max_external_queries {
         req.budget.max_external_queries = n;
+    }
+    if let Some(n) = dto.max_acquisition_rounds {
+        req.budget.max_acquisition_rounds = n.max(1);
+    }
+    if let Some(sid) = dto.session_id.as_deref() {
+        if !sid.trim().is_empty() {
+            req.session_id = Some(sid.to_string());
+        }
+    }
+    if let Some(focus) = dto.focus_requirements.as_ref() {
+        req.focus_requirements = focus.clone();
     }
     if let Some(cost) = dto.max_total_cost {
         req.budget.max_total_cost_micros = (cost * 1_000_000.0).round() as i64;
