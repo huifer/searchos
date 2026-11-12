@@ -145,3 +145,66 @@ async fn reranker_is_wired_into_the_hybrid_retriever() {
     let rt2 = searchos_core::SearchOsRuntime::init(cfg2).await.unwrap();
     assert!(!rt2.hybrid.has_reranker(), "disable switch is honored");
 }
+
+/// Agent sessions survive a process restart: the follow-up contract (open
+/// requirements + turn history) is durable in SQLite (migration v7), not only
+/// in the in-memory store.
+#[tokio::test]
+async fn agent_sessions_survive_runtime_restart() {
+    use searchos_application::session::{SessionStore, SessionTurn};
+    use searchos_domain::decision::CoverageGap;
+    use searchos_domain::ids::TraceId;
+
+    let dir = tempfile::tempdir().unwrap();
+    let mk_cfg = || {
+        let mut cfg = searchos_core::SearchOsConfig::default();
+        cfg.app.data_dir = dir.path().to_path_buf();
+        cfg
+    };
+
+    let rt1 = searchos_core::SearchOsRuntime::init(mk_cfg())
+        .await
+        .unwrap();
+    let store: Arc<SessionStore> = Arc::clone(&rt1.session_store);
+    store.create_or_get("persist-1", "ws_default");
+    store.record_turn(
+        "persist-1",
+        "ws_default",
+        SessionTurn {
+            query: "compare tokio and raft".into(),
+            trace_id: TraceId::new("trace_p1"),
+            status: "partial".into(),
+            decision_path: "hybrid".into(),
+            open_requirements: 1,
+            recorded_at: chrono::Utc::now().to_rfc3339(),
+        },
+        vec![CoverageGap::new("raft consensus", "evidence")],
+    );
+    assert_eq!(store.get("persist-1").unwrap().turns.len(), 1);
+
+    // Simulate a process restart: drop the runtime and the in-memory view...
+    drop(store);
+    drop(rt1);
+
+    // ...then re-open the same data directory.
+    let rt2 = searchos_core::SearchOsRuntime::init(mk_cfg())
+        .await
+        .unwrap();
+    let recovered = rt2
+        .session_store
+        .get("persist-1")
+        .expect("session recovered after restart");
+    assert_eq!(recovered.workspace_id, "ws_default");
+    assert_eq!(recovered.turns.len(), 1);
+    assert_eq!(recovered.turns[0].query, "compare tokio and raft");
+    assert_eq!(recovered.open_requirements.len(), 1);
+    assert_eq!(recovered.open_requirements[0].question, "raft consensus");
+
+    // Closing a session removes it durably too.
+    rt2.session_store.close("persist-1");
+    drop(rt2);
+    let rt3 = searchos_core::SearchOsRuntime::init(mk_cfg())
+        .await
+        .unwrap();
+    assert!(rt3.session_store.get("persist-1").is_none());
+}

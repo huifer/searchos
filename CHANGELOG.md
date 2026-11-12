@@ -15,6 +15,19 @@ multi-arch images, and attaches the matching section of this file.
 
 ### Added
 
+- **Graded relevance labels, live remote-provider integration, and durable
+  agent sessions.** Evaluation qrels now support 0..3 graded labels
+  (`relevance_grades`): nDCG uses `2^grade - 1`, while MRR/Recall count only
+  grade >= 2 as a correct answer, so a cross-encoder that surfaces a merely
+  related page ahead of the canonical one is measurable as a ranking defect.
+  A live HTTP integration test wires a real OpenAI-compatible mock server into
+  the assembled runtime and proves the remote embedding provider and remote
+  cross-encoder reranker are actually reached (vectors land in LanceDB with
+  the model's dimension). Agent sessions gained migration v7
+  (`agent_sessions`) and a SQLite persistence port, so the follow-up contract
+  (turn history + open requirements) survives a gateway/CLI restart; the
+  in-memory store remains the fast read path.
+
 - **Bounded iterative retrieval (search-agent loop).** When the final quality
   gate still has open requirements, the pipeline re-plans reformulated queries
   and acquires a second round (`SearchBudget.max_acquisition_rounds`, default

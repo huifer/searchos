@@ -50,6 +50,57 @@ fn dcg(ranked: &[String], relevant: &[String], k: usize) -> f64 {
         .sum()
 }
 
+/// Graded DCG@k: gain is `2^grade - 1` so a canonical page (grade 3, gain 7)
+/// outweighs a merely-related page (grade 1, gain 1).
+pub fn graded_dcg_at_k(
+    ranked: &[String],
+    grades: &[crate::dataset::RelevanceGrade],
+    k: usize,
+) -> f64 {
+    ranked
+        .iter()
+        .take(k)
+        .enumerate()
+        .map(|(i, u)| {
+            let gain = grades
+                .iter()
+                .find(|g| &g.url == u)
+                .map(|g| g.gain())
+                .unwrap_or(0.0);
+            gain / (i as f64 + 2.0).log2()
+        })
+        .sum()
+}
+
+/// Graded nDCG@k: 1.0 only when documents are ordered by descending grade.
+pub fn graded_ndcg_at_k(
+    ranked: &[String],
+    grades: &[crate::dataset::RelevanceGrade],
+    k: usize,
+) -> f64 {
+    let mut sorted: Vec<crate::dataset::RelevanceGrade> = grades.to_vec();
+    sorted.sort_by_key(|g| std::cmp::Reverse(g.grade));
+    // Ideal ordering is the graded docs themselves (their URLs), in order.
+    let ideal: Vec<String> = sorted.iter().map(|g| g.url.clone()).collect();
+    let idcg = graded_dcg_at_k(&ideal, grades, k);
+    if idcg <= 0.0 {
+        return 0.0;
+    }
+    graded_dcg_at_k(ranked, grades, k) / idcg
+}
+
+/// URLs that count as a CORRECT answer (grade >= 2), for MRR/Recall on graded
+/// qrels. Grade 1 is "related but not an answer": it still contributes gain to
+/// nDCG, but must not inflate recall or let MRR reward landing on a merely
+/// related page instead of the canonical one.
+pub fn graded_relevant_urls(grades: &[crate::dataset::RelevanceGrade]) -> Vec<String> {
+    grades
+        .iter()
+        .filter(|g| g.grade >= 2)
+        .map(|g| g.url.clone())
+        .collect()
+}
+
 /// Normalized DCG@k (1.0 = perfect ordering of all relevant URLs).
 pub fn ndcg_at_k(ranked: &[String], relevant: &[String], k: usize) -> f64 {
     if relevant.is_empty() {
@@ -159,5 +210,59 @@ mod tests {
         assert_eq!(mrr(&[], &[]), 0.0);
         assert_eq!(ndcg_at_k(&[], &[], 5), 0.0);
         assert_eq!(recall_at_k(&urls(&["a"]), &[], 5), 0.0);
+    }
+
+    #[test]
+    fn graded_gain_distinguishes_canonical_from_related() {
+        use crate::dataset::RelevanceGrade;
+        let grades = vec![
+            RelevanceGrade {
+                url: "https://canonical".into(),
+                grade: 3,
+            },
+            RelevanceGrade {
+                url: "https://related".into(),
+                grade: 1,
+            },
+        ];
+        let perfect = urls(&["https://canonical", "https://related", "x"]);
+        let swapped = urls(&["https://related", "https://canonical", "x"]);
+        assert!((graded_ndcg_at_k(&perfect, &grades, 5) - 1.0).abs() < 1e-9);
+        let worse = graded_ndcg_at_k(&swapped, &grades, 5);
+        assert!(
+            worse < 0.75,
+            "putting a related page first must score lower: {worse}"
+        );
+        // Binary nDCG cannot tell these two orderings apart: both have one
+        // relevant doc at rank 1 and one at rank 2 with equal gain.
+        let binary = urls(&["https://canonical", "https://related"]);
+        let binary_perfect = ndcg_at_k(&perfect, &binary, 5);
+        let binary_swapped = ndcg_at_k(&swapped, &binary, 5);
+        assert!((binary_perfect - binary_swapped).abs() < 1e-9);
+    }
+
+    #[test]
+    fn grade_zero_is_not_relevant() {
+        use crate::dataset::RelevanceGrade;
+        let grades = vec![
+            RelevanceGrade {
+                url: "https://a".into(),
+                grade: 0,
+            },
+            RelevanceGrade {
+                url: "https://b".into(),
+                grade: 2,
+            },
+        ];
+        assert_eq!(graded_relevant_urls(&grades), urls(&["https://b"]));
+        assert!(
+            graded_relevant_urls(&[RelevanceGrade {
+                url: "https://c".into(),
+                grade: 1,
+            }])
+            .is_empty(),
+            "grade 1 is related, not a correct answer"
+        );
+        assert_eq!(graded_ndcg_at_k(&urls(&["https://a"]), &grades, 5), 0.0);
     }
 }

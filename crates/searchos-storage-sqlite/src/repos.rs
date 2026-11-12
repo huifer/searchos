@@ -4643,3 +4643,61 @@ impl<'a> AnalyticsRepo<'a> {
         })
     }
 }
+
+/// Durable agent-session persistence (migration v7). The repository is
+/// payload-agnostic — it stores/returns the serialized session JSON — so the
+/// storage crate keeps no dependency on the application layer.
+pub struct SessionRepo<'a> {
+    pub store: &'a SqliteStore,
+}
+
+impl<'a> SessionRepo<'a> {
+    pub fn new(store: &'a SqliteStore) -> Self {
+        Self { store }
+    }
+
+    /// Returns `(id, payload_json)` rows, oldest-updated first so the caller
+    /// can keep the newest `max_sessions` when rehydrating.
+    pub fn load_all(&self) -> Result<Vec<(String, String)>, SearchOsError> {
+        self.store.with_conn(|c| {
+            let mut stmt = c
+                .prepare("SELECT id, payload FROM agent_sessions ORDER BY updated_at ASC")
+                .map_err(e)?;
+            let rows = stmt
+                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+                .map_err(e)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(e)
+        })
+    }
+
+    pub fn save(
+        &self,
+        id: &str,
+        workspace_id: &str,
+        created_at: &str,
+        updated_at: &str,
+        payload_json: &str,
+    ) -> Result<(), SearchOsError> {
+        self.store.with_conn(|c| {
+            c.execute(
+                "INSERT INTO agent_sessions (id, workspace_id, created_at, updated_at, payload)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(id) DO UPDATE SET
+                   workspace_id = excluded.workspace_id,
+                   updated_at = excluded.updated_at,
+                   payload = excluded.payload",
+                params![id, workspace_id, created_at, updated_at, payload_json],
+            )
+            .map_err(e)?;
+            Ok(())
+        })
+    }
+
+    pub fn delete(&self, id: &str) -> Result<(), SearchOsError> {
+        self.store.with_conn(|c| {
+            c.execute("DELETE FROM agent_sessions WHERE id = ?1", params![id])
+                .map_err(e)?;
+            Ok(())
+        })
+    }
+}

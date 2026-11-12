@@ -85,25 +85,41 @@ where
         let result = f(QueryRequest { question: q }).await?;
         let coverage = keyword_coverage(&result.evidence_text, &q.expected_keywords);
         let passed = result.quality_status == "passed";
-        if !q.relevant_urls.is_empty() {
+        let (effective_relevant, use_graded) = if !q.relevance_grades.is_empty() {
+            (
+                crate::ranking::graded_relevant_urls(&q.relevance_grades),
+                true,
+            )
+        } else {
+            (q.relevant_urls.clone(), false)
+        };
+        if !effective_relevant.is_empty() {
             ranking_questions += 1;
             ranking_mrr +=
-                crate::ranking::first_relevant_rank(&result.ranked_urls, &q.relevant_urls)
+                crate::ranking::first_relevant_rank(&result.ranked_urls, &effective_relevant)
                     .map(|r| 1.0 / r as f64)
                     .unwrap_or(0.0);
-            ranking_ndcg += crate::ranking::ndcg_at_k(
-                &result.ranked_urls,
-                &q.relevant_urls,
-                crate::ranking::RANKING_K,
-            );
+            ranking_ndcg += if use_graded {
+                crate::ranking::graded_ndcg_at_k(
+                    &result.ranked_urls,
+                    &q.relevance_grades,
+                    crate::ranking::RANKING_K,
+                )
+            } else {
+                crate::ranking::ndcg_at_k(
+                    &result.ranked_urls,
+                    &effective_relevant,
+                    crate::ranking::RANKING_K,
+                )
+            };
             ranking_recall += crate::ranking::recall_at_k(
                 &result.ranked_urls,
-                &q.relevant_urls,
+                &effective_relevant,
                 crate::ranking::RANKING_K,
             );
             ranking_precision += crate::ranking::precision_at_k(
                 &result.ranked_urls,
-                &q.relevant_urls,
+                &effective_relevant,
                 crate::ranking::RANKING_K,
             );
         }
@@ -128,7 +144,11 @@ where
             latency_ms: result.latency_ms,
             reciprocal_rank: crate::ranking::first_relevant_rank(
                 &result.ranked_urls,
-                &q.relevant_urls,
+                &if q.relevance_grades.is_empty() {
+                    q.relevant_urls.clone()
+                } else {
+                    crate::ranking::graded_relevant_urls(&q.relevance_grades)
+                },
             )
             .map(|r| 1.0 / r as f64)
             .unwrap_or(0.0),
@@ -196,6 +216,7 @@ mod tests {
                     time_sensitive: false,
                     profile: None,
                     relevant_urls: vec![],
+                    relevance_grades: vec![],
                 },
                 EvalQuestion {
                     id: "q2".into(),
@@ -205,6 +226,7 @@ mod tests {
                     time_sensitive: true,
                     profile: None,
                     relevant_urls: vec![],
+                    relevance_grades: vec![],
                 },
             ],
         };
@@ -247,6 +269,7 @@ mod tests {
                     time_sensitive: false,
                     profile: None,
                     relevant_urls: vec!["https://a".into()],
+                    relevance_grades: vec![],
                 },
                 EvalQuestion {
                     id: "q2".into(),
@@ -256,6 +279,7 @@ mod tests {
                     time_sensitive: false,
                     profile: None,
                     relevant_urls: vec!["https://b".into()],
+                    relevance_grades: vec![],
                 },
             ],
         };
@@ -285,5 +309,54 @@ mod tests {
         assert!((outcome.ranking.mrr - 0.75).abs() < 1e-9);
         assert!((outcome.ranking.recall_at_k - 1.0).abs() < 1e-9);
         assert!(outcome.ranking.ndcg_at_k > 0.0 && outcome.ranking.ndcg_at_k < 1.0);
+    }
+
+    #[tokio::test]
+    async fn graded_qrels_change_the_ndcg_score() {
+        use crate::dataset::RelevanceGrade;
+        let ds = EvaluationDataset {
+            dataset_id: "graded".into(),
+            created_at: String::new(),
+            questions: vec![EvalQuestion {
+                id: "g1".into(),
+                question: "g1".into(),
+                category: DatasetCategory::StaticTechKnowledge,
+                expected_keywords: vec![],
+                time_sensitive: false,
+                profile: None,
+                relevant_urls: vec!["https://canonical".into(), "https://related".into()],
+                relevance_grades: vec![
+                    RelevanceGrade {
+                        url: "https://canonical".into(),
+                        grade: 3,
+                    },
+                    RelevanceGrade {
+                        url: "https://related".into(),
+                        grade: 1,
+                    },
+                ],
+            }],
+        };
+        let outcome = run_dataset(&ds, |_req| async move {
+            // Related page first: binary nDCG would see this as perfect.
+            Ok(QueryResult {
+                quality_status: "passed".into(),
+                local_resolved: true,
+                external_calls: 0,
+                cost_micros: 0,
+                latency_ms: 1,
+                evidence_text: String::new(),
+                ranked_urls: vec!["https://related".into(), "https://canonical".into()],
+            })
+        })
+        .await
+        .unwrap();
+        assert_eq!(outcome.ranking.questions_with_qrels, 1);
+        assert!(
+            outcome.ranking.ndcg_at_k < 0.75,
+            "graded nDCG must penalize burying the canonical page: {}",
+            outcome.ranking.ndcg_at_k
+        );
+        assert!((outcome.ranking.recall_at_k - 1.0).abs() < 1e-9);
     }
 }

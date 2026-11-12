@@ -150,8 +150,16 @@ single-shot `search`. The session store is bounded and in-process (MCP stdio and
 are single processes); it never shortcuts a search.
 
 Evaluation now includes ranking quality: MRR, nDCG@5, Recall@5 and Precision@5 measured
-against per-question qrels (`relevant_urls`), plus a Chinese seed corpus and dataset so CJK
-retrieval regressions are visible in CI.
+against per-question qrels, plus a Chinese seed corpus and dataset so CJK retrieval
+regressions are visible in CI. Qrels support graded labels (`relevance_grades`, 0..3):
+nDCG uses `2^grade - 1` while MRR/Recall count only grade >= 2 as a correct answer, so
+burying the canonical page behind a merely-related one is a measurable regression.
+Remote embedding / cross-encoder adapters have a live HTTP integration test that
+exercises the assembled runtime end to end.
+
+Agent sessions are durable (migration v7, `agent_sessions`): the bounded in-process
+store mirrors every mutation to SQLite and rehydrates on startup, so the follow-up
+contract survives a restart without a schema-breaking change to earlier migrations.
 
 ## Local ingestion (RFC-029)
 
@@ -303,8 +311,13 @@ LanceDB 的 Arrow schema 跟随模型维度，切换模型只需一次重建。
 外提供 `research`（有界迭代 + 会话记录）和 `plan`。会话存储为进程内有界结构，只承载跟进契约，
 绝不用于跳过搜索。
 
-评测新增排序质量：基于每道题 qrels（`relevant_urls`）的 MRR、nDCG@5、Recall@5、Precision@5，
-并附带中文种子语料与数据集，使 CJK 检索回归在 CI 中可见。
+评测新增排序质量：基于每道题 qrels 的 MRR、nDCG@5、Recall@5、Precision@5，并附带中文种子
+语料与数据集，使 CJK 检索回归在 CI 中可见。qrels 支持分级标注（`relevance_grades`，0..3）：
+nDCG 使用 `2^grade - 1`，MRR/Recall 只把 grade >= 2 视为正确答案，因此「规范答案被相关页面
+压在后面」是可量化的回归。远程嵌入与 cross-encoder 适配器带有贯穿真实 runtime 的 HTTP 联调测试。
+
+Agent 会话已持久化（migration v7，`agent_sessions`）：进程内有界存储把每次变更同步到 SQLite，
+启动时重新载入，因此跟进契约可跨重启保留，且不修改任何已发布迁移。
 
 ### 本地导入（RFC-029）
 

@@ -10,7 +10,7 @@
 //! carry the follow-up contract (`focus_requirements`) between turns.
 
 use std::collections::BTreeMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use searchos_domain::decision::CoverageGap;
 use searchos_domain::ids::TraceId;
@@ -58,11 +58,22 @@ impl Default for SessionLimits {
     }
 }
 
-/// Thread-safe bounded session store.
-#[derive(Debug)]
+/// Persistence port for agent sessions. The in-memory store stays the fast
+/// read path; every mutation is mirrored through this port so a gateway or
+/// CLI restart recovers the follow-up contract (SQLite is the source of truth).
+pub trait SessionPersistence: Send + Sync {
+    fn load_all(&self) -> Result<Vec<SearchSession>, searchos_domain::SearchOsError>;
+    fn save(&self, session: &SearchSession) -> Result<(), searchos_domain::SearchOsError>;
+    fn delete(&self, session_id: &str) -> Result<(), searchos_domain::SearchOsError>;
+}
+
+/// Thread-safe bounded session store. With a persistence adapter attached,
+/// mutations are mirrored to durable storage and the store is rehydrated on
+/// construction (newest-updated first, capped at `max_sessions`).
 pub struct SessionStore {
     inner: Mutex<StoreInner>,
     limits: SessionLimits,
+    persistence: Option<Arc<dyn SessionPersistence>>,
 }
 
 #[derive(Default, Debug)]
@@ -72,9 +83,54 @@ struct StoreInner {
 
 impl SessionStore {
     pub fn new(limits: SessionLimits) -> Self {
+        Self::with_persistence(limits, None)
+    }
+
+    pub fn with_persistence(
+        limits: SessionLimits,
+        persistence: Option<Arc<dyn SessionPersistence>>,
+    ) -> Self {
+        let mut sessions = BTreeMap::new();
+        if let Some(p) = &persistence {
+            match p.load_all() {
+                Ok(mut loaded) => {
+                    loaded.sort_by(|a, b| a.updated_at.cmp(&b.updated_at));
+                    // Keep only the newest `max_sessions` sessions.
+                    if loaded.len() > limits.max_sessions {
+                        loaded.drain(0..loaded.len() - limits.max_sessions);
+                    }
+                    for session in loaded {
+                        sessions.insert(session.session_id.clone(), session);
+                    }
+                }
+                Err(e) => tracing::warn!(
+                    code = %e.class().code,
+                    "agent session rehydration failed; starting with an empty session store"
+                ),
+            }
+        }
         Self {
-            inner: Mutex::new(StoreInner::default()),
+            inner: Mutex::new(StoreInner { sessions }),
             limits,
+            persistence,
+        }
+    }
+
+    /// Mirrors a session mutation to durable storage. Persistence failures
+    /// are logged but never break the in-flight search.
+    fn persist_save(&self, session: &SearchSession) {
+        if let Some(p) = &self.persistence {
+            if let Err(e) = p.save(session) {
+                tracing::warn!(code = %e.class().code, "agent session save failed");
+            }
+        }
+    }
+
+    fn persist_delete(&self, session_id: &str) {
+        if let Some(p) = &self.persistence {
+            if let Err(e) = p.delete(session_id) {
+                tracing::warn!(code = %e.class().code, "agent session delete failed");
+            }
         }
     }
 
@@ -84,6 +140,7 @@ impl SessionStore {
         if let Some(existing) = inner.sessions.get(session_id) {
             return existing.clone();
         }
+        let mut evicted: Option<String> = None;
         if inner.sessions.len() >= self.limits.max_sessions {
             // Evict the session with the oldest `updated_at`.
             let stalest = inner
@@ -93,6 +150,7 @@ impl SessionStore {
                 .map(|(k, _)| k.clone());
             if let Some(k) = stalest {
                 inner.sessions.remove(&k);
+                evicted = Some(k);
             }
         }
         let now = chrono::Utc::now().to_rfc3339();
@@ -107,6 +165,11 @@ impl SessionStore {
         inner
             .sessions
             .insert(session_id.to_string(), session.clone());
+        drop(inner);
+        if let Some(k) = evicted {
+            self.persist_delete(&k);
+        }
+        self.persist_save(&session);
         session
     }
 
@@ -129,7 +192,10 @@ impl SessionStore {
             session.turns.drain(0..overflow);
         }
         session.open_requirements = open_requirements;
-        Some(session.clone())
+        let snapshot = session.clone();
+        drop(inner);
+        self.persist_save(&snapshot);
+        Some(snapshot)
     }
 
     pub fn get(&self, session_id: &str) -> Option<SearchSession> {
@@ -152,12 +218,17 @@ impl SessionStore {
 
     /// Drops a session explicitly (agent signals "done researching").
     pub fn close(&self, session_id: &str) -> bool {
-        self.inner
+        let removed = self
+            .inner
             .lock()
             .unwrap()
             .sessions
             .remove(session_id)
-            .is_some()
+            .is_some();
+        if removed {
+            self.persist_delete(session_id);
+        }
+        removed
     }
 }
 

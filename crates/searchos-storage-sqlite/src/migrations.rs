@@ -670,6 +670,29 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_outbox_pending_refresh
     WHERE status = 'pending' AND operation = 'refresh';
 "#,
     },
+    // v7 - agent search sessions (cross-process persistence).
+    // Released migrations above remain immutable.
+    Migration {
+        version: 7,
+        name: "agent_search_sessions",
+        sql: r#"
+-- One row per agent session. `payload` is the full serialized session
+-- (turns + open requirements); the columns below are duplicated only for
+-- indexed ordering/retention queries. SQLite remains the source of truth,
+-- so a gateway/CLI restart recovers the follow-up contract exactly.
+CREATE TABLE IF NOT EXISTS agent_sessions (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    payload TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_sessions_updated
+    ON agent_sessions(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_agent_sessions_ws
+    ON agent_sessions(workspace_id, updated_at DESC);
+"#,
+    },
 ];
 
 /// Applies pending migrations to a connection. Each version is atomic: SQL

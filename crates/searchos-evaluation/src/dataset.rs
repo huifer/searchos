@@ -50,6 +50,28 @@ pub struct EvalQuestion {
     /// must retrieve, in no particular order (binary qrels by URL).
     #[serde(default)]
     pub relevant_urls: Vec<String>,
+    /// Graded relevance labels (RFC-015 15.6): 0 = irrelevant, 1 = related,
+    /// 2 = relevant, 3 = highly relevant / canonical answer. When present,
+    /// graded labels REPLACE the binary `relevant_urls` for nDCG so a
+    /// cross-encoder that puts the canonical page first scores higher than
+    /// one that only surfaces a merely-related page.
+    #[serde(default)]
+    pub relevance_grades: Vec<RelevanceGrade>,
+}
+
+/// One graded qrel: a document URL and its relevance level.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RelevanceGrade {
+    pub url: String,
+    /// 0..=3. Values above 3 are clamped when computing gain.
+    pub grade: u8,
+}
+
+impl RelevanceGrade {
+    /// Effective graded gain for nDCG: 2^grade - 1 (standard graded gain).
+    pub fn gain(&self) -> f64 {
+        2f64.powi(self.grade.min(3) as i32) - 1.0
+    }
 }
 
 /// A loaded dataset.

@@ -108,7 +108,23 @@ ASCII and call adapters directly, bypassing the runtime write path).
   made source-diversity checks fail. `host_of` now returns the canonical URI
   for local documents.
 
-**Still open:** cross-encoder quality needs real relevance labels (the qrels
-are URL-level and binary); the remote reranker/embedding paths have no live
-provider test (only mock HTTP servers); sessions are process-local (no
-persistence across restarts).
+**Third pass (2026-11) — the three remaining open items are now closed:**
+- **Graded relevance labels**: `EvalQuestion.relevance_grades` (0..3) with
+  `2^grade - 1` gain for nDCG; `graded_relevant_urls()` counts only grade >= 2
+  for MRR/Recall, so "related but not an answer" cannot inflate them. The
+  Chinese dataset carries a grade-3 canonical + grade-1 related doc per
+  question. Binary `relevant_urls` remains supported for older datasets.
+- **Live remote-provider integration**: `crates/searchos-core/tests/
+  remote_provider_live.rs` runs a real HTTP server for `/v1/embeddings` and
+  `/v1/rerank` against the assembled runtime; verifies model dimension,
+  LanceDB writes, rerank-trigger conditions and response serving.
+- **Durable sessions**: migration v7 `agent_sessions`, a payload-agnostic
+  `SessionRepo` in storage, and `SqliteSessionPersistence` in core (avoids an
+  application<->storage dependency cycle). `SessionStore::with_persistence`
+  rehydrates newest-first at startup and mirrors every mutation; in-memory
+  remains the fast read path.
+
+**Still open:** sessions are bounded/evicted by `max_sessions` (64) and
+`max_turns_per_session` (20), and persistence is per SQLite database (not
+shared across separate data directories); graded labels are still
+hand-authored for 12 CJK questions rather than a large human-judged corpus.

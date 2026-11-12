@@ -40,10 +40,10 @@ The SearchOS implementation (`~/git_repo/searchos`) is verified by these command
 - Release build: `cargo build --release --bin searchos` (15m09s, 0 errors/warnings, 273M binary); the release binary passes init/search/doctor/gateway smoke tests.
 - Full clean rebuild verified: `cargo clean` (removed 59.1GiB) → `cargo build --workspace --all-targets` (575 crates, 5m55s, 0 errors/warnings) → `cargo test --workspace` (253 passed) → `cargo clippy --workspace --all-targets` (0 warnings) → `cargo fmt --all -- --check` clean.
 
-- **RFC-031 verification (implemented 2026-11, re-verified on commit 799a2c4; retrieval + agent hardening pass on top of it):** `cargo test --workspace` → 554 passed / 0 failed (70 suites); the RFC gate is `cargo test -p searchos-integration-tests --test rfc_031_evidence_promotion` (17 tests: promotion state machine, rejected-never-indexed, robots/`fetch_failed` skip reasons, per-task cap, reuse accounting, disabled promotion, pipeline acquisition, ledger == planned calls, negative-cache honest replay + ExternalOnly/strict-freshness bypass). Migration gate: `cargo test -p searchos-storage-sqlite migrations` (includes `semicolon_inside_a_comment_does_not_split_statements`). Route/contract gates: `cargo test -p searchos-interface-http --lib openapi` + `SRC_DIR=crates/searchos-interface-http/src bash ~/.agents/skills/axum-route-conflict/scripts/scan-routes.sh`. Live: `SEARCHOS_DATA_DIR=$(mktemp -d) searchos evidence list` / `searchos evidence stats` (empty state prints zero counts, exit 0); gateway `GET /evidence/acquisitions|/evidence/reuse` behind the bearer token.
+- **RFC-031 verification (implemented 2026-11, re-verified on commit 799a2c4; retrieval + agent hardening pass on top of it):** `cargo test --workspace` → 559 passed / 0 failed (71 suites); the RFC gate is `cargo test -p searchos-integration-tests --test rfc_031_evidence_promotion` (17 tests: promotion state machine, rejected-never-indexed, robots/`fetch_failed` skip reasons, per-task cap, reuse accounting, disabled promotion, pipeline acquisition, ledger == planned calls, negative-cache honest replay + ExternalOnly/strict-freshness bypass). Migration gate: `cargo test -p searchos-storage-sqlite migrations` (includes `semicolon_inside_a_comment_does_not_split_statements`). Route/contract gates: `cargo test -p searchos-interface-http --lib openapi` + `SRC_DIR=crates/searchos-interface-http/src bash ~/.agents/skills/axum-route-conflict/scripts/scan-routes.sh`. Live: `SEARCHOS_DATA_DIR=$(mktemp -d) searchos evidence list` / `searchos evidence stats` (empty state prints zero counts, exit 0); gateway `GET /evidence/acquisitions|/evidence/reuse` behind the bearer token.
 
-- **Agent + retrieval gates (2026-11):** `cargo test --workspace --locked` → 554
-  passed / 0 failed (70 suites); `cargo clippy --workspace --all-targets -- -D
+- **Agent + retrieval gates (2026-11):** `cargo test --workspace --locked` → 559
+  passed / 0 failed (71 suites); `cargo clippy --workspace --all-targets -- -D
   warnings` clean; `cargo fmt --all -- --check` clean; route-conflict scan
   clean; OpenAPI route-table parity green (the two new agent routes
   `/search/plan` + `/search/follow-up` are documented in `docs/openapi.yaml`).
@@ -62,6 +62,23 @@ The SearchOS implementation (`~/git_repo/searchos`) is verified by these command
   `--session` / `--focus-requirements` round-trip the session, and the
   response carries `coverage_gaps`, `session_id`, `focus_requirements` and a
   `<b>…</b>` `highlight`.
+
+- **Graded qrels / live provider / durable sessions gates (2026-11):**
+  - `cargo test -p searchos-evaluation` includes graded nDCG (`2^grade - 1`,
+    `relevance_grades` 0..3; MRR/Recall count only grade >= 2) and a runner
+    test proving binary nDCG cannot tell a canonical/related swap apart.
+  - `cargo test -p searchos-core --test remote_provider_live` wires a real
+    OpenAI-compatible HTTP server into the assembled runtime: 36 remote
+    embeddings land in LanceDB at the model dimension and `/v1/rerank` is
+    actually called (RFC-007 7.7 trigger threshold 30 candidates).
+  - `cargo test -p searchos-core --test runtime_test` includes
+    `agent_sessions_survive_runtime_restart` (migration v7, `agent_sessions`).
+  - Schema is migration **v7** (append-only; never edit released migrations).
+  - Live gateway smoke: `/search` with `session_id`, kill + restart the
+    gateway, then `/search/follow-up` on the same session resolves.
+  - CI zh gate: `check_eval_gate.py ... --min-questions 12 --min-mrr 0.8
+    --min-ndcg 0.8 --min-recall 0.8`; with graded qrels observed
+    MRR 1.0 / nDCG@5 0.968 / Recall@5 1.0.
 
 **Known environment notes:**
 - LanceDB requires `protoc` at build time (`brew install protobuf`).

@@ -31,6 +31,44 @@ use searchos_storage_sqlite::store::SqliteStore;
 
 use crate::config::{SearchOsConfig, CONSUMED_CONFIG_FIELDS, DEPRECATED_CONFIG_FIELDS};
 
+/// SQLite-backed [`SessionPersistence`] adapter. Kept in the core crate so
+/// the storage layer stays payload-agnostic and dependency-cycle free.
+struct SqliteSessionPersistence {
+    store: Arc<SqliteStore>,
+}
+
+impl searchos_application::session::SessionPersistence for SqliteSessionPersistence {
+    fn load_all(&self) -> Result<Vec<searchos_application::session::SearchSession>, SearchOsError> {
+        let mut out = Vec::new();
+        for (id, payload) in repos::SessionRepo::new(&self.store).load_all()? {
+            match serde_json::from_str::<searchos_application::session::SearchSession>(&payload) {
+                Ok(session) => out.push(session),
+                Err(err) => tracing::warn!(%id, %err, "skipping corrupt agent session row"),
+            }
+        }
+        Ok(out)
+    }
+
+    fn save(
+        &self,
+        session: &searchos_application::session::SearchSession,
+    ) -> Result<(), SearchOsError> {
+        let payload = serde_json::to_string(session)
+            .map_err(|e| SearchOsError::Storage(format!("serialize session: {e}")))?;
+        repos::SessionRepo::new(&self.store).save(
+            &session.session_id,
+            &session.workspace_id,
+            &session.created_at,
+            &session.updated_at,
+            &payload,
+        )
+    }
+
+    fn delete(&self, session_id: &str) -> Result<(), SearchOsError> {
+        repos::SessionRepo::new(&self.store).delete(session_id)
+    }
+}
+
 /// Builds the single embedding provider shared by the vector index, memory
 /// retrieval and the semantic cache. `local` keeps the offline deterministic
 /// hashing embedder; `remote` uses an OpenAI-compatible HTTP endpoint whose
@@ -585,9 +623,15 @@ impl SearchOsRuntime {
 
         // Bounded in-process agent session store (MCP stdio and the gateway
         // share one process, so the store is shared by both transports).
-        let session_store = Arc::new(searchos_application::session::SessionStore::new(
-            searchos_application::session::SessionLimits::default(),
-        ));
+        let session_store = Arc::new(
+            searchos_application::session::SessionStore::with_persistence(
+                searchos_application::session::SessionLimits::default(),
+                Some(Arc::new(SqliteSessionPersistence {
+                    store: Arc::clone(&sqlite),
+                })
+                    as Arc<dyn searchos_application::session::SessionPersistence>),
+            ),
+        );
 
         let deps = Arc::new(searchos_application::search_service::SearchDependencies {
             profiles: searchos_policy::ProfileRegistry::builtin(),
