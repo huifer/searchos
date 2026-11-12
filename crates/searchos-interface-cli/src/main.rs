@@ -185,6 +185,11 @@ enum Command {
         #[command(subcommand)]
         cmd: CostCmd,
     },
+    /// External evidence promotion (RFC-031)
+    Evidence {
+        #[command(subcommand)]
+        cmd: EvidenceCmd,
+    },
     /// Trace operations
     Trace {
         #[command(subcommand)]
@@ -370,6 +375,25 @@ enum CostCmd {
         /// Output file path
         #[arg(long)]
         out: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum EvidenceCmd {
+    /// External acquisitions and their promotion state
+    List {
+        /// Workspace scope (default: all)
+        #[arg(long)]
+        workspace: Option<String>,
+        /// Maximum acquisitions to list
+        #[arg(long, default_value = "50")]
+        limit: u32,
+    },
+    /// Acquisition / promotion / reuse counts and the compound ratio
+    Stats {
+        /// Workspace scope (default: all)
+        #[arg(long)]
+        workspace: Option<String>,
     },
 }
 
@@ -1231,6 +1255,43 @@ async fn run(cli: Cli) -> Result<(), SearchOsError> {
                 }
             }
             Ok(())
+        }
+        Command::Evidence { cmd } => {
+            let rt = runtime(cli_ref).await?;
+            let repo = repos::ExternalEvidenceRepo::new(&rt.sqlite);
+            match cmd {
+                EvidenceCmd::List { workspace, limit } => {
+                    let acquisitions = repo.list_acquisitions(workspace.as_deref(), *limit)?;
+                    let stats = repo.stats(workspace.as_deref())?;
+                    let report = serde_json::json!({
+                        "acquisitions": acquisitions,
+                        "stats": stats,
+                    });
+                    print(&report, format);
+                    Ok(())
+                }
+                EvidenceCmd::Stats { workspace } => {
+                    let stats = repo.stats(workspace.as_deref())?;
+                    let acquisitions = stats
+                        .get("acquisitions")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0);
+                    let reuse = stats
+                        .get("reuse_events")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0);
+                    let report = serde_json::json!({
+                        "stats": stats,
+                        "compound_ratio": if acquisitions > 0 {
+                            reuse as f64 / acquisitions as f64
+                        } else {
+                            0.0
+                        },
+                    });
+                    print(&report, format);
+                    Ok(())
+                }
+            }
         }
         Command::Trace { cmd } => {
             let rt = runtime(cli_ref).await?;

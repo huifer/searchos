@@ -15,6 +15,44 @@ multi-arch images, and attaches the matching section of this file.
 
 ### Added
 
+- **RFC-031 external evidence promotion & knowledge compounding**: a purchased
+  external answer now becomes a durable, rebuildable document instead of a
+  throwaway snippet.
+  - **Quality-gated promotion.** External results are attributed to the final
+    quality gate verdict; only accepted evidence is captured and indexed.
+    Rejected or conflicting evidence is recorded with a reason and never
+    reaches the index (fixes the knowledge-pollution defect where unverified
+    snippets were indexed *before* the gate ran).
+  - **Outbox-driven capture.** A dedicated bounded-concurrency worker fetches
+    the page through the governed path (robots, SSRF guard, canonical URL,
+    versioning, chunking) and indexes the full body, not the provider
+    snippet. Capture never blocks the search response, and it invalidates the
+    query/retrieval caches so the purchase cannot stay hidden behind a stale
+    miss.
+  - **Migration v6** (`external_evidence_promotion`): `external_acquisitions`,
+    `evidence_items`, `document_bindings`, `evidence_reuse_events`,
+    `documents.visibility`, plus a partial unique index that coalesces
+    duplicate pending refresh rows.
+  - **Plan/ledger agreement**: query expansion moved inside the external
+    planner and the budget reservation now covers the final query list plus
+    the promotion estimate, so the ledger records exactly what was planned.
+  - **Honest savings**: local resolutions are split into first-party and
+    external-sourced (`evidence_reuse_events`), and the new
+    `searchos_external_*` / `searchos_refresh_coalesced_total` /
+    `searchos_negative_cache_hits_total` metrics expose the compound ratio.
+  - **Negative-result cache** (`search.negative_cache_ttl_seconds`, default
+    300): a terminal "external search found nothing" outcome replays with
+    `status = insufficient_evidence` and `replayed: true` instead of re-paying
+    for the same empty search on every retry. `ExternalOnly`, `ExternalFirst`
+    and strict-freshness requests bypass it exactly as they bypass the exact
+    cache.
+  - **Observability**: `GET|CLI evidence acquisitions|stats|reuse`,
+    `searchos evidence list|stats`, and `GET /evidence/*` in the OpenAPI
+    document (route-table parity enforced).
+  - Fixes the migration runner: a `;` inside a `--` comment no longer splits a
+    statement (it silently broke every fresh database once a comment contained
+    one).
+
 - **GHCR aliases workflow**: a `workflow_dispatch` workflow
   (`ghcr-aliases.yml`) that copies an already published multi-arch manifest
   to the documented simple names with `docker buildx imagetools create` — no

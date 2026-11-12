@@ -65,11 +65,13 @@ fn rebuild_deps(runtime: &Arc<searchos_core::SearchOsRuntime>) -> Arc<SearchDepe
         task_recorder: runtime.task_recorder(),
         singleflight: Arc::new(SingleflightCoordinator::new()),
         cache: runtime.exact_cache.clone(),
+        negative_cache: runtime.negative_cache.clone(),
         semantic_dedup: true,
         incremental: true,
         query_expansion: true,
         reranking: true,
         allow_external: false,
+        promotion: None,
     })
 }
 

@@ -27,6 +27,7 @@ searchos-application = { workspace = true }
 searchos-core = { workspace = true }
 searchos-storage-sqlite = { workspace = true }
 searchos-document = { workspace = true }
+searchos-fetch = { workspace = true }
 searchos-storage-fs = { workspace = true }
 searchos-index-tantivy = { workspace = true }
 searchos-vector-lancedb = { workspace = true }

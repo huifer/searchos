@@ -578,6 +578,98 @@ CREATE INDEX IF NOT EXISTS idx_documents_workspace ON documents(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_chunks_document ON document_chunks(document_id);
 "#,
     },
+    // v6 - RFC-031 external evidence promotion & knowledge compounding.
+    // Released migrations above remain immutable.
+    Migration {
+        version: 6,
+        name: "external_evidence_promotion",
+        sql: r#"
+-- Knowledge visibility. v1 keeps everything workspace-scoped; 'public' is
+-- reserved for explicitly shared knowledge (ADR-033).
+ALTER TABLE documents ADD COLUMN visibility TEXT NOT NULL DEFAULT 'workspace';
+
+-- One row per external acquisition (RFC-031 5.2).
+CREATE TABLE IF NOT EXISTS external_acquisitions (
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL,
+    request_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    provider_id TEXT NOT NULL,
+    query TEXT NOT NULL,
+    query_origin TEXT NOT NULL,
+    requirement_id TEXT,
+    strategy TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_acquisitions_ws
+    ON external_acquisitions(workspace_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_acquisitions_task
+    ON external_acquisitions(task_id);
+
+-- One row per result item of an acquisition (RFC-031 5.3).
+CREATE TABLE IF NOT EXISTS evidence_items (
+    id TEXT PRIMARY KEY,
+    acquisition_id TEXT NOT NULL,
+    url TEXT NOT NULL,
+    canonical_url TEXT NOT NULL,
+    title TEXT,
+    provider_score REAL NOT NULL DEFAULT 0.0,
+    relevance REAL NOT NULL DEFAULT 0.0,
+    state TEXT NOT NULL DEFAULT 'pending',
+    document_id TEXT,
+    version_id TEXT,
+    chunk_count INTEGER,
+    reason TEXT,
+    promoted_at TEXT,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(acquisition_id) REFERENCES external_acquisitions(id)
+);
+CREATE INDEX IF NOT EXISTS idx_evidence_items_acq
+    ON evidence_items(acquisition_id);
+CREATE INDEX IF NOT EXISTS idx_evidence_items_state
+    ON evidence_items(state, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_evidence_items_doc
+    ON evidence_items(document_id);
+
+-- Workspace <-> document bindings. Membership metadata only: v1 retrieval
+-- filters on the indexed workspace_id, so there is no read-time join.
+CREATE TABLE IF NOT EXISTS document_bindings (
+    document_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    visibility TEXT NOT NULL DEFAULT 'workspace',
+    bound_at TEXT NOT NULL,
+    PRIMARY KEY (document_id, workspace_id)
+);
+CREATE INDEX IF NOT EXISTS idx_bindings_ws
+    ON document_bindings(workspace_id);
+
+-- Reuse accounting (compound metric numerator).
+CREATE TABLE IF NOT EXISTS evidence_reuse_events (
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    document_id TEXT NOT NULL,
+    occurred_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_reuse_ws
+    ON evidence_reuse_events(workspace_id, occurred_at DESC);
+CREATE INDEX IF NOT EXISTS idx_reuse_task
+    ON evidence_reuse_events(task_id);
+
+-- Refresh coalescing (RFC-031 D7). De-duplicate first: the partial unique
+-- index below cannot be created while duplicates exist.
+DELETE FROM index_outbox
+WHERE operation = 'refresh' AND status = 'pending'
+  AND rowid NOT IN (
+    SELECT MIN(o2.rowid) FROM index_outbox o2
+    WHERE o2.operation = 'refresh' AND o2.status = 'pending'
+    GROUP BY o2.entity_type, o2.entity_id, o2.operation
+  );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_outbox_pending_refresh
+    ON index_outbox(entity_type, entity_id, operation)
+    WHERE status = 'pending' AND operation = 'refresh';
+"#,
+    },
 ];
 
 /// Applies pending migrations to a connection. Each version is atomic: SQL
@@ -641,19 +733,22 @@ fn apply_migrations(
 /// Executes one migration statement-by-statement, skipping `ADD COLUMN`
 /// statements whose column already exists. This keeps released v2/v4 SQL
 /// immutable while making a retry after a rolled-back migration safe.
+///
+/// Comment lines are stripped **before** the statement split: a `;` inside a
+/// `--` comment must not terminate a statement.
 fn apply_sql_idempotent(
     conn: &Connection,
     sql: &str,
     fail_after_alter: Option<usize>,
 ) -> Result<(), rusqlite::Error> {
     let mut alters = 0usize;
-    for raw in sql.split(';') {
-        let cleaned = raw
-            .lines()
-            .filter(|line| !line.trim_start().starts_with("--"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let statement = cleaned.trim();
+    let comments_stripped = sql
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("--"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for raw in comments_stripped.split(';') {
+        let statement = raw.trim();
         if statement.is_empty() {
             continue;
         }
@@ -762,6 +857,10 @@ mod tests {
             "cost_reconciliations",
             "analytics_events",
             "analytics_read_models",
+            "external_acquisitions",
+            "evidence_items",
+            "document_bindings",
+            "evidence_reuse_events",
         ] {
             let count: i64 = conn
                 .query_row(
@@ -772,6 +871,28 @@ mod tests {
                 .unwrap();
             assert_eq!(count, 1, "table {t} missing");
         }
+    }
+
+    /// A `;` inside a `--` comment must not terminate a statement. Migration
+    /// v6's visibility comment contains one; before the comment-stripping fix
+    /// it split the ALTER and every fresh database failed to migrate.
+    #[test]
+    fn semicolon_inside_a_comment_does_not_split_statements() {
+        let conn = Connection::open_in_memory().unwrap();
+        apply_sql_idempotent(
+            &conn,
+            "-- a comment; with a semicolon\nCREATE TABLE t_split (id TEXT);",
+            None,
+        )
+        .unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='t_split'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
     }
 
     /// Part 30 §30.11: injecting a failure at the second v2 ALTER must leave

@@ -5753,6 +5753,7 @@ dependencies = [
  "searchos-decision",
  "searchos-document",
  "searchos-domain",
+ "searchos-fetch",
  "searchos-index-tantivy",
  "searchos-interface-http",
  "searchos-interface-mcp",

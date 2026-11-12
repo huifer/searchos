@@ -48,6 +48,8 @@ tags:
     description: Traces, decisions, metrics and runtime status
   - name: Analytics
     description: RFC-026/027/028 Dashboard API over the Analytics Read Model
+  - name: Evidence
+    description: RFC-031 external acquisitions, promotion state and reuse accounting
 security:
   - bearerAuth: []
 paths:
@@ -646,6 +648,65 @@ paths:
             application/json:
               schema: { type: object, additionalProperties: true }
         '404': { $ref: '#/components/responses/NotFound' }
+
+  /evidence/acquisitions:
+    get:
+      tags: [Evidence]
+      summary: List external acquisitions and their promotion state
+      description: |
+        RFC-031 read-only observability. Promotion is an internal consequence
+        of a search, so there is no write endpoint.
+      parameters:
+        - name: workspace_id
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 1000, default: 50 }
+      responses:
+        '200':
+          description: Acquisitions plus promotion state counts.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  acquisitions:
+                    type: array
+                    items: { type: object, additionalProperties: true }
+                  stats: { type: object, additionalProperties: true }
+
+  /evidence/acquisitions/{id}:
+    get:
+      tags: [Evidence]
+      summary: Inspect one acquisition and its result items
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Acquisition with per-item promotion state and reasons.
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /evidence/reuse:
+    get:
+      tags: [Evidence]
+      summary: Compound report — reuse events per acquisition
+      parameters:
+        - name: workspace_id
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Promotion counts and the compound ratio.
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
 
   /api/v1/dashboard/overview:
     get:

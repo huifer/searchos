@@ -30,6 +30,10 @@ searchos provider list
 searchos provider add tavily
 searchos provider health
 
+# Evidence (RFC-031)
+searchos evidence list --workspace default
+searchos evidence stats --workspace default
+
 # Cost
 searchos cost summary
 searchos cost agents

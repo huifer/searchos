@@ -305,11 +305,13 @@ fn deps(
         task_recorder: runtime.task_recorder(),
         singleflight: runtime.singleflight.clone(),
         cache: runtime.exact_cache.clone(),
+        negative_cache: runtime.negative_cache.clone(),
         semantic_dedup: true,
         incremental: true,
         query_expansion: true,
         reranking: true,
         allow_external,
+        promotion: None,
     })
 }
 

@@ -79,6 +79,15 @@ struct Counters {
     external_calls: AtomicU64,
     external_avoided: AtomicU64,
     valid_local_resolutions: AtomicU64,
+    // RFC-031 external evidence promotion.
+    external_acquisitions: AtomicU64,
+    external_promotions_promoted: AtomicU64,
+    external_promotions_rejected: AtomicU64,
+    external_promotions_skipped: AtomicU64,
+    external_promotion_fetches: AtomicU64,
+    external_evidence_reuse: AtomicU64,
+    refresh_coalesced: AtomicU64,
+    negative_cache_hits: AtomicU64,
 }
 
 #[derive(Debug, Default)]
@@ -279,6 +288,42 @@ impl MetricsRegistry {
             .valid_local_resolutions
             .fetch_add(1, Ordering::Relaxed);
     }
+
+    // --- RFC-031 external evidence promotion --------------------------
+    pub fn inc_external_acquisition(&self) {
+        self.counters
+            .external_acquisitions
+            .fetch_add(1, Ordering::Relaxed);
+    }
+    pub fn inc_external_promotion(&self, state: &str) {
+        let counter = match state {
+            "promoted" => &self.counters.external_promotions_promoted,
+            "rejected" => &self.counters.external_promotions_rejected,
+            "skipped" => &self.counters.external_promotions_skipped,
+            _ => return,
+        };
+        counter.fetch_add(1, Ordering::Relaxed);
+    }
+    pub fn inc_external_promotion_fetch(&self) {
+        self.counters
+            .external_promotion_fetches
+            .fetch_add(1, Ordering::Relaxed);
+    }
+    pub fn inc_external_evidence_reuse(&self) {
+        self.counters
+            .external_evidence_reuse
+            .fetch_add(1, Ordering::Relaxed);
+    }
+    pub fn inc_refresh_coalesced(&self) {
+        self.counters
+            .refresh_coalesced
+            .fetch_add(1, Ordering::Relaxed);
+    }
+    pub fn inc_negative_cache_hit(&self) {
+        self.counters
+            .negative_cache_hits
+            .fetch_add(1, Ordering::Relaxed);
+    }
     pub fn record_outbox(&self, processed: bool, dead: bool) {
         if processed {
             self.counters
@@ -372,6 +417,14 @@ impl MetricsRegistry {
             valid_local_resolutions: c.valid_local_resolutions.load(Ordering::Relaxed),
             crawler_successes: c.crawler_successes.load(Ordering::Relaxed),
             crawler_failures: c.crawler_failures.load(Ordering::Relaxed),
+            external_acquisitions: c.external_acquisitions.load(Ordering::Relaxed),
+            external_promotions_promoted: c.external_promotions_promoted.load(Ordering::Relaxed),
+            external_promotions_rejected: c.external_promotions_rejected.load(Ordering::Relaxed),
+            external_promotions_skipped: c.external_promotions_skipped.load(Ordering::Relaxed),
+            external_promotion_fetches: c.external_promotion_fetches.load(Ordering::Relaxed),
+            external_evidence_reuse: c.external_evidence_reuse.load(Ordering::Relaxed),
+            refresh_coalesced: c.refresh_coalesced.load(Ordering::Relaxed),
+            negative_cache_hits: c.negative_cache_hits.load(Ordering::Relaxed),
             invariant_metrics: self.invariant.lock().unwrap().clone(),
         }
     }
@@ -592,6 +645,55 @@ pub fn render_prometheus(snapshot: &MetricsSnapshot, server: &ServerMetrics) -> 
         snapshot.external_avoided,
         "",
     );
+    // RFC-031 external evidence promotion + knowledge compounding.
+    builder.counter(
+        "searchos_external_acquisitions_total",
+        "External acquisitions recorded for promotion",
+        snapshot.external_acquisitions,
+        "",
+    );
+    builder.counter(
+        "searchos_external_promotions_promoted_total",
+        "External evidence items promoted into durable knowledge",
+        snapshot.external_promotions_promoted,
+        "",
+    );
+    builder.counter(
+        "searchos_external_promotions_rejected_total",
+        "External evidence items the final quality gate rejected",
+        snapshot.external_promotions_rejected,
+        "",
+    );
+    builder.counter(
+        "searchos_external_promotions_skipped_total",
+        "External evidence items whose capture was not possible",
+        snapshot.external_promotions_skipped,
+        "",
+    );
+    builder.counter(
+        "searchos_external_promotion_fetches_total",
+        "Capture fetches enqueued for accepted external evidence",
+        snapshot.external_promotion_fetches,
+        "",
+    );
+    builder.counter(
+        "searchos_external_evidence_reuse_total",
+        "Local resolutions served from external-sourced knowledge",
+        snapshot.external_evidence_reuse,
+        "",
+    );
+    builder.counter(
+        "searchos_refresh_coalesced_total",
+        "Refresh enqueues coalesced into an existing pending row",
+        snapshot.refresh_coalesced,
+        "",
+    );
+    builder.counter(
+        "searchos_negative_cache_hits_total",
+        "Terminal external failures replayed from the negative cache",
+        snapshot.negative_cache_hits,
+        "",
+    );
     builder.counter(
         "searchos_valid_local_resolutions_total",
         "Quality-valid local resolutions",
@@ -773,6 +875,15 @@ pub struct MetricsSnapshot {
     pub valid_local_resolutions: u64,
     pub crawler_successes: u64,
     pub crawler_failures: u64,
+    // RFC-031 external evidence promotion.
+    pub external_acquisitions: u64,
+    pub external_promotions_promoted: u64,
+    pub external_promotions_rejected: u64,
+    pub external_promotions_skipped: u64,
+    pub external_promotion_fetches: u64,
+    pub external_evidence_reuse: u64,
+    pub refresh_coalesced: u64,
+    pub negative_cache_hits: u64,
     /// Part 30 invariant counters / gauges, always low-cardinality.
     pub invariant_metrics: BTreeMap<String, u64>,
 }

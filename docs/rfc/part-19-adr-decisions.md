@@ -188,6 +188,11 @@ it. Unverified provider snippets are never written to the index.
   then invisible — the compound effect is masked exactly when it should fire.
 - Synchronous capture would add fetch latency to every response that bought
   something. The outbox already exists and is drained every 1.5 s.
+- Governing the fetch ourselves (rather than asking the provider for
+  `raw_content` in the same search call) keeps robots.txt, the SSRF guard,
+  canonicalisation and versioning under SearchOS control. Provider-side raw
+  content would inherit whatever fetching policy the provider has — none of
+  which SearchOS can audit.
 
 **Consequences.**
 
@@ -224,6 +229,10 @@ it. Unverified provider snippets are never written to the index.
   购买，等于付了钱却看不见——复利效应恰好在最该生效时被遮住。
 - 同步捕获会给每一次付费的响应加上抓取延迟。而 outbox 已经存在，每 1.5 秒
   drain 一次。
+- 由自己受控地抓取（而不是在同一次搜索调用里向 Provider 要 `raw_content`），
+  才能把 robots.txt、SSRF 防护、canonical 化和版本化都留在 SearchOS 的控制
+  之下。Provider 侧的 raw content 继承的是 Provider 自己的抓取策略——这些
+  SearchOS 一个都审计不了。
 
 **影响。**
 

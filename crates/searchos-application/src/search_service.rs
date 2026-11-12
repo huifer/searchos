@@ -18,11 +18,11 @@ use searchos_decision::trace::TraceCollector;
 use searchos_decision::{
     DecisionEngine, DecisionInput, LocalCandidateEval, LocalKnowledgePort, QualityGate,
 };
-use searchos_document::canonical::canonical_url;
 use searchos_document::content_hash;
 use searchos_domain::cost::{CostAttemptStatus, CostEvent, CostOperation, Money};
 use searchos_domain::decision::{DecisionReason, SearchDecision};
 use searchos_domain::ids::{TaskId, TraceId};
+use searchos_domain::promotion::{EvidenceItem, PromotionState, QueryOrigin};
 use searchos_domain::request::{
     clamp_max_results, FreshnessRequirement, SearchIntent, SearchMode, SearchRequest,
     DEFAULT_MAX_RESULTS,
@@ -32,8 +32,7 @@ use searchos_domain::response::{
     SearchResponse, SearchResultItem, SearchStatus,
 };
 use searchos_domain::retrieval::{
-    IndexedDocument, RetrievalCandidate, RetrievalQuery, RetrievalSource, SearchCacheKey,
-    CACHE_KEY_VERSION,
+    RetrievalCandidate, RetrievalQuery, RetrievalSource, SearchCacheKey, CACHE_KEY_VERSION,
 };
 use searchos_domain::{CoverageGap, Evidence, SearchOsError};
 use searchos_planner::router::ProviderRouter;
@@ -52,6 +51,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::merge::{merge_evidence, MergeReport};
+use crate::promotion_service::{build_acquisition, EvidencePromotionService};
 use crate::singleflight::SingleflightCoordinator;
 
 /// Result of atomically claiming a request id (Part 30 §30.5).
@@ -210,6 +210,9 @@ pub struct SearchDependencies {
     pub task_recorder: Arc<dyn TaskRecorder>,
     pub singleflight: Arc<SingleflightCoordinator>,
     pub cache: Arc<ExactQueryCache>,
+    /// RFC-031 D10: negative-result cache for terminal external failures.
+    /// A zero-TTL cache effectively disables the feature.
+    pub negative_cache: Arc<ExactQueryCache>,
     /// Config-driven semantic dedup / incremental retrieval switches.
     pub semantic_dedup: bool,
     pub incremental: bool,
@@ -218,6 +221,8 @@ pub struct SearchDependencies {
     pub reranking: bool,
     /// When false, external execution is refused (offline mode).
     pub allow_external: bool,
+    /// RFC-031 external evidence promotion. `None` = promotion disabled.
+    pub promotion: Option<Arc<dyn EvidencePromotionService>>,
 }
 
 /// Records search task rows (Part 17 search_tasks; every task gets a row).
@@ -352,6 +357,224 @@ impl SearchServiceImpl {
     /// Builds the service over injected dependencies.
     pub fn new(deps: Arc<SearchDependencies>) -> Self {
         Self { deps }
+    }
+}
+
+/// Builds the external query plan: one targeted query per open requirement,
+/// plus config-driven expansion, deduplicated and capped (RFC-031 D5/D9).
+///
+/// The returned list is *the* plan: it is what the reservation is sized from
+/// and what gets executed, so the two can never diverge.
+fn plan_external_queries(
+    deps: &Arc<SearchDependencies>,
+    req: &SearchRequest,
+    decision: &SearchDecision,
+    per_query_cost: i64,
+    required_domains: &[String],
+    excluded_domains: &[String],
+) -> Vec<PlannedQuery> {
+    let gaps: Vec<CoverageGap> = match decision {
+        SearchDecision::Hybrid {
+            missing_requirements,
+            ..
+        } => missing_requirements.clone(),
+        _ => Vec::new(),
+    };
+    // Gap-Based Search: each external query is linked to one open information
+    // requirement, and covered needs are never re-bought (RFC-004 v1.1 6.8/10).
+    let needs: Vec<InformationNeed> = gaps
+        .iter()
+        .map(|g| InformationNeed {
+            id: g.requirement_id.clone(),
+            description: g.question.clone(),
+            status: g.status,
+            priority: g.priority,
+            strategy: g.strategy,
+        })
+        .collect();
+    let external_plan = build_external_plan(
+        &needs,
+        req.request_id.as_str(),
+        req.budget.max_external_queries,
+        req.budget.max_total_cost_micros,
+        per_query_cost,
+        required_domains,
+        excluded_domains,
+    );
+    let mut planned: Vec<PlannedQuery> = external_plan
+        .queries
+        .iter()
+        .map(|q| PlannedQuery {
+            query: q.query.clone(),
+            origin: QueryOrigin::Gap,
+            requirement_id: Some(q.requirement_id.clone()),
+            strategy: Some(q.strategy),
+        })
+        .collect();
+    if planned.is_empty() {
+        // ExternalOnly / ExternalFirst carry no missing_requirements; the
+        // purchase is still planned (and attributed after acquisition).
+        planned.push(PlannedQuery {
+            query: req.query.clone(),
+            origin: QueryOrigin::Fallback,
+            requirement_id: None,
+            strategy: None,
+        });
+    }
+    // Config-driven query expansion only on a proven coverage gap.
+    if deps.query_expansion && !gaps.is_empty() {
+        let expander = QueryExpander::new(ExpansionConfig {
+            enabled: true,
+            require_coverage_gap: true,
+            ..Default::default()
+        });
+        let gap_question = gaps.first().map(|g| g.question.clone()).unwrap_or_default();
+        let requirement_id = gaps.first().map(|g| g.requirement_id.clone());
+        for extra in expander.expand(&req.query, &gap_question) {
+            if !planned.iter().any(|p| p.query == extra) {
+                planned.push(PlannedQuery {
+                    query: extra,
+                    origin: QueryOrigin::Expansion,
+                    requirement_id: requirement_id.clone(),
+                    strategy: None,
+                });
+            }
+        }
+    }
+    planned.truncate(req.budget.max_external_queries.max(1) as usize);
+    planned
+}
+
+/// Attributes each acquired external item to the final quality gate verdict
+/// and queues promotion for the accepted ones (RFC-031 D2/D9).
+///
+/// Evidence the gate rejected is recorded as `rejected` and **never** indexed.
+#[allow(clippy::too_many_arguments)]
+async fn promote_external_evidence(
+    deps: &Arc<SearchDependencies>,
+    req: &SearchRequest,
+    task_id: &TaskId,
+    outcomes: &[ExternalQueryOutcome],
+    merged_evidence: &[Evidence],
+    verdict: &searchos_decision::QualityVerdict,
+) {
+    let Some(promotion) = &deps.promotion else {
+        return;
+    };
+    if outcomes.is_empty() {
+        return;
+    }
+    use searchos_document::canonical::canonical_url;
+    let accepted: std::collections::HashSet<&str> = verdict
+        .accepted_indices
+        .iter()
+        .filter_map(|i| merged_evidence.get(*i))
+        .map(|e| e.url.as_str())
+        .collect();
+    // An unresolved conflict poisons the whole acquisition: we cannot tell
+    // which side is right, so nothing from it becomes knowledge.
+    let has_conflict = !verdict.conflicts.is_empty();
+    let now = Utc::now();
+    for outcome in outcomes {
+        let mut items: Vec<EvidenceItem> = Vec::new();
+        for item in &outcome.items {
+            let canonical = canonical_url(&item.url);
+            // The item only counts if its evidence survived the merge; a
+            // duplicate of existing knowledge has nothing new to promote.
+            let present = merged_evidence.iter().any(|e| e.url == canonical);
+            let (state, reason) = if has_conflict {
+                (
+                    PromotionState::Rejected,
+                    Some("unresolved_conflict".to_string()),
+                )
+            } else if !present {
+                // Duplicate of existing knowledge: nothing new to promote.
+                (PromotionState::Pending, None)
+            } else if accepted.contains(canonical.as_str()) {
+                (PromotionState::Accepted, None)
+            } else {
+                (
+                    PromotionState::Rejected,
+                    Some("final_gate_rejected".to_string()),
+                )
+            };
+            items.push(EvidenceItem {
+                id: searchos_domain::new_id("evi"),
+                acquisition_id: String::new(),
+                url: item.url.clone(),
+                canonical_url: canonical,
+                title: item.title.clone(),
+                provider_score: item.score,
+                relevance: item.score,
+                state,
+                document_id: None,
+                version_id: None,
+                chunk_count: None,
+                reason,
+                promoted_at: None,
+                created_at: now,
+            });
+        }
+        if items.is_empty() {
+            continue;
+        }
+        let (acquisition, items) = build_acquisition(
+            task_id,
+            req.request_id.as_str(),
+            &req.workspace_id,
+            &outcome.provider_id,
+            &outcome.query,
+            outcome.origin,
+            outcome.requirement_id.clone(),
+            outcome
+                .strategy
+                .map(|s| serde_json::to_string(&s).unwrap_or_default()),
+            now,
+            items,
+        );
+        if let Err(e) = promotion.record_and_queue(acquisition, items).await {
+            tracing::warn!(code = %e.class().code, "evidence promotion record failed");
+        }
+    }
+}
+
+/// Records reuse events when a local resolution served external-sourced
+/// knowledge (RFC-031 5.6).
+async fn record_reuse_if_external_sourced(
+    deps: &Arc<SearchDependencies>,
+    req: &SearchRequest,
+    task_id: &TaskId,
+    servable_hits: &[RetrievalCandidate],
+    merged_evidence: &[Evidence],
+    verdict: &searchos_decision::QualityVerdict,
+) {
+    let Some(promotion) = &deps.promotion else {
+        return;
+    };
+    use searchos_document::canonical::canonical_url;
+    let accepted: std::collections::HashSet<&str> = verdict
+        .accepted_indices
+        .iter()
+        .filter_map(|i| merged_evidence.get(*i))
+        .map(|e| e.url.as_str())
+        .collect();
+    let mut ids: Vec<String> = servable_hits
+        .iter()
+        .filter(|c| accepted.contains(canonical_url(&c.url).as_str()))
+        .map(|c| c.document_id.to_string())
+        .collect();
+    ids.sort();
+    ids.dedup();
+    if ids.is_empty() {
+        return;
+    }
+    let Ok(promoted) = promotion.promoted_document_ids(&ids).await else {
+        return;
+    };
+    for id in ids.iter().filter(|id| promoted.contains(*id)) {
+        if let Err(e) = promotion.record_reuse(task_id, &req.workspace_id, id).await {
+            tracing::warn!(code = %e.class().code, "reuse event write failed");
+        }
     }
 }
 
@@ -674,6 +897,16 @@ async fn wait_for_idempotent_result(
     }
 }
 
+/// Whether a terminal failure may be negatively cached (RFC-031 D10).
+///
+/// Strictly limited to `insufficient_evidence` produced by an external
+/// acquisition that returned nothing. A budget rejection, provider outage or
+/// partial result must never be cached: those conditions change.
+fn should_negative_cache(response: &SearchResponse) -> bool {
+    response.status == SearchStatus::InsufficientEvidence
+        && response.warnings.iter().any(|w| w == "external_no_results")
+}
+
 /// Whether a request must bypass the exact search cache.
 ///
 /// RFC-003 3.4: a query containing "latest" cannot be satisfied by an old
@@ -904,6 +1137,25 @@ impl SearchService for SearchServiceImpl {
             }
         }
 
+        // RFC-031 D10: a terminal external failure replays honestly instead of
+        // re-buying the same empty search. The status is preserved and
+        // `replayed` is set; this is never a disguised success.
+        if !bypass_cache {
+            if let CacheLookup::Hit(hit) =
+                self.deps.negative_cache.get(&cache_key, &profile.version)
+            {
+                if let Ok(mut resp) =
+                    serde_json::from_value::<SearchResponse>(hit.value.payload.clone())
+                {
+                    resp.replayed = true;
+                    metrics.inc_negative_cache_hit();
+                    metrics.record_search(started.elapsed().as_millis() as f64, "negative_replay");
+                    metrics.record_status(resp.status.as_str());
+                    return Ok(resp);
+                }
+            }
+        }
+
         // Singleflight merge (RFC-009 9.8). The fingerprint already includes
         // mode/freshness, so LocalOnly cannot join an external execution.
         let deps = Arc::clone(&self.deps);
@@ -999,6 +1251,18 @@ impl SearchService for SearchServiceImpl {
                     payload: serde_json::to_value(&response)
                         .map_err(|e| SearchOsError::Internal(e.to_string()))?,
                     quality_status: "passed".into(),
+                },
+                &profile.version,
+            );
+        } else if !bypass_cache && should_negative_cache(&response) {
+            // Only terminal "external acquisition found nothing" outcomes:
+            // anything servable is never cached as a failure.
+            self.deps.negative_cache.put(
+                &cache_key,
+                CachedSearchResult {
+                    payload: serde_json::to_value(&response)
+                        .map_err(|e| SearchOsError::Internal(e.to_string()))?,
+                    quality_status: "insufficient_evidence".into(),
                 },
                 &profile.version,
             );
@@ -1155,15 +1419,52 @@ async fn run_pipeline(
         .await?
         .first()
         .map(|e| e.id.clone());
+
+    // ---- External query planning (RFC-031 D5) -------------------------
+    // Expansion is part of the plan, not an afterthought: the reservation is
+    // sized from the final query list, plus the promotion estimate, so the
+    // ledger and the plan agree (RFC-031 G9).
+    let per_query_cost = estimator
+        .estimate_request(provider_id.as_deref().unwrap_or("tavily"))
+        .amount_micros;
+    let planned_queries = plan_external_queries(
+        &deps,
+        &req,
+        &decision,
+        per_query_cost,
+        &req.constraints.required_domains,
+        &req.constraints.excluded_domains,
+    );
+    let max_promotions = deps
+        .promotion
+        .as_ref()
+        .map(|p| p.max_promotions_per_task())
+        .unwrap_or(0);
+    let promotion_estimate_micros = if max_promotions > 0
+        && matches!(
+            decision,
+            SearchDecision::Hybrid { .. } | SearchDecision::ExternalOnly { .. }
+        ) {
+        estimator
+            .estimate_request("web_fetch")
+            .amount_micros
+            .saturating_mul(max_promotions as i64)
+    } else {
+        0
+    };
     let plan = builder.build(
         task_id.clone(),
         &decision,
         &req.budget,
         provider_id.as_deref(),
     )?;
+    let estimated_total_micros = plan
+        .estimated_cost
+        .amount_micros
+        .saturating_add(promotion_estimate_micros);
     // Budget enforcement BEFORE execution (RFC-009 9.6).
     let budget_check = searchos_policy::BudgetEnforcer::new(None, req.budget.currency.clone())
-        .check(&req.budget, plan.estimated_cost.amount_micros);
+        .check(&req.budget, estimated_total_micros);
     if !budget_check.is_allowed() {
         let _ = deps.cost_sink.exceed_budget(task_id.as_str()).await;
         return Err(SearchOsError::Budget(
@@ -1177,7 +1478,7 @@ async fn run_pipeline(
         .reserve_budget(
             task_id.as_str(),
             trace_id.as_str(),
-            plan.estimated_cost.amount_micros,
+            estimated_total_micros,
             &req.budget.currency,
         )
         .await?;
@@ -1186,6 +1487,9 @@ async fn run_pipeline(
     let mut results: Vec<SearchResultItem> = Vec::new();
     let mut evidence: Vec<Evidence> = Vec::new();
     let mut cost_spent = Money::zero(&req.budget.currency);
+    // RFC-031: what was bought this task, kept out of the index until the
+    // final quality gate has judged it.
+    let mut external_outcomes: Vec<ExternalQueryOutcome> = Vec::new();
 
     match &decision {
         SearchDecision::LocalOnly { .. } => {
@@ -1273,62 +1577,6 @@ async fn run_pipeline(
                 .map_err(|e| SearchOsError::Internal(e.to_string()));
         }
         SearchDecision::Hybrid { .. } | SearchDecision::ExternalOnly { .. } => {
-            let gaps: Vec<CoverageGap> = match &decision {
-                SearchDecision::Hybrid {
-                    missing_requirements,
-                    ..
-                } => missing_requirements.clone(),
-                _ => Vec::new(),
-            };
-            // Gap-Based Search: each external query is linked to one open
-            // information requirement, and covered needs are never re-bought
-            // (RFC-004 v1.1 6.8/10).
-            let needs: Vec<InformationNeed> = gaps
-                .iter()
-                .map(|g| InformationNeed {
-                    id: g.requirement_id.clone(),
-                    description: g.question.clone(),
-                    status: g.status,
-                    priority: g.priority,
-                    strategy: g.strategy,
-                })
-                .collect();
-            let per_query_cost = estimator
-                .estimate_request(provider_id.as_deref().unwrap_or("tavily"))
-                .amount_micros;
-            let external_plan = build_external_plan(
-                &needs,
-                req.request_id.as_str(),
-                req.budget.max_external_queries,
-                req.budget.max_total_cost_micros,
-                per_query_cost,
-                &req.constraints.required_domains,
-                &req.constraints.excluded_domains,
-            );
-            let mut queries: Vec<String> = external_plan
-                .queries
-                .iter()
-                .map(|q| q.query.clone())
-                .collect();
-            if queries.is_empty() {
-                queries.push(req.query.clone());
-            }
-            // Config-driven query expansion only on a proven coverage gap.
-            if deps.query_expansion && !gaps.is_empty() {
-                let expander = QueryExpander::new(ExpansionConfig {
-                    enabled: true,
-                    require_coverage_gap: true,
-                    ..Default::default()
-                });
-                let gap_question = gaps.first().map(|g| g.question.clone()).unwrap_or_default();
-                for extra in expander.expand(&req.query, &gap_question) {
-                    if !queries.contains(&extra) {
-                        queries.push(extra);
-                    }
-                }
-                queries.truncate(req.budget.max_external_queries.max(1) as usize);
-            }
-
             // Local evidence supplements external evidence in Hybrid and
             // ExternalFirst (RFC-004 v1.1 9.3/9.4), never replaces it.
             if matches!(
@@ -1345,17 +1593,25 @@ async fn run_pipeline(
                 estimator: searchos_cost::CostEstimator::from_config(&deps.cost_config),
             };
             let execution = svc
-                .execute_external(&req, &queries, &trace_id, &task_id)
+                .execute_external(&req, &planned_queries, &trace_id, &task_id)
                 .await;
-            let external_items = match execution {
-                Ok((items, evs, _calls, spent)) => {
-                    results.extend(items.clone());
+            match execution {
+                Ok((outcomes, evs, calls, spent)) => {
+                    for outcome in outcomes {
+                        results.extend(outcome.items.clone());
+                        external_outcomes.push(outcome);
+                    }
+                    if calls > 0 && external_outcomes.iter().all(|o| o.items.is_empty()) {
+                        // RFC-031 D10: the knowledge is absent. Mark it so the
+                        // terminal failure can be negatively cached without
+                        // ever disguising it as success.
+                        warnings.push("external_no_results".into());
+                    }
                     evidence.extend(evs);
                     cost_spent = Money {
                         amount_micros: spent,
                         currency: req.budget.currency.clone(),
                     };
-                    items
                 }
                 Err(e) => {
                     // A failure after earlier successful calls must still
@@ -1374,40 +1630,11 @@ async fn run_pipeline(
                         "external_execution_failed:{}:{}",
                         e.error_code, e.spent_micros
                     ));
-                    Vec::new()
-                }
-            };
-
-            // Persist only newly acquired external pages for reuse
-            // (Incremental Reuse P-007). Index writes use the one canonical
-            // URL implementation and are mirrored into the vector index.
-            for item in external_items.iter().take(max_results.min(2)) {
-                let payload = IndexedDocument {
-                    chunk_id: searchos_domain::ids::ChunkId::generate(),
-                    document_id: searchos_domain::ids::DocumentId::generate(),
-                    version_id: searchos_domain::ids::DocumentVersionId::generate(),
-                    title: item.title.clone(),
-                    body: item.content.clone(),
-                    url: canonical_url(&item.url),
-                    language: req.constraints.language.clone(),
-                    workspace_id: req.workspace_id.to_string(),
-                    fetched_at: Utc::now(),
-                };
-                deps.bm25.index(payload.clone()).await.ok();
-                if let Some(vector) = &deps.vector {
-                    if let Ok(embedding) = embed_text(&deps, &payload.body).await {
-                        let _ = vector
-                            .upsert(
-                                payload.chunk_id.as_str(),
-                                payload.document_id.as_str(),
-                                embedding,
-                                deps.embedder.model_id(),
-                            )
-                            .await;
-                    }
                 }
             }
-            deps.bm25.count().await.ok();
+            // RFC-031 D1/D2: external results are NOT indexed here. Promotion
+            // is quality-gated and outbox-driven, so unverified snippets can
+            // never become local knowledge.
         }
         SearchDecision::LocalWithRefresh { documents, .. } => {
             // RefreshExistingSource: serve valid local evidence AND enqueue
@@ -1505,6 +1732,26 @@ async fn run_pipeline(
         metrics.inc_freshness_violation();
     }
 
+    // ---- RFC-031: promotion + reuse accounting (after the gate) ---------
+    promote_external_evidence(
+        &deps,
+        &req,
+        &task_id,
+        &external_outcomes,
+        &merged_evidence,
+        &verdict,
+    )
+    .await;
+    record_reuse_if_external_sourced(
+        &deps,
+        &req,
+        &task_id,
+        &servable_hits,
+        &merged_evidence,
+        &verdict,
+    )
+    .await;
+
     let status = derive_status(&decision, verdict.status, merged_evidence.len(), &warnings);
     deps.task_recorder
         .finish(
@@ -1592,6 +1839,27 @@ fn build_response(
     }
 }
 
+/// One externally planned query, with its provenance and requirement link
+/// (RFC-031 D5/D9). The plan and the executed queries are the same list.
+#[derive(Debug, Clone)]
+struct PlannedQuery {
+    query: String,
+    origin: QueryOrigin,
+    requirement_id: Option<String>,
+    strategy: Option<searchos_domain::decision::GapResolutionStrategy>,
+}
+
+/// One executed provider call and the items it returned.
+#[derive(Debug, Clone)]
+struct ExternalQueryOutcome {
+    provider_id: String,
+    query: String,
+    origin: QueryOrigin,
+    requirement_id: Option<String>,
+    strategy: Option<searchos_domain::decision::GapResolutionStrategy>,
+    items: Vec<SearchResultItem>,
+}
+
 /// Thin internal handle to reuse execute_external from the pipeline.
 struct SearchServiceImplStub {
     deps: Arc<SearchDependencies>,
@@ -1606,11 +1874,11 @@ impl SearchServiceImplStub {
     async fn execute_external(
         &self,
         req: &SearchRequest,
-        planned_queries: &[String],
+        planned: &[PlannedQuery],
         trace_id: &TraceId,
         task_id: &TaskId,
-    ) -> Result<(Vec<SearchResultItem>, Vec<Evidence>, u64, i64), ExternalExecutionError> {
-        let mut items = Vec::new();
+    ) -> Result<(Vec<ExternalQueryOutcome>, Vec<Evidence>, u64, i64), ExternalExecutionError> {
+        let mut outcomes: Vec<ExternalQueryOutcome> = Vec::new();
         let mut evidence = Vec::new();
         let mut calls = 0u64;
         let mut spent = Money::zero(&req.budget.currency);
@@ -1676,17 +1944,19 @@ impl SearchServiceImplStub {
             fail!("PROVIDER_FAILURE", "router picked unregistered provider");
         };
 
-        let mut queries: Vec<String> = planned_queries
-            .iter()
-            .map(|q| q.trim().to_string())
-            .filter(|q| !q.is_empty())
-            .take(req.budget.max_external_queries.max(1) as usize)
-            .collect();
+        let mut queries: Vec<PlannedQuery> = planned.to_vec();
+        queries.retain(|q| !q.query.trim().is_empty());
+        queries.truncate(req.budget.max_external_queries.max(1) as usize);
         if queries.is_empty() {
-            queries.push(req.query.clone());
+            queries.push(PlannedQuery {
+                query: req.query.clone(),
+                origin: QueryOrigin::Fallback,
+                requirement_id: None,
+                strategy: None,
+            });
         }
 
-        for q in &queries {
+        for planned_query in &queries {
             if calls >= req.budget.max_external_queries as u64 {
                 break;
             }
@@ -1694,6 +1964,7 @@ impl SearchServiceImplStub {
             if spent.amount_micros + price.amount_micros > req.budget.max_total_cost_micros {
                 break;
             }
+            let q = &planned_query.query;
             let params = SearchParams {
                 query: q.clone(),
                 max_results: req.max_results,
@@ -1744,8 +2015,9 @@ impl SearchServiceImplStub {
             };
             searchos_observability::MetricsRegistry::global().add_cost_micros(price.amount_micros);
 
+            let mut call_items = Vec::new();
             for entry in result.entries.iter().take(max_results) {
-                items.push(SearchResultItem {
+                call_items.push(SearchResultItem {
                     title: entry.title.clone(),
                     url: entry.url.clone(),
                     content: entry.content.clone(),
@@ -1773,8 +2045,16 @@ impl SearchServiceImplStub {
                     },
                 });
             }
+            outcomes.push(ExternalQueryOutcome {
+                provider_id: provider.id().to_string(),
+                query: q.clone(),
+                origin: planned_query.origin,
+                requirement_id: planned_query.requirement_id.clone(),
+                strategy: planned_query.strategy,
+                items: call_items,
+            });
         }
-        Ok((items, evidence, calls, spent.amount_micros))
+        Ok((outcomes, evidence, calls, spent.amount_micros))
     }
 }
 

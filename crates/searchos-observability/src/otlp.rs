@@ -331,6 +331,27 @@ fn register_snapshot_gauges(
     u64_gauge!("searchos.external.avoided", external_avoided);
     u64_gauge!("searchos.freshness.violations", freshness_violations);
     u64_gauge!("searchos.coverage.pass", coverage_pass);
+    // RFC-031 external evidence promotion.
+    u64_gauge!("searchos.external.acquisitions", external_acquisitions);
+    u64_gauge!(
+        "searchos.external.promotions.promoted",
+        external_promotions_promoted
+    );
+    u64_gauge!(
+        "searchos.external.promotions.rejected",
+        external_promotions_rejected
+    );
+    u64_gauge!(
+        "searchos.external.promotions.skipped",
+        external_promotions_skipped
+    );
+    u64_gauge!(
+        "searchos.external.promotion.fetches",
+        external_promotion_fetches
+    );
+    u64_gauge!("searchos.external.evidence.reuse", external_evidence_reuse);
+    u64_gauge!("searchos.refresh.coalesced", refresh_coalesced);
+    u64_gauge!("searchos.negative_cache.hits", negative_cache_hits);
 
     f64_gauge!(
         "searchos.quality.pass_rate",

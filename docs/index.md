@@ -44,7 +44,7 @@ The canonical specification is the **RFC Suite v1.0** under [`docs/rfc/`](rfc/).
 - [RFC-028: Dashboard API & Frontend Integration](rfc/rfc-028-dashboard-api-frontend.md)
 - [RFC-029: Local Data Ingestion & Local-First Retrieval](rfc/rfc-029-local-data-ingestion.md)
 - [Part 30: Search Execution Correctness Baseline](rfc/part-30-execution-correctness-baseline.md) — 执行侧正确性不变量（INV-30-01…21）与验收测试映射（已实现）
-- [RFC-031: External Evidence Promotion & Knowledge Compounding](rfc/rfc-031-external-evidence-promotion.md) — 外部证据沉淀与知识复利（拟议） |
+- [RFC-031: External Evidence Promotion & Knowledge Compounding](rfc/rfc-031-external-evidence-promotion.md) — 外部证据沉淀与知识复利（已实现） |
 
 ## Gap Analysis
 

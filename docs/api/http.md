@@ -33,6 +33,8 @@
 | GET | `/decisions/:trace_id` | Explainable decision trace |
 | GET | `/trace/:trace_id` | RFC-021 21.2 alias of the above |
 | GET | `/profiles`, `/profiles/:id` | Versioned SearchProfiles |
+| GET | `/evidence/acquisitions`, `/evidence/acquisitions/:id` | RFC-031 external acquisitions + per-item promotion state |
+| GET | `/evidence/reuse` | RFC-031 compound report (reuse events per acquisition) |
 | POST | `/documents/search` | Persisted document lookup |
 | GET | `/health` | Status + index consistency |
 | GET | `/metrics` | Prometheus text exposition 0.0.4 (same auth as the rest) |
@@ -283,6 +285,8 @@ return `404` and are absent from `docs/openapi.yaml`).
 | GET | `/decisions/:trace_id` | 可解释的决策 trace |
 | GET | `/trace/:trace_id` | 上一条接口的 RFC-021 21.2 别名 |
 | GET | `/profiles`、`/profiles/:id` | 版本化的 SearchProfile |
+| GET | `/evidence/acquisitions`、`/evidence/acquisitions/:id` | RFC-031 外部获取与逐条沉淀状态 |
+| GET | `/evidence/reuse` | RFC-031 复利报告（每次获取带来的复用） |
 | POST | `/documents/search` | 持久化文档查找 |
 | GET | `/health` | 状态 + 索引一致性 |
 | GET | `/metrics` | Prometheus text exposition 0.0.4（鉴权方式与其他端点相同） |

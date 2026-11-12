@@ -3,7 +3,7 @@
 > 外部证据沉淀与知识复利
 
 **Architecture Baseline:** v1.1
-**Document Status:** Proposed / Engineering Baseline
+**Document Status:** Implemented / Engineering Baseline
 **Related:** RFC-004 (Search Decision Engine), RFC-005 (Quality Gate & Evidence
 Evaluation), RFC-006 (Knowledge Store & Document Lifecycle), RFC-007
 (Retrieval & Cache Architecture), RFC-009 (Execution Planner & Provider Router),
@@ -25,9 +25,9 @@ search must leave knowledge that later tasks can reuse*.
 Today that reuse exists, but only as a **temporary index entry**. When a task
 buys an external answer, `search_service.rs` writes at most two result
 snippets straight into the BM25 and vector indexes
-(`crates/searchos-application/src/search_service.rs:1384`). Eight concrete
-defects follow from that single shortcut, and each one is verifiable in the
-current tree.
+(`crates/searchos-application/src/search_service.rs:1384`). Ten concrete
+defects follow — eight from that single shortcut, two from the surrounding
+pipeline — and each one is verifiable in the current tree.
 
 **D1 — Purchased knowledge is not a document.** The external write at
 `search_service.rs:1384` generates a fresh `document_id` / `version_id` and
@@ -90,7 +90,22 @@ including one served from a previously purchased snippet. It cannot separate
 external call because we cached the purchase". The value of the loop is
 invisible in the metrics.
 
-D1–D8 are the reason the system is currently a **local-first search broker**
+**D9 — ExternalOnly purchases have no requirement linkage.** The decision
+engine emits `missing_requirements` only for `Hybrid` decisions; `ExternalOnly`
+carries only a `reason` (`crates/searchos-domain/src/decision.rs:184`), and the
+pipeline reads `gaps` as `Vec::new()` for it
+(`search_service.rs:1276-1283`). The plan then falls back to the raw user
+query, so an ExternalOnly acquisition can never be attributed to an
+information requirement — the audit chain this RFC promises is broken for
+exactly the mode that buys the most.
+
+**D10 — A failed purchase is re-paid on every retry.** The exact cache stores
+only `QualityStatus::Passed` responses (`search_service.rs:995`); a query that
+returned `insufficient_evidence` because external acquisition found nothing is
+re-executed — and re-paid — on every retry. The system knows the knowledge is
+absent and buys it again anyway.
+
+D1–D10 are the reason the system is currently a **local-first search broker**
 rather than the **knowledge intermediary** it is designed to be.
 
 ### 2. Goals
@@ -106,6 +121,7 @@ rather than the **knowledge intermediary** it is designed to be.
 | G7 | The compound effect is measurable: acquisition, promotion, rejection, skip and reuse counters, plus a reuse ratio. |
 | G8 | Savings reporting is honest: local resolution is split into first-party and external-sourced. |
 | G9 | The external plan and the executed queries agree, so the reservation matches the ledger. |
+| G10 | A known-absent answer is not re-purchased: terminal external failures are negatively cached and replay honestly. |
 
 ### 3. Non-goals
 
@@ -120,6 +136,7 @@ rather than the **knowledge intermediary** it is designed to be.
 | N7 | Crawler policy, site-specific crawlers or the extension system. |
 | N8 | Autonomous site crawling or bulk harvesting. Promotion happens per acquisition, never speculatively. |
 | N9 | Cross-workspace sharing by default. The RFC suite's baseline principle stands: *"默认 Workspace 隔离，显式授权后才共享，不应该默认全局共享."* |
+| N10 | Caching `Partial` responses or generalizing response caching beyond terminal failures. Only terminal `insufficient_evidence` outcomes caused by empty external results are negatively cached; anything servable is never cached as a failure. |
 
 ### 4. Architecture
 
@@ -176,28 +193,41 @@ the index write. The user never waits on a promotion fetch.
 
 #### 5.1 Promotion state machine
 
+```rust
+pub enum PromotionState {
+    /// Recorded at acquisition; the final gate has not yet judged this item.
+    Pending,
+    /// The final gate accepted the item; queued for capture.
+    Accepted,
+    /// The gate rejected the item (unresolved conflict / failed hard constraint).
+    Rejected,
+    /// Capture succeeded; document + version + chunks + index entry exist.
+    Promoted,
+    /// Capture was not possible (robots / empty / budget / size / policy);
+    /// the reason is recorded on the item.
+    Skipped,
+}
+```
+
 ```text
               search returns item
                      │
                      ▼
               ┌─────────────┐
-              │  candidate  │  body not captured, not indexed
+              │   pending   │  body not captured, not indexed
               └──────┬──────┘
-                     │ final gate evaluated this item
-                     ▼
-              ┌─────────────┐   gate rejected / unresolved conflict
-              │  evaluated  ├──────────────────────▶ rejected
-              └──────┬──────┘
-                     │ gate accepted
-                     ▼
-              ┌─────────────┐   robots / empty / budget / size / policy
-              │  promotable ├──────────────────────▶ skipped
-              └──────┬──────┘
-                     │ capture worker succeeded
-                     ▼
-              ┌─────────────┐
-              │  promoted   │  document + version + chunks + index
-              └─────────────┘
+                     │ final quality gate judged this item
+            accepted │        │ rejected (unresolved conflict /
+                     ▼        ▼  failed hard constraint)
+              ┌──────────┐  ┌──────────┐
+              │ accepted │  │ rejected │  never indexed
+              └──────┬───┘  └──────────┘
+                     │ capture worker
+        promoted │        │ skipped (robots / empty /
+                 ▼        ▼  budget / size / policy)
+          ┌──────────┐  ┌─────────┐
+          │ promoted │  │ skipped │  reason recorded
+          └──────────┘  └─────────┘
 ```
 
 A **set-level** `Partial` verdict does not disqualify an individually accepted
@@ -234,6 +264,13 @@ pub enum QueryOrigin {
     Fallback,
 }
 ```
+
+**Requirement attribution for `ExternalOnly` (fixes D9).** Because
+`ExternalOnly` decisions carry no `missing_requirements`
+(`decision.rs:184`), the pipeline runs `GapAnalyzer` over the **acquired**
+evidence after execution for `ExternalOnly` and `ExternalFirst` tasks and
+records the covered/open requirements on the acquisition. Every purchase
+then carries a requirement when one can be attributed, regardless of mode.
 
 #### 5.3 Evidence item
 
@@ -296,31 +333,33 @@ document_bindings(
     document_id,
     workspace_id,
     visibility,      -- 'workspace' | 'public'
-    bound_at,
-    last_used_at
+    bound_at
 )
 ```
 
-In v1 promotion writes a binding for the acquiring workspace only
-(`knowledge.public_web_knowledge = false`, default). The table exists so that
-authorised cross-workspace sharing can be enabled later **without a
-migration**. This is consistent with the retrieval rule that already exists in
-the store — `requester OR '*'`
-(`repos.rs:639`, `repos.rs:697`, `repos.rs:853`, and the same predicate in the
-PostgreSQL / MySQL remote backends) — and with ADR-023's default of workspace
-isolation.
+The table records **membership, not read access**. In v1, retrieval continues
+to filter on the indexed `workspace_id` field (the rule that already exists in
+the store — `requester OR '*'`, `repos.rs:639` / `697` / `853`, and the same
+predicate in the PostgreSQL / MySQL remote backends), so **no hot-path join is
+added** and there is no read-time write. The bindings exist so that authorised
+cross-workspace sharing can be enabled later **without a migration** — at
+that point the retrieval predicate gains a binding-aware branch.
+
+This is consistent with ADR-023's default of workspace isolation.
 
 #### 5.6 Reuse accounting
 
 ```sql
 evidence_reuse_events(
-    id, task_id, workspace_id, document_id, origin, occurred_at
+    id, task_id, workspace_id, document_id, occurred_at
 )
 ```
 
-A row is written whenever a local resolution serves an `ExternalSourced`
-document. This is the denominator of the compound metric: how many future
-tasks did one purchase actually serve?
+A row is written whenever a local resolution serves an **external-sourced**
+document. First-party documents do not write reuse events — the compound
+metric's numerator is precisely the purchases that later served a task. This
+is the denominator of the compound metric: how many future tasks did one
+purchase actually serve?
 
 ### 6. Interface Contract
 
@@ -350,8 +389,13 @@ pub trait CacheInvalidator: Send + Sync {
 ```
 
 `CacheInvalidator` is implemented by `Runtime` and delegates to the existing
-`invalidate_caches` (`runtime.rs:586`). The application layer owns the port,
-not the concrete cache types — the same decoupling used everywhere else.
+`invalidate_caches` (`runtime.rs:586`). In v1 the invalidation covers the
+**full cache family** (exact, semantic, canonical, retrieval, rerank,
+singleflight) — the same call the document lifecycle already uses. The caches
+are not uniformly workspace-keyed, so a targeted per-workspace invalidation
+would be unsound; that remains a future optimisation. The application layer
+owns the port, not the concrete cache types — the same decoupling used
+everywhere else.
 
 #### 6.2 HTTP (Gateway Mode, read-only observability)
 
@@ -403,6 +447,7 @@ searchos_external_promotions_skipped_total
 searchos_external_promotion_fetches_total
 searchos_external_evidence_reuse_total
 searchos_refresh_coalesced_total
+searchos_negative_cache_hits_total
 ```
 
 `searchos_external_evidence_reuse_total / searchos_external_acquisitions_total`
@@ -442,7 +487,7 @@ CREATE TABLE IF NOT EXISTS evidence_items (
     title TEXT,
     provider_score REAL NOT NULL DEFAULT 0.0,
     relevance REAL NOT NULL DEFAULT 0.0,
-    state TEXT NOT NULL,              -- candidate | evaluated | promoted | rejected | skipped
+    state TEXT NOT NULL,              -- pending | accepted | rejected | promoted | skipped
     document_id TEXT,
     version_id TEXT,
     chunk_count INTEGER,
@@ -458,25 +503,26 @@ CREATE INDEX IF NOT EXISTS idx_evidence_items_state
 CREATE INDEX IF NOT EXISTS idx_evidence_items_doc
     ON evidence_items(document_id);
 
--- Workspace ↔ document bindings (visibility model).
+-- Workspace ↔ document bindings (visibility model). Membership metadata
+-- only: v1 retrieval filters on the indexed workspace_id, so no read-time
+-- join and no read-time write.
 CREATE TABLE IF NOT EXISTS document_bindings (
     document_id TEXT NOT NULL,
     workspace_id TEXT NOT NULL,
     visibility TEXT NOT NULL DEFAULT 'workspace',  -- workspace | public
     bound_at TEXT NOT NULL,
-    last_used_at TEXT,
     PRIMARY KEY (document_id, workspace_id)
 );
 CREATE INDEX IF NOT EXISTS idx_bindings_ws
     ON document_bindings(workspace_id);
 
--- Reuse accounting (compound metric numerator).
+-- Reuse accounting (compound metric numerator). Rows are written only for
+-- external-sourced documents served by a local resolution.
 CREATE TABLE IF NOT EXISTS evidence_reuse_events (
     id TEXT PRIMARY KEY,
     task_id TEXT NOT NULL,
     workspace_id TEXT NOT NULL,
     document_id TEXT NOT NULL,
-    origin TEXT NOT NULL,              -- first_party | external_sourced
     occurred_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_reuse_ws
@@ -514,10 +560,12 @@ v1.
 | Capture body exceeds the size bound | `state = skipped`, reason `promoted_bytes_exceeded`. |
 | Budget exhausted before capture | `state = skipped`, reason `budget_exhausted`; the task's own status is unchanged — promotion never alters the response status. |
 | Index write fails after the metadata commit | Existing outbox retry / DLQ path (RFC-006 6.7, RFC-014 14.4). |
+| Capture worker crash mid-capture | The outbox row stays `pending` with `attempts` incremented; the existing retry path re-runs it. `save_versioned` makes a re-run idempotent (RFC-006 6.4). |
 | Cache invalidation fails | Logged and counted; the promotion stays valid, the next retrieval may see a stale miss until TTL. Never fails the task. |
 | Duplicate capture for the same URL | The capture worker is idempotent through `save_versioned` (RFC-006 6.4): unchanged content ⇒ no new version. |
 | Concurrent stale hits for one URL | Coalesced by the partial unique index; the counter `searchos_refresh_coalesced_total` increments. |
 | Provider returns an item whose URL is excluded by source policy | `state = skipped`, reason `source_policy_denied`. Excluded domains are never promoted. |
+| Negative-cache replay of a terminal failure | The response replays with its original `status = insufficient_evidence` and `replayed: true`. Never a disguised success; strict-freshness / ExternalOnly / ExternalFirst requests bypass the negative cache exactly as they bypass the exact cache. |
 
 ### 9. Security Considerations
 
@@ -540,9 +588,14 @@ v1.
    sanitised with the existing HTML extractor (RFC-014 14.2) and stored as
    inert text. Nothing captured is executed, interpreted or rendered as a
    directive.
-7. **Cost is charged.** The capture fetch is a `web_fetch` cost event against
-   the same task and the same reservation. A purchase that triggers two
-   captures costs two fetches and says so.
+7. **Cost is charged — including post-settlement capture.** The task's budget
+   check reserves the promotion estimate up front (queries +
+   `max_promotions_per_task × web_fetch` price), so the caller's declared
+   budget always covers what the request may spend. Capture happens **after**
+   the task settles, so the capture worker records its `web_fetch` cost events
+   against the same `task_id` / `trace_id` and adds the actual spend to the
+   reservation through a new `BudgetRepo::add_actual_spend`. A purchase that
+   triggers two captures costs two fetches and says so.
 8. **No speculative crawling.** Promotion is triggered only by an actual
    external acquisition, and only for items the quality gate accepted.
 
@@ -550,22 +603,32 @@ v1.
 
 - **No added request latency.** Promotion is enqueued, not awaited. The
   response returns immediately after the acquisition is recorded.
+- **Capture runs in its own worker, not in the index tick.** The gateway's
+  1.5 s outbox tick drains index/delete/refresh rows; a network fetch inside
+  that loop would stall index writes for unrelated documents. Capture rows
+  are therefore processed by a **separate bounded-concurrency worker**
+  (default 2 in-flight captures, configurable). The index tick stays fast;
+  captures queue behind their own limit.
 - **Index write amplification.** Each promoted page adds one document
   version and N chunks. The bound is `max_promotions_per_task` (default 2), so
   a single task adds at most two pages to the store.
-- **Outbox cadence.** The gateway drains every 1.5 s, so a promoted page is
-  searchable shortly after the task that bought it. The CLI drains on startup
-  and after each command.
-- **Cache invalidation cost.** Promotion invalidates the retrieval and
-  canonical caches for the affected workspace. This is a correctness
-  requirement (D4), not an optimisation; it is bounded by the number of
-  promotions, which is bounded per task.
+- **Outbox cadence.** A promoted page becomes searchable on the next drain
+  after its capture completes. The CLI drains on startup and after each
+  command.
+- **Cache invalidation cost.** Promotion invalidates the full cache family.
+  This is a correctness requirement (D4), not an optimisation; it is bounded
+  by the number of promotions, which is bounded per task.
 - **Measurement overhead.** One acquisition row, one row per item and one
   reuse event per served document. Reuse events are written in the same
   transaction as the task record, so they cannot drift from the decision.
 - **Vector index cost.** Each promoted chunk is embedded once. The embedding
   cache (RFC-007 7.6) is keyed by model id and version, so an unchanged page
   reuses its embedding.
+- **Negative cache is in-memory and bounded**, in the same family as
+  `ExactQueryCache` (max entries + TTL). No SQL table, no write amplification.
+- **Offline / eval runs make no acquisitions.** `execute_external` fails
+  `POLICY_VIOLATION` when external execution is disabled, so the CI eval gate
+  and offline mode never enqueue captures.
 
 ### 11. Acceptance Criteria
 
@@ -575,17 +638,19 @@ v1.
 | AC2 | After `rebuild_from`, every promoted document is still retrievable (D1 fixed). |
 | AC3 | An external item the final gate rejects (conflict or failed hard constraint) never produces an index entry, and its state is `rejected` with a reason (D2 fixed). |
 | AC4 | A promoted page is stored with its full extracted body, not the provider snippet (D3 fixed). |
-| AC5 | After a promotion, the next equivalent query resolves locally and issues **zero** external provider calls. |
-| AC6 | `searchos_external_evidence_reuse_total` increments for every local resolution that serves an external-sourced document, and the reuse event names the document. |
+| AC5 | After a promotion, a later equivalent query that is **not served from the exact cache** (different phrasing, caches cleared for the test) resolves via local retrieval and issues **zero** external provider calls. |
+| AC6 | `searchos_external_evidence_reuse_total` increments for every local resolution that serves an external-sourced document, and the reuse event names the document. First-party documents write no reuse events. |
 | AC7 | The dashboard's `local_resolution` is split into `first_party` and `external_sourced`, and the two never share a counter (G8). |
-| AC8 | The number of `WebSearch` cost events for a task equals the number of queries in its external plan, including expansions (D5 fixed). |
+| AC8 | The number of `WebSearch` cost events for a task equals the number of queries in its external plan, including expansions (D5 fixed), and every acquisition — including `ExternalOnly` — carries a requirement attribution when one can be derived (D9 fixed). |
 | AC9 | Two concurrent stale hits for the same URL produce **one** pending refresh outbox row and increment `searchos_refresh_coalesced_total` (D7 fixed). |
 | AC10 | A document promoted in workspace A is **not** retrievable from workspace B while `public_web_knowledge = false` (ADR-023). |
 | AC11 | A promotion target disallowed by robots.txt is `skipped` with reason `robots_disallowed`, and no document row is created. |
 | AC12 | A promotion whose URL is in `excluded_domains` is `skipped` with reason `source_policy_denied`. |
 | AC13 | `GET /evidence/reuse` returns acquisitions, promoted, rejected, skipped, reuse events and the compound ratio. |
 | AC14 | Every new metric appears in `GET /metrics` with the documented name. |
-| AC15 | All pre-existing tests stay green; new unit + integration + compatibility tests cover AC1–AC14. |
+| AC15 | A query whose external acquisition found nothing, retried within `negative_ttl_seconds`, replays with `status = insufficient_evidence`, `replayed = true` and **zero** provider calls; a strict-freshness retry of the same query bypasses the negative cache and calls the provider (D10 fixed). |
+| AC16 | Capture runs on the dedicated worker: a slow capture does not delay index-write draining of unrelated outbox rows. |
+| AC17 | All pre-existing tests stay green; new unit + integration + compatibility tests cover AC1–AC16. |
 
 ### 12. Dependencies
 
@@ -612,16 +677,17 @@ No new third-party crates are required.
 | T1 | Domain: `ExternalAcquisition`, `EvidenceItem`, `PromotionState`, `EvidenceOrigin`, `QueryOrigin`; `Document.visibility`. |
 | T2 | Migration v6: `external_acquisitions`, `evidence_items`, `document_bindings`, `evidence_reuse_events`, `documents.visibility`, outbox de-duplication + partial unique index. |
 | T3 | SQLite: repos for acquisitions, items, bindings, reuse events; `save_versioned` writes `visibility`; binding-aware document lookup. |
-| T4 | Decision/pipeline: move the external index write behind the final gate; record the acquisition + items + accepted ids; enqueue capture. |
+| T4 | Decision/pipeline: move the external index write behind the final gate; record the acquisition + items + accepted ids; enqueue capture; run `GapAnalyzer` over acquired evidence for `ExternalOnly`/`ExternalFirst` so every purchase carries a requirement attribution (D9). |
 | T5 | Application: `EvidencePromotionService` (record → queue → capture) and the `CacheInvalidator` port; `Runtime` implements both. |
-| T6 | Capture worker: outbox branch for `capture` — governed fetch, `save_versioned`, index write, promotion state update, cache invalidation. |
-| T7 | Planner: move query expansion inside the plan; dedup queries; stamp `query_origin`; size the reservation from the final query list. |
+| T6 | Capture worker: a **separate bounded-concurrency task** (not the index tick) consuming `capture` outbox rows — governed fetch, `save_versioned`, index write, promotion state update, cache invalidation; `BudgetRepo::add_actual_spend` for post-settlement capture cost. |
+| T7 | Planner: move query expansion inside the plan; dedup queries; stamp `query_origin`; size the reservation from the final query list **plus** the promotion estimate. |
 | T8 | Refresh: coalesce pending refresh rows (D7) and count coalesced events. |
-| T9 | Observability: seven new metric series; dashboard `local_resolution` split into first-party / external-sourced; reuse report. |
+| T9 | Observability: eight new metric series; dashboard `local_resolution` split into first-party / external-sourced; reuse report. |
 | T10 | HTTP: `/evidence/acquisitions`, `/evidence/acquisitions/:id`, `/evidence/reuse`; OpenAPI + route-table parity. |
 | T11 | CLI: `searchos evidence list`, `searchos evidence stats`. |
-| T12 | Docs: RFC-031, ADR-032, ADR-033, RFC index, docs index, API reference, feature roadmap. |
-| T13 | Tests: unit (promotion state machine, conflict rejection, coalescing, visibility), integration (promote → rebuild → reuse, no pollution, zero external calls on the second query), CLI + HTTP smoke. |
+| T12 | Negative-result cache (D10): bounded in-memory store, `negative_ttl_seconds`, bypass via `should_bypass_exact_cache`, honest replay, `searchos_negative_cache_hits_total`. |
+| T13 | Docs: RFC-031, ADR-032, ADR-033, RFC index, docs index, Part 18 CLI contract, API reference, feature roadmap. |
+| T14 | Tests: unit (promotion state machine, conflict rejection, coalescing, visibility, negative-cache bypass), integration (promote → rebuild → reuse, no pollution, zero external calls on the second query, plan/ledger equality), CLI + HTTP smoke. |
 
 ---
 
@@ -635,8 +701,8 @@ SearchOS 是本地优先的：决策引擎先评估本地知识，再决定是�
 
 今天这种复用存在，但只是一种**临时的索引条目**。当任务买下一个外部答案时，
 `search_service.rs` 会把至多两条结果摘要直接写进 BM25 和向量索引
-（`crates/searchos-application/src/search_service.rs:1384`）。由这个捷径
-派生出八个可在当前代码树中逐条核实的缺陷。
+（`crates/searchos-application/src/search_service.rs:1384`）。由此派生出十个
+可在当前代码树中逐条核实的缺陷——八个来自这个捷径本身，两个来自周边管线。
 
 **D1 — 买来的知识不是文档。** `search_service.rs:1384` 的外部写入会生成新的
 `document_id` / `version_id` 并索引一条 `IndexedDocument`，但**不会**创建
@@ -686,7 +752,19 @@ SearchOS 是本地优先的：决策引擎先评估本地知识，再决定是�
 “因为我们自有知识而免掉一次外部调用”和“因为我们缓存了这次购买而免掉一次外部
 调用”。这个闭环的价值在指标里是看不见的。
 
-D1–D8 正是系统目前只是**本地优先的搜索代理**、而不是它被设计成的那种
+**D9 — ExternalOnly 的购买没有需求关联。** 决策引擎只为 `Hybrid` 决策发出
+`missing_requirements`；`ExternalOnly` 只携带 `reason`
+（`crates/searchos-domain/src/decision.rs:184`），管线对它读到的 `gaps` 是
+`Vec::new()`（`search_service.rs:1276-1283`）。计划于是退回到用户原始查询，
+因此一次 ExternalOnly 获取永远无法关联到某个信息需求——本 RFC 承诺的审计链
+恰恰在最常购买的路径上是断的。
+
+**D10 — 失败的购买每次重试都重新付费。** exact cache 只存
+`QualityStatus::Passed` 的响应（`search_service.rs:995`）；一条因为外部获取
+空手而归而返回 `insufficient_evidence` 的查询，每次重试都会重新执行——重新
+付费。系统明明知道知识不存在，还是再买一次。
+
+D1–D10 正是系统目前只是**本地优先的搜索代理**、而不是它被设计成的那种
 **知识中间层**的原因。
 
 ### 2. 目标
@@ -702,6 +780,7 @@ D1–D8 正是系统目前只是**本地优先的搜索代理**、而不是它�
 | G7 | 复利效应可度量：获取、沉淀、拒绝、跳过、复用的计数，以及复用比。 |
 | G8 | 节省口径诚实：本地解析拆分为第一方与外部来源两类。 |
 | G9 | 外部计划与实际执行查询一致，预留与账本对齐。 |
+| G10 | 已知不存在的答案不再重复购买：终态外部失败进入负缓存并诚实回放。 |
 
 ### 3. 非目标
 
@@ -716,6 +795,7 @@ D1–D8 正是系统目前只是**本地优先的搜索代理**、而不是它�
 | N7 | 爬虫策略、站点专属爬虫或扩展系统。 |
 | N8 | 自主站点爬取或批量采集。沉淀只按次发生，绝不投机性触发。 |
 | N9 | 默认跨工作区共享。RFC 套件基线原则不变：**“默认 Workspace 隔离，显式授权后才共享，不应该默认全局共享。”** |
+| N10 | 缓存 `Partial` 响应，或把响应缓存泛化到终态失败之外。只有「外部结果为空导致的终态 `insufficient_evidence`」进入负缓存；任何可服务的结局都绝不按失败缓存。 |
 
 ### 4. 架构
 
@@ -770,28 +850,40 @@ D1–D8 正是系统目前只是**本地优先的搜索代理**、而不是它�
 
 #### 5.1 沉淀状态机
 
+```rust
+pub enum PromotionState {
+    /// 获取时写入；最终质量门尚未评判该条目。
+    Pending,
+    /// 质量门接受；已排队等待捕获。
+    Accepted,
+    /// 质量门拒绝（未解决冲突 / 硬约束失败）。
+    Rejected,
+    /// 捕获成功；文档 + 版本 + 切块 + 索引条目均已存在。
+    Promoted,
+    /// 无法捕获（robots / 空内容 / 预算 / 体积 / 策略）；原因记录在条目上。
+    Skipped,
+}
+```
+
 ```text
               搜索返回条目
                    │
                    ▼
               ┌─────────────┐
-              │  candidate  │  未捕获正文，未入索引
+              │   pending   │  未捕获正文，未入索引
               └──────┬──────┘
-                     │ 质量门已评估该条目
-                     ▼
-              ┌─────────────┐   质量门拒绝 / 未解决冲突
-              │  evaluated  ├──────────────────────▶ rejected
-              └──────┬──────┘
-                     │ 质量门接受
-                     ▼
-              ┌─────────────┐   robots / 空内容 / 预算 / 体积 / 策略
-              │  promotable ├───────────────────────▶ skipped
-              └──────┬──────┘
-                     │ 捕获 worker 成功
-                     ▼
-              ┌─────────────┐
-              │  promoted   │  文档 + 版本 + 切块 + 索引
-              └─────────────┘
+                     │ 最终质量门已评判该条目
+            accepted │        │ rejected（未解决冲突 /
+                     ▼        ▼  硬约束失败）
+              ┌──────────┐  ┌──────────┐
+              │ accepted │  │ rejected │  永不入索引
+              └──────┬───┘  └──────────┘
+                     │ 捕获 worker
+        promoted │        │ skipped（robots / 空内容 /
+                 ▼        ▼  预算 / 体积 / 策略）
+          ┌──────────┐  ┌─────────┐
+          │ promoted │  │ skipped │  原因已记录
+          └──────────┘  └─────────┘
 ```
 
 **集合级**的 `Partial` 结论不会否定单个被接受的条目：“查询的一部分没被覆盖”
@@ -826,6 +918,12 @@ pub enum QueryOrigin {
     Fallback,
 }
 ```
+
+**`ExternalOnly` 的需求归因（修复 D9）。** 因为 `ExternalOnly` 决策不携带
+`missing_requirements`（`decision.rs:184`），管线在执行结束后对
+`ExternalOnly` / `ExternalFirst` 任务用 `GapAnalyzer` 对**已获取**证据做一次
+归因，并把被覆盖/未覆盖的需求记录在获取记录上。于是任何一次购买，只要能
+归因就带需求，与模式无关。
 
 #### 5.3 证据条目
 
@@ -887,27 +985,29 @@ document_bindings(
     document_id,
     workspace_id,
     visibility,      -- 'workspace' | 'public'
-    bound_at,
-    last_used_at
+    bound_at
 )
 ```
 
-v1 中沉淀只为获取方工作区写绑定（`knowledge.public_web_knowledge = false`，
-默认关闭）。这张表的存在，使得日后**无需迁移**即可开启授权的跨工作区共享。
-这与存储层已有的检索规则一致——`requester OR '*'`
-（`repos.rs:639`、`repos.rs:697`、`repos.rs:853`，以及 PostgreSQL / MySQL
-远程后端中的同一谓词），也与 ADR-023 默认的工作区隔离一致。
+这张表记录的是**成员关系，不是读权限**。v1 中检索继续按索引里的
+`workspace_id` 字段过滤（即存储层已有的规则——`requester OR '*'`，
+`repos.rs:639` / `697` / `853`，以及 PostgreSQL / MySQL 远程后端中的同一
+谓词），因此**热路径不加 join、读时零写入**。绑定的存在是为了日后开启
+授权共享时**不需要 schema 迁移**——到那时检索谓词再增加一个绑定感知分支。
+
+这与 ADR-023 默认的工作区隔离一致。
 
 #### 5.6 复用计数
 
 ```sql
 evidence_reuse_events(
-    id, task_id, workspace_id, document_id, origin, occurred_at
+    id, task_id, workspace_id, document_id, occurred_at
 )
 ```
 
-每当一次本地解析服务了 `ExternalSourced` 文档就写一行。这是复利指标的
-分母：一次购买究竟服务了多少个后续任务？
+每当一次本地解析服务了**外部来源**文档就写一行。第一方文档不写复用事件——
+复利指标的分子正是「后来服务了某个任务的购买」。这是复利指标的分母：一次
+购买究竟服务了多少个后续任务？
 
 ### 6. 接口契约
 
@@ -935,8 +1035,10 @@ pub trait CacheInvalidator: Send + Sync {
 ```
 
 `CacheInvalidator` 由 `Runtime` 实现并委托给既有的 `invalidate_caches`
-（`runtime.rs:586`）。应用层只依赖端口，不依赖具体缓存类型——与全仓其它
-位置的解耦方式一致。
+（`runtime.rs:586`）。v1 的失效覆盖**整个缓存族**（exact、semantic、canonical、
+retrieval、rerank、singleflight）——与文档生命周期已经在用的同一个调用。缓存
+并未全部按工作区键控，因此按工作区的定向失效并不健全；那留作后续优化。应用
+层只依赖端口，不依赖具体缓存类型——与全仓其它位置的解耦方式一致。
 
 #### 6.2 HTTP（Gateway Mode，只读观测）
 
@@ -971,7 +1073,22 @@ knowledge:
   require_final_gate_pass: true
   # 跨工作区公共共享。v1 关闭（ADR-023）。
   public_web_knowledge: false
+
+cache:
+  # 终态外部失败的负结果缓存（D10）。0 表示完全关闭。
+  negative_ttl_seconds: 300
 ```
+
+必须明确写出的语义：
+
+- `promotion_enabled: false` 意味着外部结果**永不入索引**——只存在于响应里。
+旧行为（索引未验证摘要）被移除而不是藏在开关后面，因为它就是知识污染缺陷
+D2 本身。
+- 负缓存只存「外部结果为空导致的**终态** `insufficient_evidence`」。它遵守与
+`should_bypass_exact_cache` 相同的门槛（ExternalOnly / ExternalFirst /
+严格新鲜度），回放时保留响应 `status` 并置 `replayed: true`——绝不伪装成功
+（Part 30 / 决策红线）。存储是与 `ExactQueryCache` 同族的内存有界缓存，
+不需要 SQL 表。
 
 #### 6.5 指标
 
@@ -986,6 +1103,7 @@ searchos_external_promotions_skipped_total
 searchos_external_promotion_fetches_total
 searchos_external_evidence_reuse_total
 searchos_refresh_coalesced_total
+searchos_negative_cache_hits_total
 ```
 
 `searchos_external_evidence_reuse_total / searchos_external_acquisitions_total`
@@ -1024,7 +1142,7 @@ CREATE TABLE IF NOT EXISTS evidence_items (
     title TEXT,
     provider_score REAL NOT NULL DEFAULT 0.0,
     relevance REAL NOT NULL DEFAULT 0.0,
-    state TEXT NOT NULL,              -- candidate | evaluated | promoted | rejected | skipped
+    state TEXT NOT NULL,              -- pending | accepted | rejected | promoted | skipped
     document_id TEXT,
     version_id TEXT,
     chunk_count INTEGER,
@@ -1040,25 +1158,24 @@ CREATE INDEX IF NOT EXISTS idx_evidence_items_state
 CREATE INDEX IF NOT EXISTS idx_evidence_items_doc
     ON evidence_items(document_id);
 
--- 工作区 ↔ 文档绑定（可见性模型）。
+-- 工作区 ↔ 文档绑定（可见性模型）。仅记录成员关系：
+-- v1 检索按索引里的 workspace_id 过滤，读路径无 join、无写入。
 CREATE TABLE IF NOT EXISTS document_bindings (
     document_id TEXT NOT NULL,
     workspace_id TEXT NOT NULL,
     visibility TEXT NOT NULL DEFAULT 'workspace',  -- workspace | public
     bound_at TEXT NOT NULL,
-    last_used_at TEXT,
     PRIMARY KEY (document_id, workspace_id)
 );
 CREATE INDEX IF NOT EXISTS idx_bindings_ws
     ON document_bindings(workspace_id);
 
--- 复用计数（复利指标的分子）。
+-- 复用计数（复利指标的分子）。仅为被本地解析服务的外部来源文档写入。
 CREATE TABLE IF NOT EXISTS evidence_reuse_events (
     id TEXT PRIMARY KEY,
     task_id TEXT NOT NULL,
     workspace_id TEXT NOT NULL,
     document_id TEXT NOT NULL,
-    origin TEXT NOT NULL,              -- first_party | external_sourced
     occurred_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_reuse_ws
@@ -1094,10 +1211,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_outbox_pending_refresh
 | 捕获正文超出体积上限 | `state = skipped`，原因 `promoted_bytes_exceeded`。 |
 | 捕获前预算耗尽 | `state = skipped`，原因 `budget_exhausted`；任务自身状态不变——沉淀永不改变响应状态。 |
 | 元数据提交后索引写入失败 | 走既有 outbox 重试 / DLQ 路径（RFC-006 6.7、RFC-014 14.4）。 |
+| 捕获 worker 在捕获中途崩溃 | outbox 行保持 `pending` 并递增 `attempts`；既有重试路径会重新执行。`save_versioned` 保证重跑幂等（RFC-006 6.4）。 |
 | 缓存失效失败 | 记录日志并计数；沉淀仍然有效，下次检索可能因 TTL 看到陈旧的未命中。绝不使任务失败。 |
 | 同一 URL 重复捕获 | 捕获 worker 通过 `save_versioned`（RFC-006 6.4）保持幂等：内容未变则不产生新版本。 |
 | 同一 URL 的并发 stale 命中 | 由部分唯一索引合并，计数 `searchos_refresh_coalesced_total` 自增。 |
 | Provider 返回的条目 URL 被来源策略排除 | `state = skipped`，原因 `source_policy_denied`。被排除的域名永不沉淀。 |
+| 终态失败的负缓存回放 | 响应以原始 `status = insufficient_evidence` 和 `replayed: true` 回放。绝不伪装成功；严格新鲜度 / ExternalOnly / ExternalFirst 请求绕过负缓存，正如它们绕过 exact cache。 |
 
 ### 9. 安全考量
 
@@ -1117,24 +1236,35 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_outbox_pending_refresh
 6. **沉淀内容是数据，不是指令。** 抓取到的页面用既有 HTML 抽取器清洗
    （RFC-014 14.2），以惰性文本存储。任何被抓取的内容都不会被执行、解释或
    渲染成指令。
-7. **成本入账。** 捕获抓取是同一个任务、同一次预留下的 `web_fetch` 成本事件。
-   一次购买触发两次捕获，就产生两次抓取成本并且如实记账。
+7. **成本入账——含结算后的捕获。** 任务的预算检查会预先把沉淀估算计入预留
+（查询数 + `max_promotions_per_task × web_fetch` 价格），因此调用方声明的
+预算始终覆盖这次请求可能的花费。捕获发生在**任务结算之后**，所以捕获 worker
+把 `web_fetch` 成本事件记到同一个 `task_id` / `trace_id` 上，并通过新的
+`BudgetRepo::add_actual_spend` 把实际花费累加到预留上。一次购买触发两次
+捕获，就产生两次抓取成本并且如实记账。
 8. **不投机爬取。** 沉淀只由真实的外部获取触发，且只针对质量门接受的条目。
 
 ### 10. 性能考量
 
 - **不增加请求延迟。** 沉淀是投递而非等待。响应在记录获取后立即返回。
+- **捕获跑在自己的 worker 里，不在索引 tick 里。** 网关的 1.5 秒 outbox tick
+  负责 drain 索引/删除/刷新行；把网络抓取塞进同一个循环会拖慢无关文档的索引
+  写入。捕获行因此由**独立的有界并发 worker** 处理（默认并发 2，可配置）。
+  索引 tick 保持快速；捕获在自己的限额后面排队。
 - **索引写入放大。** 每个被沉淀的页面增加一个文档版本和 N 个切块。上限是
   `max_promotions_per_task`（默认 2），因此单个任务最多给存储增加两个页面。
-- **outbox 节奏。** 网关每 1.5 秒 drain 一次，因此被沉淀的页面在购买它的
-  任务之后很快即可检索。CLI 在启动和每条命令后 drain。
-- **缓存失效成本。** 沉淀会使受影响工作区的检索缓存与 canonical 缓存失效。
-  这是正确性要求（D4）而非优化；其开销受沉淀次数约束，而沉淀次数受单任务
-  上限约束。
+- **outbox 节奏。** 被沉淀的页面在其捕获完成后的下一次 drain 即可检索。CLI
+  在启动和每条命令后 drain。
+- **缓存失效成本。** 沉淀使整个缓存族失效。这是正确性要求（D4）而非优化；
+  其开销受沉淀次数约束，而沉淀次数受单任务上限约束。
 - **度量开销。** 一次获取一行、每个条目一行、每个被服务的文档一个复用事件。
   复用事件与任务记录在同一事务写入，因此不会与决策漂移。
 - **向量索引成本。** 每个被沉淀的切块只嵌入一次。嵌入缓存（RFC-007 7.6）
   以模型 id 和版本为键，内容未变的页面可复用嵌入。
+- **负缓存是内存有界的**，与 `ExactQueryCache` 同族（最大条目数 + TTL）。
+  无 SQL 表，无写入放大。
+- **离线 / eval 运行不产生获取。** 外部执行被禁用时 `execute_external` 以
+  `POLICY_VIOLATION` 失败，因此 CI eval 门与离线模式永不投递捕获。
 
 ### 11. 验收标准
 
@@ -1144,17 +1274,19 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_outbox_pending_refresh
 | AC2 | `rebuild_from` 之后，每个被沉淀的文档仍可检索（D1 修复）。 |
 | AC3 | 被最终质量门拒绝的外部条目（冲突或硬约束失败）绝不产生索引条目，状态为 `rejected` 并带原因（D2 修复）。 |
 | AC4 | 被沉淀的页面存储的是抽取出的完整正文，而不是 Provider 摘要（D3 修复）。 |
-| AC5 | 沉淀之后，下一次等价查询在本地解析，并且发出**零次**外部 Provider 调用。 |
-| AC6 | 每当一次本地解析服务了外部来源文档，`searchos_external_evidence_reuse_total` 自增，且复用事件记录该文档。 |
+| AC5 | 沉淀之后，一条**不经 exact cache 服务**的等价后续查询（不同措辞，测试时清空缓存）经本地检索解析，并发出**零次**外部 Provider 调用。 |
+| AC6 | 每当一次本地解析服务了外部来源文档，`searchos_external_evidence_reuse_total` 自增，且复用事件记录该文档。第一方文档不写复用事件。 |
 | AC7 | Dashboard 的 `local_resolution` 拆分为 `first_party` 与 `external_sourced`，两者不共用计数器（G8）。 |
-| AC8 | 一个任务的 `WebSearch` 成本事件数等于其外部计划中的查询数（含扩展查询）（D5 修复）。 |
+| AC8 | 一个任务的 `WebSearch` 成本事件数等于其外部计划中的查询数（含扩展查询）（D5 修复），且每一次获取——包括 `ExternalOnly`——在可归因时都带需求归因（D9 修复）。 |
 | AC9 | 同一 URL 的两次并发 stale 命中只产生**一条**待处理 refresh outbox 行，并使 `searchos_refresh_coalesced_total` 自增（D7 修复）。 |
 | AC10 | `public_web_knowledge = false` 时，在工作区 A 沉淀的文档**不能**从工作区 B 检索到（ADR-023）。 |
 | AC11 | robots.txt 禁止的沉淀目标状态为 `skipped`、原因 `robots_disallowed`，且不创建文档行。 |
 | AC12 | URL 位于 `excluded_domains` 的沉淀状态为 `skipped`、原因 `source_policy_denied`。 |
 | AC13 | `GET /evidence/reuse` 返回获取数、沉淀数、拒绝数、跳过数、复用事件与复利比。 |
 | AC14 | 每个新指标都以文档规定的名称出现在 `GET /metrics` 中。 |
-| AC15 | 既有测试全部保持绿色；新增单元 + 集成 + 兼容性测试覆盖 AC1–AC14。 |
+| AC15 | 一条外部获取空手而归的查询，在 `negative_ttl_seconds` 内重试时以 `status = insufficient_evidence`、`replayed = true` 回放，并发出**零次** Provider 调用；同一查询的严格新鲜度重试绕过负缓存并调用 Provider（D10 修复）。 |
+| AC16 | 捕获在专用 worker 上运行：一次缓慢的捕获不会拖慢无关 outbox 行的索引写入 drain。 |
+| AC17 | 既有测试全部保持绿色；新增单元 + 集成 + 兼容性测试覆盖 AC1–AC16。 |
 
 ### 12. 依赖
 
@@ -1181,18 +1313,20 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_outbox_pending_refresh
 | T1 | 领域：`ExternalAcquisition`、`EvidenceItem`、`PromotionState`、`EvidenceOrigin`、`QueryOrigin`；`Document.visibility`。 |
 | T2 | 迁移 v6：`external_acquisitions`、`evidence_items`、`document_bindings`、`evidence_reuse_events`、`documents.visibility`、outbox 去重与部分唯一索引。 |
 | T3 | SQLite：获取/条目/绑定/复用仓储；`save_versioned` 写入 `visibility`；绑定感知的文档查询。 |
-| T4 | 决策/管线：把外部索引写入移到质量门之后；记录获取、条目与被接受的 id；投递捕获。 |
+| T4 | 决策/管线：把外部索引写入移到质量门之后；记录获取、条目与被接受的 id；投递捕获；对 `ExternalOnly`/`ExternalFirst` 用 `GapAnalyzer` 对已获取证据做需求归因，让每笔购买都带需求（D9）。 |
 | T5 | 应用层：`EvidencePromotionService`（记录 → 排队 → 捕获）与 `CacheInvalidator` 端口；`Runtime` 实现两者。 |
-| T6 | 捕获 worker：outbox 的 `capture` 分支——受控抓取、`save_versioned`、索引写入、状态更新、缓存失效。 |
-| T7 | 计划器：把 query expansion 移入计划内部；查询去重；标记 `query_origin`；按最终查询列表确定预留规模。 |
+| T6 | 捕获 worker：**独立的有界并发任务**（不在索引 tick 里）消费 `capture` outbox 行——受控抓取、`save_versioned`、索引写入、状态更新、缓存失效；用 `BudgetRepo::add_actual_spend` 记录结算后的捕获成本。 |
+| T7 | 计划器：把 query expansion 移入计划内部；查询去重；标记 `query_origin`；按最终查询列表**加上沉淀估算**确定预留规模。 |
 | T8 | 刷新：合并待处理 refresh 行（D7）并计数合并事件。 |
-| T9 | 观测：七条新指标序列；Dashboard `local_resolution` 拆分为第一方/外部来源；复用报告。 |
+| T9 | 观测：八条新指标序列；Dashboard `local_resolution` 拆分为第一方/外部来源；复用报告。 |
 | T10 | HTTP：`/evidence/acquisitions`、`/evidence/acquisitions/:id`、`/evidence/reuse`；OpenAPI 与路由表一致性。 |
 | T11 | CLI：`searchos evidence list`、`searchos evidence stats`。 |
-| T12 | 文档：RFC-031、ADR-032、ADR-033、RFC 索引、docs 索引、API 参考、功能路线图。 |
-| T13 | 测试：单元（沉淀状态机、冲突拒绝、合并、可见性）、集成（沉淀 → 重建 → 复用、无污染、第二次查询零外部调用）、CLI + HTTP 冒烟。 |
+| T12 | 负结果缓存（D10）：内存有界存储、`negative_ttl_seconds`、经 `should_bypass_exact_cache` 绕过、诚实回放、`searchos_negative_cache_hits_total`。 |
+| T13 | 文档：RFC-031、ADR-032、ADR-033、RFC 索引、docs 索引、Part 18 CLI 契约、API 参考、功能路线图。 |
+| T14 | 测试：单元（沉淀状态机、冲突拒绝、合并、可见性、负缓存绕过）、集成（沉淀 → 重建 → 复用、无污染、第二次查询零外部调用、计划/账本相等）、CLI + HTTP 冒烟。 |
 
 ---
 
-**RFC Suite Version:** 1.0 (+ Annexes 23/24/30; RFC-031 proposed)
-**Status:** Proposed — external evidence promotion and knowledge compounding
+**RFC Suite Version:** 1.0 (+ Annexes 23/24/30; RFC-031 implemented)
+**Status:** Implemented — external evidence promotion and knowledge compounding.
+Acceptance tests: `tests/integration/tests/rfc_031_evidence_promotion.rs`.

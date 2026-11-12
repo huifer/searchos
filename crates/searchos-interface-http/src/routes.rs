@@ -416,6 +416,10 @@ pub fn api_route_table() -> Vec<RouteSpec> {
         RouteSpec::new("GET", "/system/status", get(system_status)),
         RouteSpec::new("GET", "/profiles", get(list_profiles)),
         RouteSpec::new("GET", "/profiles/{id}", get(get_profile)),
+        // RFC-031 external evidence promotion (read-only observability).
+        RouteSpec::new("GET", "/evidence/acquisitions", get(list_acquisitions)),
+        RouteSpec::new("GET", "/evidence/acquisitions/{id}", get(get_acquisition)),
+        RouteSpec::new("GET", "/evidence/reuse", get(evidence_reuse)),
     ]
 }
 
@@ -575,11 +579,19 @@ pub(crate) async fn run_outbox_worker(
     mut stop: tokio::sync::watch::Receiver<bool>,
 ) {
     let mut ticker = tokio::time::interval(Duration::from_millis(1_500));
+    let mut capture_ticker = tokio::time::interval(Duration::from_millis(1_500));
     loop {
         tokio::select! {
             _ = ticker.tick() => {
                 if let Err(e) = runtime.process_outbox(100).await {
                     tracing::warn!(error = %e, "index outbox worker tick failed");
+                }
+            }
+            // RFC-031: captures run on their own worker so a slow page fetch
+            // never delays index-write draining (AC16).
+            _ = capture_ticker.tick() => {
+                if let Err(e) = runtime.process_capture_queue(4).await {
+                    tracing::warn!(error = %e, "capture worker tick failed");
                 }
             }
             _ = stop.changed() => {
@@ -595,6 +607,10 @@ pub(crate) async fn run_outbox_worker(
         }
         Ok(_) => {}
         Err(e) => tracing::warn!(error = %e, "shutdown drain failed"),
+    }
+    // Final capture drain.
+    if let Err(e) = runtime.process_capture_queue(64).await {
+        tracing::warn!(error = %e, "shutdown capture drain failed");
     }
 }
 
@@ -1303,6 +1319,112 @@ pub struct DocumentListQuery {
     /// Lifecycle status: `normalized` / `indexed` / `deleted` / …
     pub status: Option<String>,
     pub limit: Option<u32>,
+}
+
+/// Query for the RFC-031 evidence endpoints.
+#[derive(Debug, serde::Deserialize)]
+pub struct EvidenceQuery {
+    pub workspace_id: Option<String>,
+    pub limit: Option<u32>,
+}
+
+/// `GET /evidence/acquisitions` — acquisition list with promotion state
+/// counts. Read-only: promotion is an internal consequence of a search.
+async fn list_acquisitions(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(dto): Query<EvidenceQuery>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    state.authorize(&headers)?;
+    let scope = state.workspace_scope(&headers, dto.workspace_id.as_deref())?;
+    let repo = searchos_storage_sqlite::repos::ExternalEvidenceRepo::new(&state.runtime.sqlite);
+    let acquisitions = repo
+        .list_acquisitions(scope.as_deref(), dto.limit.unwrap_or(50))
+        .map_err(|e| ApiError::from_domain(&e))?;
+    let stats = repo
+        .stats(scope.as_deref())
+        .map_err(|e| ApiError::from_domain(&e))?;
+    Ok(Json(serde_json::json!({
+        "acquisitions": acquisitions,
+        "stats": stats,
+    })))
+}
+
+/// `GET /evidence/acquisitions/{id}` — one acquisition and its items.
+async fn get_acquisition(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    state.authorize(&headers)?;
+    let scope = state.workspace_scope(&headers, None)?;
+    let repo = searchos_storage_sqlite::repos::ExternalEvidenceRepo::new(&state.runtime.sqlite);
+    let all = repo
+        .list_acquisitions(None, 1000)
+        .map_err(|e| ApiError::from_domain(&e))?;
+    let found = all
+        .into_iter()
+        .find(|a| a.get("id").and_then(|v| v.as_str()) == Some(id.as_str()));
+    let Some(acquisition) = found else {
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            "NOT_FOUND",
+            format!("acquisition {id} not found"),
+        ));
+    };
+    // Workspace scope is enforced like every other read: a foreign id is
+    // indistinguishable from a missing one.
+    if let Some(ws) = scope.as_deref() {
+        if acquisition.get("workspace_id").and_then(|v| v.as_str()) != Some(ws) {
+            searchos_observability::MetricsRegistry::global()
+                .inc_counter("auth.workspace_cross_read_total");
+            return Err(ApiError::new(
+                StatusCode::NOT_FOUND,
+                "NOT_FOUND",
+                format!("acquisition {id} not found"),
+            ));
+        }
+    }
+    let items = repo
+        .list_items(&id)
+        .map_err(|e| ApiError::from_domain(&e))?;
+    Ok(Json(serde_json::json!({
+        "acquisition": acquisition,
+        "items": items,
+    })))
+}
+
+/// `GET /evidence/reuse` — the compound report: how many future tasks one
+/// purchase served.
+async fn evidence_reuse(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(dto): Query<EvidenceQuery>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    state.authorize(&headers)?;
+    let scope = state.workspace_scope(&headers, dto.workspace_id.as_deref())?;
+    let repo = searchos_storage_sqlite::repos::ExternalEvidenceRepo::new(&state.runtime.sqlite);
+    let stats = repo
+        .stats(scope.as_deref())
+        .map_err(|e| ApiError::from_domain(&e))?;
+    let acquisitions = stats
+        .get("acquisitions")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    let reuse = stats
+        .get("reuse_events")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    let compound_ratio = if acquisitions > 0 {
+        reuse as f64 / acquisitions as f64
+    } else {
+        0.0
+    };
+    Ok(Json(serde_json::json!({
+        "stats": stats,
+        "compound_ratio": compound_ratio,
+        "definition": "reuse events per acquisition — how many future local resolutions one purchase served",
+    })))
 }
 
 async fn list_documents(

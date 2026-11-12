@@ -77,7 +77,7 @@ SearchOS 负责前两者及其成本优化，不在核心产品中重新实现�
 | RFC-028 | Dashboard API & Frontend Integration |
 | RFC-029 | Local Data Ingestion & Local-First Retrieval |
 | Part 30 | Search Execution Correctness Baseline (invariant-driven) |
-| RFC-031 | External Evidence Promotion & Knowledge Compounding |
+| RFC-031 | External Evidence Promotion & Knowledge Compounding (implemented) |
 
 ## 0.2 RFC 规范
 
@@ -131,6 +131,6 @@ RFC 不允许仅描述功能目标而缺少可验证的接口、数据结构和�
 2. **跨 Agent 知识隔离**：默认 Workspace 隔离，显式授权后才共享，不应该默认全局共享。
 3. **质量评估边界**：SearchOS 验证证据质量，不保证上层 LLM 最终答案绝对正确。
 
-**RFC Suite Version:** 1.0 (+ Annexes 23/24/30; Annex 30 is Implemented; RFC-031 Proposed)
-**Status:** Implemented Engineering Baseline (Annex 30: Implemented — execution correctness invariants; RFC-031: Proposed — external evidence promotion)
+**RFC Suite Version:** 1.0 (+ Annexes 23/24/30; Annex 30 and RFC-031 implemented)
+**Status:** Implemented Engineering Baseline (Annex 30: execution correctness invariants; RFC-031: external evidence promotion)
 **Next Step:** Keep RFC-004 v1.1 acceptance tests (Part 23) green on every change; revisit deferred distributed/WASM capabilities in v1.5+.

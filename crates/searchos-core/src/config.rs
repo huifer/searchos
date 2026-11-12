@@ -378,6 +378,9 @@ pub struct SearchConfig {
     pub max_external_queries: u32,
     /// Cache TTL seconds for the exact query cache.
     pub cache_ttl_seconds: u64,
+    /// RFC-031 D10: TTL seconds for the negative-result cache (terminal
+    /// external failures). 0 disables it.
+    pub negative_cache_ttl_seconds: u64,
 }
 
 impl Default for SearchConfig {
@@ -388,6 +391,7 @@ impl Default for SearchConfig {
             incremental: true,
             max_external_queries: 3,
             cache_ttl_seconds: 3600,
+            negative_cache_ttl_seconds: 300,
         }
     }
 }
@@ -653,6 +657,7 @@ pub const ALL_CONFIG_FIELDS: &[&str] = &[
     "search.incremental",
     "search.max_external_queries",
     "search.cache_ttl_seconds",
+    "search.negative_cache_ttl_seconds",
     "ingest.max_bytes_per_document",
     "ingest.max_bytes_per_batch",
     "memory.enabled",
@@ -742,6 +747,7 @@ pub const CONSUMED_CONFIG_FIELDS: &[&str] = &[
     "search.incremental",
     "search.max_external_queries",
     "search.cache_ttl_seconds",
+    "search.negative_cache_ttl_seconds",
     "ingest.max_bytes_per_document",
     "ingest.max_bytes_per_batch",
     "memory.enabled",

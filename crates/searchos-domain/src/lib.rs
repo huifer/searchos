@@ -16,6 +16,7 @@ pub mod evidence;
 pub mod ids;
 pub mod memory;
 pub mod plan;
+pub mod promotion;
 pub mod provider;
 pub mod request;
 pub mod response;
@@ -35,6 +36,9 @@ pub use evidence::{Evidence, Provenance, ProvenanceOrigin, ReliabilityLevel};
 pub use ids::*;
 pub use memory::{MemoryEntry, MemoryNamespace, SharingPolicy};
 pub use plan::{ExecutionDependency, ExecutionNode, ExecutionNodeKind, ExecutionPlan, PlanStatus};
+pub use promotion::{
+    EvidenceItem, EvidenceOrigin, ExternalAcquisition, PromotionState, QueryOrigin,
+};
 pub use provider::ProviderCapabilities;
 pub use request::{
     FreshnessRequirement, SearchBudget, SearchConstraints, SearchIntent, SearchMode, SearchRequest,

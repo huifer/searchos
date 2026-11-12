@@ -7,8 +7,10 @@ use searchos_domain::cost::{
 use searchos_domain::decision::DecisionTrace;
 use searchos_domain::document::{Document, DocumentSummary, DocumentVersion};
 use searchos_domain::ids::{DocumentId, DocumentVersionId, SourceId, WorkspaceId};
+use searchos_domain::promotion::{EvidenceItem, ExternalAcquisition, PromotionState};
 use searchos_domain::retrieval::{IndexedDocument, RetrievalCandidate, SearchCacheKey};
 use searchos_domain::SearchOsError;
+use std::collections::HashSet;
 
 use crate::store::SqliteStore;
 
@@ -1424,6 +1426,365 @@ pub enum OutboxDisposition {
     DeadLetter,
 }
 
+/// Capture target row: (canonical_url, workspace_id, state, task_id, trace_id).
+pub type CaptureTargetRow = (String, String, String, String, Option<String>);
+
+/// External evidence acquisition and promotion persistence (RFC-031).
+pub struct ExternalEvidenceRepo<'a> {
+    store: &'a SqliteStore,
+}
+
+impl<'a> ExternalEvidenceRepo<'a> {
+    pub fn new(store: &'a SqliteStore) -> Self {
+        Self { store }
+    }
+
+    /// Atomically records one acquisition and its result items.
+    pub fn record_acquisition(
+        &self,
+        acquisition: &ExternalAcquisition,
+        items: &[EvidenceItem],
+    ) -> Result<(), SearchOsError> {
+        self.store.with_conn(|c| {
+            let tx = c.unchecked_transaction().map_err(e)?;
+            tx.execute(
+                "INSERT INTO external_acquisitions
+                 (id, task_id, request_id, workspace_id, provider_id, query, query_origin, requirement_id, strategy, created_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+                params![
+                    acquisition.id,
+                    acquisition.task_id,
+                    acquisition.request_id,
+                    acquisition.workspace_id,
+                    acquisition.provider_id,
+                    acquisition.query,
+                    acquisition.query_origin.as_str(),
+                    acquisition.requirement_id,
+                    serde_json::to_string(&acquisition.strategy)
+                        .map_err(|err| SearchOsError::Internal(err.to_string()))?,
+                    acquisition.created_at.to_rfc3339(),
+                ],
+            )
+            .map_err(e)?;
+            for item in items {
+                tx.execute(
+                    "INSERT INTO evidence_items
+                     (id, acquisition_id, url, canonical_url, title, provider_score, relevance, state, document_id, version_id, chunk_count, reason, promoted_at, created_at)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+                    params![
+                        item.id,
+                        item.acquisition_id,
+                        item.url,
+                        item.canonical_url,
+                        item.title,
+                        item.provider_score,
+                        item.relevance,
+                        item.state.as_str(),
+                        item.document_id,
+                        item.version_id,
+                        item.chunk_count.map(|n| n as i64),
+                        item.reason,
+                        item.promoted_at.map(|t| t.to_rfc3339()),
+                        item.created_at.to_rfc3339(),
+                    ],
+                )
+                .map_err(e)?;
+            }
+            tx.commit().map_err(e)
+        })
+    }
+
+    /// Creates a capture outbox row for an accepted evidence item.
+    #[allow(clippy::too_many_arguments)]
+    pub fn enqueue_capture(
+        &self,
+        item_id: &str,
+        url: &str,
+        workspace_id: &str,
+        task_id: &str,
+        acquisition_id: &str,
+    ) -> Result<bool, SearchOsError> {
+        let payload = serde_json::json!({
+            "evidence_item_id": item_id,
+            "url": url,
+            "workspace_id": workspace_id,
+            "task_id": task_id,
+            "acquisition_id": acquisition_id,
+        })
+        .to_string();
+        self.store.with_conn(|c| {
+            let inserted = c
+                .execute(
+                    "INSERT OR IGNORE INTO index_outbox
+                     (id, entity_type, entity_id, operation, status, attempts, payload, created_at)
+                     VALUES (?1, 'evidence_item', ?2, 'capture', 'pending', 0, ?3, ?4)",
+                    params![searchos_domain::new_id("out"), item_id, payload, now()],
+                )
+                .map_err(e)?;
+            Ok(inserted > 0)
+        })
+    }
+
+    /// Sets the state of an evidence item and its promotion metadata.
+    pub fn update_item_state(
+        &self,
+        item_id: &str,
+        state: PromotionState,
+        document_id: Option<&str>,
+        version_id: Option<&str>,
+        chunk_count: Option<usize>,
+        reason: Option<&str>,
+    ) -> Result<(), SearchOsError> {
+        self.store.with_conn(|c| {
+            c.execute(
+                "UPDATE evidence_items
+                 SET state=?2, document_id=COALESCE(?3, document_id),
+                     version_id=COALESCE(?4, version_id), chunk_count=COALESCE(?5, chunk_count),
+                     reason=?6, promoted_at=CASE WHEN ?2='promoted' THEN ?7 ELSE promoted_at END
+                 WHERE id=?1",
+                params![
+                    item_id,
+                    state.as_str(),
+                    document_id,
+                    version_id,
+                    chunk_count.map(|n| n as i64),
+                    reason,
+                    now(),
+                ],
+            )
+            .map(|_| ())
+            .map_err(e)
+        })
+    }
+
+    /// Returns the capture payload for an evidence item:
+    /// (canonical_url, workspace_id, state, task_id, trace_id).
+    pub fn capture_target(&self, item_id: &str) -> Result<Option<CaptureTargetRow>, SearchOsError> {
+        self.store.with_conn(|c| {
+            c.query_row(
+                "SELECT ei.canonical_url, ea.workspace_id, ei.state, ea.task_id, st.trace_id
+                 FROM evidence_items ei
+                 JOIN external_acquisitions ea ON ea.id = ei.acquisition_id
+                 LEFT JOIN search_tasks st ON st.id = ea.task_id
+                 WHERE ei.id=?1",
+                params![item_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .optional()
+            .map_err(e)
+        })
+    }
+
+    /// Writes the workspace membership for a promoted document.
+    pub fn bind_document(
+        &self,
+        document_id: &str,
+        workspace_id: &str,
+        visibility: &str,
+    ) -> Result<(), SearchOsError> {
+        self.store.with_conn(|c| {
+            c.execute(
+                "INSERT INTO document_bindings (document_id, workspace_id, visibility, bound_at)
+                 VALUES (?1,?2,?3,?4)
+                 ON CONFLICT(document_id, workspace_id) DO UPDATE SET visibility=excluded.visibility",
+                params![document_id, workspace_id, visibility, now()],
+            )
+            .map(|_| ())
+            .map_err(e)
+        })
+    }
+
+    /// Records one reuse of external-sourced knowledge by a local resolution.
+    pub fn record_reuse(
+        &self,
+        task_id: &str,
+        workspace_id: &str,
+        document_id: &str,
+    ) -> Result<(), SearchOsError> {
+        self.store.with_conn(|c| {
+            c.execute(
+                "INSERT INTO evidence_reuse_events (id, task_id, workspace_id, document_id, occurred_at)
+                 VALUES (?1,?2,?3,?4,?5)",
+                params![searchos_domain::new_id("reuse"), task_id, workspace_id, document_id, now()],
+            )
+            .map(|_| ())
+            .map_err(e)
+        })
+    }
+
+    /// Returns which of the given documents were promoted from external
+    /// acquisitions. Used to classify a local resolution as external-sourced
+    /// (RFC-031 5.4).
+    pub fn promoted_document_ids(
+        &self,
+        document_ids: &[String],
+    ) -> Result<HashSet<String>, SearchOsError> {
+        if document_ids.is_empty() {
+            return Ok(HashSet::new());
+        }
+        self.store.with_conn(|c| {
+            let placeholders = vec!["?"; document_ids.len()].join(",");
+            let sql = format!(
+                "SELECT DISTINCT document_id FROM evidence_items\n                 WHERE state='promoted' AND document_id IN ({placeholders})"
+            );
+            let mut stmt = c.prepare(&sql).map_err(e)?;
+            let rows = stmt
+                .query_map(rusqlite::params_from_iter(document_ids.iter()), |r| {
+                    r.get::<_, String>(0)
+                })
+                .map_err(e)?;
+            rows.collect::<Result<HashSet<_>, _>>().map_err(e)
+        })
+    }
+
+    /// Lists acquisitions for one workspace (or all when unscoped).
+    pub fn list_acquisitions(
+        &self,
+        workspace_id: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<serde_json::Value>, SearchOsError> {
+        self.store.with_conn(|c| {
+            let (sql, args): (String, Vec<rusqlite::types::Value>) = match workspace_id {
+                Some(ws) => (
+                    "SELECT id, task_id, request_id, workspace_id, provider_id, query, query_origin, requirement_id, strategy, created_at
+                     FROM external_acquisitions WHERE workspace_id=?1 ORDER BY created_at DESC LIMIT ?2".into(),
+                    vec![
+                        rusqlite::types::Value::Text(ws.to_string()),
+                        rusqlite::types::Value::Integer(limit as i64),
+                    ],
+                ),
+                None => (
+                    "SELECT id, task_id, request_id, workspace_id, provider_id, query, query_origin, requirement_id, strategy, created_at
+                     FROM external_acquisitions ORDER BY created_at DESC LIMIT ?1".into(),
+                    vec![rusqlite::types::Value::Integer(limit as i64)],
+                ),
+            };
+            let mut stmt = c.prepare(&sql).map_err(e)?;
+            let rows = stmt
+                .query_map(rusqlite::params_from_iter(args.iter()), |r| {
+                    Ok(serde_json::json!({
+                        "id": r.get::<_, String>(0)?,
+                        "task_id": r.get::<_, String>(1)?,
+                        "request_id": r.get::<_, String>(2)?,
+                        "workspace_id": r.get::<_, String>(3)?,
+                        "provider_id": r.get::<_, String>(4)?,
+                        "query": r.get::<_, String>(5)?,
+                        "query_origin": r.get::<_, String>(6)?,
+                        "requirement_id": r.get::<_, Option<String>>(7)?,
+                        "strategy": r.get::<_, String>(8)?,
+                        "created_at": r.get::<_, String>(9)?,
+                    }))
+                })
+                .map_err(e)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(e)
+        })
+    }
+
+    /// Lists the result items of one acquisition.
+    pub fn list_items(
+        &self,
+        acquisition_id: &str,
+    ) -> Result<Vec<serde_json::Value>, SearchOsError> {
+        self.store.with_conn(|c| {
+            let mut stmt = c
+                .prepare(
+                    "SELECT id, url, canonical_url, title, provider_score, relevance, state, document_id, version_id, chunk_count, reason, promoted_at, created_at
+                     FROM evidence_items WHERE acquisition_id=?1 ORDER BY created_at ASC",
+                )
+                .map_err(e)?;
+            let rows = stmt
+                .query_map(params![acquisition_id], |r| {
+                    Ok(serde_json::json!({
+                        "id": r.get::<_, String>(0)?,
+                        "url": r.get::<_, String>(1)?,
+                        "canonical_url": r.get::<_, String>(2)?,
+                        "title": r.get::<_, Option<String>>(3)?,
+                        "provider_score": r.get::<_, f64>(4)?,
+                        "relevance": r.get::<_, f64>(5)?,
+                        "state": r.get::<_, String>(6)?,
+                        "document_id": r.get::<_, Option<String>>(7)?,
+                        "version_id": r.get::<_, Option<String>>(8)?,
+                        "chunk_count": r.get::<_, Option<i64>>(9)?,
+                        "reason": r.get::<_, Option<String>>(10)?,
+                        "promoted_at": r.get::<_, Option<String>>(11)?,
+                        "created_at": r.get::<_, String>(12)?,
+                    }))
+                })
+                .map_err(e)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(e)
+        })
+    }
+
+    /// The state of one evidence item.
+    pub fn item_state(&self, item_id: &str) -> Result<Option<String>, SearchOsError> {
+        self.store.with_conn(|c| {
+            c.query_row(
+                "SELECT state FROM evidence_items WHERE id=?1",
+                params![item_id],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(e)
+        })
+    }
+
+    /// Counts acquisitions, promotion states and reuse events for diagnostics.
+    ///
+    /// Items are scoped through their acquisition: `evidence_items` itself
+    /// carries no `workspace_id` (the acquisition owns the workspace). Every
+    /// value is a bound parameter — no SQL string interpolation.
+    pub fn stats(&self, workspace_id: Option<&str>) -> Result<serde_json::Value, SearchOsError> {
+        self.store.with_conn(|c| {
+            let count = |sql: &str, args: &[&str]| -> Result<i64, SearchOsError> {
+                let mut stmt = c.prepare(sql).map_err(e)?;
+                stmt.query_row(rusqlite::params_from_iter(args.iter()), |r| r.get(0))
+                    .map_err(e)
+            };
+            let ws: Vec<&str> = workspace_id.into_iter().collect();
+            let acquisitions = count(
+                if ws.is_empty() {
+                    "SELECT count(*) FROM external_acquisitions"
+                } else {
+                    "SELECT count(*) FROM external_acquisitions WHERE workspace_id = ?1"
+                },
+                &ws,
+            )?;
+            let items_by_state = |state: &str| -> Result<i64, SearchOsError> {
+                if ws.is_empty() {
+                    count(
+                        "SELECT count(*) FROM evidence_items WHERE state = ?1",
+                        &[state],
+                    )
+                } else {
+                    count(
+                        "SELECT count(*) FROM evidence_items ei
+                         JOIN external_acquisitions ea ON ea.id = ei.acquisition_id
+                         WHERE ea.workspace_id = ?1 AND ei.state = ?2",
+                        &[ws[0], state],
+                    )
+                }
+            };
+            let reuse_events = count(
+                if ws.is_empty() {
+                    "SELECT count(*) FROM evidence_reuse_events"
+                } else {
+                    "SELECT count(*) FROM evidence_reuse_events WHERE workspace_id = ?1"
+                },
+                &ws,
+            )?;
+            Ok(serde_json::json!({
+                "acquisitions": acquisitions,
+                "pending": items_by_state("pending")?,
+                "accepted": items_by_state("accepted")?,
+                "promoted": items_by_state("promoted")?,
+                "rejected": items_by_state("rejected")?,
+                "skipped": items_by_state("skipped")?,
+                "reuse_events": reuse_events,
+            }))
+        })
+    }
+}
+
 /// Memory entry persistence (RFC-013; isolation filtering in memory crate).
 pub struct MemoryRepo<'a> {
     store: &'a SqliteStore,
@@ -2256,6 +2617,25 @@ impl<'a> BudgetRepo<'a> {
         })
     }
 
+    /// Adds post-settlement capture spend to an already-settled reservation
+    /// (RFC-031 9.7: capture happens after the task settles). The estimate is
+    /// never rewritten — only `spent_cost_micros` grows.
+    pub fn add_actual_spend(&self, task_id: &str, micros: i64) -> Result<(), SearchOsError> {
+        if micros <= 0 {
+            return Ok(());
+        }
+        self.store.with_conn(|c| {
+            c.execute(
+                "UPDATE budget_reservations
+                 SET spent_cost_micros = spent_cost_micros + ?2
+                 WHERE task_id = ?1 AND status IN ('settled','reserved')",
+                params![task_id, micros],
+            )
+            .map(|_| ())
+            .map_err(e)
+        })
+    }
+
     pub fn mark_exceeded(&self, task_id: &str) -> Result<(), SearchOsError> {
         self.store.with_conn(|c| {
             c.execute(
@@ -2384,20 +2764,25 @@ impl<'a> ReconciliationRepo<'a> {
 
 /// Enqueues a document refresh event (RFC-004 v1.1 10.1: refresh the existing
 /// source rather than deleting knowledge or re-buying a full search).
+///
+/// RFC-031 D7: a pending refresh for the same `(entity_type, entity_id,
+/// operation)` is coalesced by the partial unique index created in migration
+/// v6. Returns `true` when a row was enqueued, `false` when an identical
+/// refresh was already pending.
 pub fn enqueue_refresh(
     store: &SqliteStore,
     url: &str,
     workspace_id: &str,
-) -> Result<(), SearchOsError> {
+) -> Result<bool, SearchOsError> {
     let payload = serde_json::json!({ "url": url, "workspace_id": workspace_id }).to_string();
     store.with_conn(|c| {
-        c.execute(
-            "INSERT INTO index_outbox (id, entity_type, entity_id, operation, status, attempts, payload, created_at)
+        let inserted = c.execute(
+            "INSERT OR IGNORE INTO index_outbox (id, entity_type, entity_id, operation, status, attempts, payload, created_at)
              VALUES (?1, 'document', ?2, 'refresh', 'pending', 0, ?3, ?4)",
             params![searchos_domain::new_id("out"), url, payload, now()],
         )
-        .map(|_| ())
-        .map_err(e)
+        .map_err(e)?;
+        Ok(inserted > 0)
     })
 }
 

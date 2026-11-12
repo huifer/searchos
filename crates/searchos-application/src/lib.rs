@@ -13,6 +13,7 @@ pub mod analytics;
 pub mod fetch_service;
 pub mod ingest_service;
 pub mod merge;
+pub mod promotion_service;
 pub mod search_service;
 pub mod singleflight;
 
@@ -22,6 +23,10 @@ pub use ingest_service::{
     IngestBatchItem, IngestBatchResult, IngestFailure, IngestJobPort, IngestPayload, IngestRequest,
     IngestService, IngestServiceImpl, IngestedDocument, LOCAL_SOURCE_TYPE_DIRECTORY,
     LOCAL_SOURCE_TYPE_FILE, LOCAL_SOURCE_TYPE_MIXED, LOCAL_SOURCE_TYPE_TEXT,
+};
+pub use promotion_service::{
+    build_acquisition, CacheInvalidator, CaptureTarget, EvidencePromotionService,
+    EvidencePromotionServiceImpl, PromotionConfig, PromotionStore,
 };
 pub use search_service::{SearchService, SearchServiceImpl};
 pub use singleflight::SingleflightCoordinator;

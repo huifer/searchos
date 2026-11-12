@@ -61,8 +61,13 @@ pub struct SearchOsRuntime {
     pub guard: Arc<UrlGuard>,
     pub robots: Arc<RobotsChecker>,
     pub exact_cache: Arc<ExactQueryCache>,
+    /// RFC-031 D10 negative-result cache (terminal external failures).
+    pub negative_cache: Arc<ExactQueryCache>,
     /// Singleflight coordinator, kept for cache/index invalidation.
     pub singleflight: Arc<SingleflightCoordinator>,
+    /// RFC-031 external evidence promotion service (capture worker input).
+    pub promotion:
+        Option<Arc<dyn searchos_application::promotion_service::EvidencePromotionService>>,
     /// Config fields consumed by the runtime, for `config validate` parity.
     pub config_consumption: BTreeMap<String, String>,
     pub metrics_enabled: bool,
@@ -415,6 +420,56 @@ impl SearchOsRuntime {
         ));
 
         let singleflight = Arc::new(SingleflightCoordinator::new());
+        // RFC-031 D10: bounded negative-result cache, same family as the exact
+        // cache but with its own short TTL.
+        let negative_cache = Arc::new(ExactQueryCache::with_max_entries(
+            config.search.negative_cache_ttl_seconds,
+            DEFAULT_MAX_CACHE_ENTRIES,
+        ));
+
+        // FetchService is built before the search dependencies because the
+        // RFC-031 promotion service captures pages through it.
+        let fetch_service: Arc<dyn searchos_application::fetch_service::FetchService> =
+            Arc::new(FetchServiceImpl::with_runtime(
+                guard.clone(),
+                robots.clone(),
+                objects.clone(),
+                doc_port.clone(),
+                Some(Arc::clone(&crawlers)),
+                fetch_limits.clone(),
+            ));
+
+        // RFC-031: external evidence promotion. Bounded by the per-task cap
+        // and charged through the same cost model as every other fetch.
+        let promotion_impl = Arc::new(
+            searchos_application::promotion_service::EvidencePromotionServiceImpl::new(
+                Arc::new(SqlitePromotionStore {
+                    store: Arc::clone(&sqlite),
+                }),
+                Arc::clone(&fetch_service),
+                Some(Arc::clone(&fulltext) as Arc<dyn searchos_retrieval::SearchIndex>),
+                Some(Arc::new(RuntimeCacheInvalidator {
+                    singleflight: Arc::clone(&singleflight),
+                    exact_cache: Arc::clone(&exact_cache),
+                    semantic_cache: Arc::clone(&semantic_cache),
+                    canonical_cache: Arc::clone(&canonical_cache),
+                    retrieval_cache: Arc::clone(&retrieval_cache),
+                    rerank_cache: Arc::clone(&rerank_cache),
+                })),
+                Some(Arc::new(SqliteCostSink {
+                    store: Arc::clone(&sqlite),
+                })),
+                &cost_config,
+                searchos_application::promotion_service::PromotionConfig::default(),
+            ),
+        );
+        let promotion_for_runtime: Option<
+            Arc<dyn searchos_application::promotion_service::EvidencePromotionService>,
+        > = Some(Arc::clone(&promotion_impl) as _);
+        let promotion_service: Option<
+            Arc<dyn searchos_application::promotion_service::EvidencePromotionService>,
+        > = Some(promotion_impl as _);
+
         let deps = Arc::new(searchos_application::search_service::SearchDependencies {
             profiles: searchos_policy::ProfileRegistry::builtin(),
             quality: searchos_policy::QualityPolicy::default(),
@@ -446,24 +501,17 @@ impl SearchOsRuntime {
             }),
             singleflight: Arc::clone(&singleflight),
             cache: exact_cache.clone(),
+            negative_cache: Arc::clone(&negative_cache),
             semantic_dedup: config.search.semantic_dedup,
             incremental: config.search.incremental,
             query_expansion: config.intelligence.query_expansion,
             reranking: config.intelligence.reranking,
             allow_external: config.tavily_api_key().is_some() || config.brave_api_key().is_some(),
+            promotion: promotion_service,
         });
 
         let search_service: Arc<dyn searchos_application::search_service::SearchService> =
             Arc::new(searchos_application::search_service::SearchServiceImpl::new(deps));
-        let fetch_service: Arc<dyn searchos_application::fetch_service::FetchService> =
-            Arc::new(FetchServiceImpl::with_runtime(
-                guard.clone(),
-                robots.clone(),
-                objects.clone(),
-                doc_port.clone(),
-                Some(Arc::clone(&crawlers)),
-                fetch_limits.clone(),
-            ));
 
         // RFC-029: local data import. Same DocumentPort as fetch, plus batch
         // job tracking over sqlite.
@@ -549,7 +597,9 @@ impl SearchOsRuntime {
             guard,
             robots,
             exact_cache,
+            negative_cache,
             singleflight,
+            promotion: promotion_for_runtime,
             config_consumption,
             metrics_enabled: config.observability.metrics_enabled,
             trace_retention_days: config.observability.trace_retention_days,
@@ -788,6 +838,48 @@ impl SearchOsRuntime {
         Ok(n)
     }
 
+    /// Processes pending capture rows through the promotion service
+    /// (RFC-031 T6). Separate from [`Self::process_outbox`] so a slow page
+    /// fetch never delays index-write draining.
+    ///
+    /// Runs captures sequentially with a per-tick cap, so the number of
+    /// in-flight fetches is bounded without spawning per-row tasks.
+    pub async fn process_capture_queue(&self, limit: u32) -> Result<u64, SearchOsError> {
+        let Some(promotion) = &self.promotion else {
+            return Ok(0);
+        };
+        let outbox = repos::OutboxRepo::new(&self.sqlite);
+        let rows: Vec<repos::OutboxRow> = outbox
+            .pending(limit)?
+            .into_iter()
+            .filter(|r| r.operation == "capture")
+            .collect();
+        let mut processed = 0u64;
+        for row in rows {
+            // A capture failure is a recorded `skipped` item, not an outbox
+            // failure: retrying would re-buy the same fetch. Promotion state
+            // is the durable record.
+            match promotion.capture(&row.entity_id).await {
+                Ok(()) => {
+                    outbox.mark_processed(&row.id)?;
+                    processed += 1;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        code = %e.class().code,
+                        item = %row.entity_id,
+                        "capture failed"
+                    );
+                    match outbox.mark_failed(&row.id, 3)? {
+                        repos::OutboxDisposition::Retry => {}
+                        repos::OutboxDisposition::DeadLetter => {}
+                    }
+                }
+            }
+        }
+        Ok(processed)
+    }
+
     /// Processes pending outbox rows into the full-text index (RFC-006 6.7).
     /// Returns (processed, dead).
     pub async fn process_outbox(&self, limit: u32) -> Result<(u64, u64), SearchOsError> {
@@ -849,6 +941,12 @@ impl SearchOsRuntime {
         let mut processed = 0u64;
         let mut dead = 0u64;
         for row in rows {
+            // RFC-031: capture rows are handled by the dedicated capture
+            // worker, never by the index tick (a page fetch must not stall
+            // index writes).
+            if row.operation == "capture" {
+                continue;
+            }
             let outcome = if row.operation == "delete" {
                 // Delete outbox rows carry chunk_id, not document_id. Keep
                 // identifier space explicit and only mark processed when the
@@ -1108,8 +1206,14 @@ impl searchos_application::search_service::TaskRecorder for SqliteTaskRecorder {
     ) -> Result<usize, SearchOsError> {
         let mut n = 0;
         for url in urls {
-            repos::enqueue_refresh(&self.store, url, workspace_id)?;
-            n += 1;
+            // RFC-031 D7: a pending refresh for the same URL is coalesced by
+            // the partial unique index instead of enqueuing a second fetch.
+            let inserted = repos::enqueue_refresh(&self.store, url, workspace_id)?;
+            if inserted {
+                n += 1;
+            } else {
+                searchos_observability::MetricsRegistry::global().inc_refresh_coalesced();
+            }
         }
         Ok(n)
     }
@@ -1118,6 +1222,133 @@ impl searchos_application::search_service::TaskRecorder for SqliteTaskRecorder {
 /// TraceCollector over sqlite.
 struct SqliteTraceCollector {
     store: Arc<SqliteStore>,
+}
+
+/// RFC-031 PromotionStore over sqlite.
+struct SqlitePromotionStore {
+    store: Arc<SqliteStore>,
+}
+
+#[async_trait::async_trait]
+impl searchos_application::promotion_service::PromotionStore for SqlitePromotionStore {
+    async fn record_acquisition(
+        &self,
+        acquisition: &searchos_domain::promotion::ExternalAcquisition,
+        items: &[searchos_domain::promotion::EvidenceItem],
+    ) -> Result<(), SearchOsError> {
+        repos::ExternalEvidenceRepo::new(&self.store).record_acquisition(acquisition, items)
+    }
+
+    async fn enqueue_capture(
+        &self,
+        item_id: &str,
+        url: &str,
+        workspace_id: &str,
+        task_id: &str,
+        acquisition_id: &str,
+    ) -> Result<bool, SearchOsError> {
+        repos::ExternalEvidenceRepo::new(&self.store).enqueue_capture(
+            item_id,
+            url,
+            workspace_id,
+            task_id,
+            acquisition_id,
+        )
+    }
+
+    async fn capture_target(
+        &self,
+        item_id: &str,
+    ) -> Result<Option<searchos_application::promotion_service::CaptureTarget>, SearchOsError> {
+        let row = repos::ExternalEvidenceRepo::new(&self.store).capture_target(item_id)?;
+        Ok(row.map(|(url, workspace_id, state, task_id, trace_id)| {
+            searchos_application::promotion_service::CaptureTarget {
+                url,
+                workspace_id,
+                task_id,
+                trace_id,
+                state: searchos_domain::promotion::PromotionState::parse(&state)
+                    .unwrap_or(searchos_domain::promotion::PromotionState::Pending),
+            }
+        }))
+    }
+
+    async fn update_item_state(
+        &self,
+        item_id: &str,
+        state: searchos_domain::promotion::PromotionState,
+        document_id: Option<&str>,
+        version_id: Option<&str>,
+        chunk_count: Option<usize>,
+        reason: Option<&str>,
+    ) -> Result<(), SearchOsError> {
+        repos::ExternalEvidenceRepo::new(&self.store).update_item_state(
+            item_id,
+            state,
+            document_id,
+            version_id,
+            chunk_count,
+            reason,
+        )
+    }
+
+    async fn bind_document(
+        &self,
+        document_id: &str,
+        workspace_id: &str,
+        visibility: &str,
+    ) -> Result<(), SearchOsError> {
+        repos::ExternalEvidenceRepo::new(&self.store).bind_document(
+            document_id,
+            workspace_id,
+            visibility,
+        )
+    }
+
+    async fn record_reuse(
+        &self,
+        task_id: &str,
+        workspace_id: &str,
+        document_id: &str,
+    ) -> Result<(), SearchOsError> {
+        repos::ExternalEvidenceRepo::new(&self.store).record_reuse(
+            task_id,
+            workspace_id,
+            document_id,
+        )
+    }
+
+    async fn promoted_document_ids(
+        &self,
+        document_ids: &[String],
+    ) -> Result<std::collections::HashSet<String>, SearchOsError> {
+        repos::ExternalEvidenceRepo::new(&self.store).promoted_document_ids(document_ids)
+    }
+}
+
+/// RFC-031 CacheInvalidator over the runtime's cache family.
+struct RuntimeCacheInvalidator {
+    singleflight: Arc<SingleflightCoordinator>,
+    exact_cache: Arc<ExactQueryCache>,
+    semantic_cache: Arc<SemanticCache>,
+    canonical_cache: Arc<CanonicalQueryCache>,
+    retrieval_cache: Arc<RetrievalCache>,
+    rerank_cache: Arc<RerankCache>,
+}
+
+#[async_trait::async_trait]
+impl searchos_application::promotion_service::CacheInvalidator for RuntimeCacheInvalidator {
+    /// v1 invalidates the full cache family — the same call the document
+    /// lifecycle uses. The caches are not uniformly workspace-keyed, so a
+    /// targeted invalidation would be unsound (RFC-031 6.1).
+    async fn invalidate_after_promotion(&self, _workspace_id: &str, _canonical_url: &str) {
+        self.singleflight.clear().await;
+        self.exact_cache.clear();
+        self.semantic_cache.clear();
+        self.canonical_cache.clear();
+        self.retrieval_cache.bump_index_version();
+        self.rerank_cache.clear();
+    }
 }
 
 #[async_trait::async_trait]

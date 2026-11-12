@@ -40,6 +40,8 @@ The SearchOS implementation (`~/git_repo/searchos`) is verified by these command
 - Release build: `cargo build --release --bin searchos` (15m09s, 0 errors/warnings, 273M binary); the release binary passes init/search/doctor/gateway smoke tests.
 - Full clean rebuild verified: `cargo clean` (removed 59.1GiB) → `cargo build --workspace --all-targets` (575 crates, 5m55s, 0 errors/warnings) → `cargo test --workspace` (253 passed) → `cargo clippy --workspace --all-targets` (0 warnings) → `cargo fmt --all -- --check` clean.
 
+- **RFC-031 verification (implemented 2026-11):** `cargo test --workspace` → 510 passed / 0 failed; the RFC gate is `cargo test -p searchos-integration-tests --test rfc_031_evidence_promotion` (16 tests: promotion state machine, rejected-never-indexed, robots/`fetch_failed` skip reasons, per-task cap, reuse accounting, disabled promotion, pipeline acquisition, ledger == planned calls, negative-cache honest replay + ExternalOnly/strict-freshness bypass). Migration gate: `cargo test -p searchos-storage-sqlite migrations` (includes `semicolon_inside_a_comment_does_not_split_statements`). Route/contract gates: `cargo test -p searchos-interface-http --lib openapi` + `SRC_DIR=crates/searchos-interface-http/src bash ~/.agents/skills/axum-route-conflict/scripts/scan-routes.sh`. Live: `SEARCHOS_DATA_DIR=$(mktemp -d) searchos evidence list` / `searchos evidence stats` (empty state prints zero counts, exit 0); gateway `GET /evidence/acquisitions|/evidence/reuse` behind the bearer token.
+
 **Known environment notes:**
 - LanceDB requires `protoc` at build time (`brew install protobuf`).
 - Live network tests (fetch of https://example.com) tolerate sandbox timeouts by design.
