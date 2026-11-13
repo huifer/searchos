@@ -218,6 +218,7 @@ fn plan_for(
             max_sources: ids.len(),
             max_parallel_sources: ids.len(),
             max_estimated_cost_micros: 1_000_000,
+            max_latency_ms: 30_000,
             stop_when_covered: false,
             generic_sources_can_answer: false,
         },
@@ -563,4 +564,52 @@ async fn request_query_is_forwarded_to_every_selected_source() {
     let calls = seen.lock().unwrap().clone();
     assert_eq!(calls.len(), 2);
     assert!(calls.iter().all(|(_, query)| query == "rust edition 2024"));
+}
+
+// ---------------------------------------------------------------------------
+// RFC-080 — request deadline caps every per-source timeout
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn per_source_timeout_is_capped_by_the_request_deadline() {
+    let registry = InMemorySourceRegistry::new();
+    let state = SharedState::default();
+    // Declared timeout 2s, actual work 400ms: with no request deadline the
+    // source completes successfully inside its declared budget.
+    registry
+        .register(sleeper(
+            "declared_slow",
+            SourceCategory::WebSearch,
+            400,
+            2_000,
+            &state,
+        ))
+        .unwrap();
+    let plan = plan_for(&["declared_slow"], FederationStrategy::Auto, 2_000);
+
+    let unbounded = FederatedExecutor::new(&registry, scope(2), ExecutionControls::new());
+    let unbounded_report = unbounded.execute(&plan, &request()).await;
+    assert_eq!(unbounded_report.results.len(), 1);
+    assert_eq!(
+        unbounded_report.results[0].status,
+        SourceExecutionStatus::Success
+    );
+
+    // A 60ms request deadline must CAP that same source's timeout, so it
+    // cannot overrun the wall-clock budget the caller paid for.
+    let started = std::time::Instant::now();
+    let executor = FederatedExecutor::new(
+        &registry,
+        scope(2),
+        ExecutionControls::new().with_deadline(Utc::now() + chrono::Duration::milliseconds(60)),
+    );
+    let report = executor.execute(&plan, &request()).await;
+    let elapsed = started.elapsed();
+    assert_eq!(report.results.len(), 1);
+    assert_eq!(report.results[0].status, SourceExecutionStatus::Timeout);
+    assert!(report.results[0].timed_out);
+    assert!(
+        elapsed < Duration::from_millis(300),
+        "source was capped at the 60ms deadline, not its 2s declaration: {elapsed:?}"
+    );
 }

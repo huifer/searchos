@@ -1610,6 +1610,15 @@ components:
               priority: { type: integer }
               estimated_cost_micros: { type: integer, format: int64 }
               timeout_ms: { type: integer, format: int64 }
+              latency:
+                type: object
+                description: >
+                  Declared timeout plus observed p50/p95 from live execution
+                  feedback (RFC-080). Present on the live projection only.
+                properties:
+                  p50_ms: { type: integer, format: int64 }
+                  p95_ms: { type: integer, format: int64 }
+                  timeout_ms: { type: integer, format: int64 }
               reliability:
                 type: object
                 description: >

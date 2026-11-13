@@ -604,6 +604,7 @@ async fn registry_drives_a_full_federated_execution() {
             max_sources: 4,
             max_parallel_sources: 4,
             max_estimated_cost_micros: 100_000,
+            max_latency_ms: 30_000,
             stop_when_covered: true,
             generic_sources_can_answer: false,
         },
@@ -651,6 +652,7 @@ async fn registry_drives_a_full_federated_execution() {
         max_sources: 4,
         max_parallel_sources: 4,
         max_estimated_cost_micros: 100_000,
+        max_latency_ms: 30_000,
         stop_when_covered: false,
         generic_sources_can_answer: true,
     };
@@ -711,6 +713,7 @@ async fn unregistered_source_in_plan_surfaces_as_unavailable() {
             max_sources: 2,
             max_parallel_sources: 2,
             max_estimated_cost_micros: 100_000,
+            max_latency_ms: 30_000,
             stop_when_covered: false,
             generic_sources_can_answer: false,
         },

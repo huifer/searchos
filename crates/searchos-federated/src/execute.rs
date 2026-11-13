@@ -68,6 +68,13 @@ impl ExecutionControls {
             None => false,
         }
     }
+
+    /// Milliseconds left before the request deadline, if one was declared.
+    /// `Some(0)` means already expired; `None` means unbounded.
+    pub fn remaining_ms(&self) -> Option<u64> {
+        self.deadline
+            .map(|deadline| (deadline - Utc::now()).num_milliseconds().max(0) as u64)
+    }
 }
 
 /// Per-execution identity, independent of any single source.
@@ -241,6 +248,17 @@ impl<'a> FederatedExecutor<'a> {
         }
     }
 
+    /// Effective per-source deadline: the source's declared timeout capped by
+    /// the REMAINING request budget. A slow source can never overrun the
+    /// wall-clock budget the caller paid for (RFC-080 latency budget); the
+    /// declared timeout stays an upper bound when no deadline is set.
+    fn bounded_timeout_ms(&self, declared_ms: u64) -> u64 {
+        match self.controls.remaining_ms() {
+            Some(remaining) => declared_ms.min(remaining),
+            None => declared_ms,
+        }
+    }
+
     /// Spawns one source execution into a bounded JoinSet.
     fn spawn_into(
         &self,
@@ -252,10 +270,12 @@ impl<'a> FederatedExecutor<'a> {
         let descriptor = self
             .registry
             .descriptor_for(&SourceId::new(&source_id), &self.scope.workspace_id);
-        let timeout_ms = descriptor
-            .as_ref()
-            .map(|d| d.latency.timeout_ms)
-            .unwrap_or(5_000);
+        let timeout_ms = self.bounded_timeout_ms(
+            descriptor
+                .as_ref()
+                .map(|d| d.latency.timeout_ms)
+                .unwrap_or(5_000),
+        );
         let prepared = self.prepare(source_id.clone(), stage_id.to_string(), request, timeout_ms);
         set.spawn(async move { prepared.run().await });
     }
@@ -292,11 +312,12 @@ impl<'a> FederatedExecutor<'a> {
         source_id: String,
         request: &SourceSearchRequest,
     ) -> SourceExecutionResult {
-        let timeout_ms = self
-            .registry
-            .descriptor_for(&SourceId::new(&source_id), &self.scope.workspace_id)
-            .map(|d| d.latency.timeout_ms)
-            .unwrap_or_else(|| stage.timeout_ms.max(1));
+        let timeout_ms = self.bounded_timeout_ms(
+            self.registry
+                .descriptor_for(&SourceId::new(&source_id), &self.scope.workspace_id)
+                .map(|d| d.latency.timeout_ms)
+                .unwrap_or_else(|| stage.timeout_ms.max(1)),
+        );
         self.prepare(source_id, stage.stage_id.clone(), request, timeout_ms)
             .run()
             .await

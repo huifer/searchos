@@ -36,6 +36,11 @@ fn default_stop_when_covered() -> bool {
     true
 }
 
+fn default_max_latency_ms() -> u64 {
+    // Matches `SearchBudget::default().max_execution_time_ms`.
+    30_000
+}
+
 /// How the selected sources are executed. Orthogonal to `SearchMode`
 /// (ADR-062-008): strategy chooses *shape*, mode chooses *permission*.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -100,6 +105,12 @@ pub struct PlanningContext {
     pub max_parallel_sources: usize,
     /// Total estimated-cost ceiling for the plan, in micro units.
     pub max_estimated_cost_micros: i64,
+    /// Wall-clock budget for the whole execution, in milliseconds. A source
+    /// whose declared timeout cannot fit inside it is rejected before it is
+    /// ever started, and the executor caps every per-source deadline by the
+    /// remaining part of this budget (RFC-080 latency budget).
+    #[serde(default = "default_max_latency_ms")]
+    pub max_latency_ms: u64,
     /// Requirements that must be answered before the plan may stop.
     #[serde(default = "default_stop_when_covered")]
     pub stop_when_covered: bool,
@@ -134,6 +145,7 @@ impl Default for PlanningContext {
             max_sources: 8,
             max_parallel_sources: 8,
             max_estimated_cost_micros: i64::MAX,
+            max_latency_ms: default_max_latency_ms(),
             stop_when_covered: true,
             generic_sources_can_answer: true,
         }
@@ -158,6 +170,8 @@ pub enum RejectionReason {
     NotRelevant,
     /// Its estimated cost does not fit the remaining budget.
     Budget,
+    /// Its declared timeout exceeds the request's wall-clock budget.
+    Latency,
     /// Every requirement it could answer is already covered.
     AlreadyCovered,
     /// Fan-out limit reached.
@@ -176,6 +190,7 @@ impl RejectionReason {
             Self::Reliability => "reliability",
             Self::NotRelevant => "not_relevant",
             Self::Budget => "budget",
+            Self::Latency => "latency",
             Self::AlreadyCovered => "already_covered",
             Self::FanOutLimit => "fan_out_limit",
             Self::CostForbidden => "cost_forbidden",
@@ -593,6 +608,12 @@ fn reject_reason(
     }
     if descriptor.reliability.circuit_open {
         return Some(RejectionReason::Reliability);
+    }
+    // RFC-080: a source that cannot finish inside the request's wall-clock
+    // budget must be rejected with an AUDITABLE reason, not started and then
+    // silently cut off by a global deadline.
+    if descriptor.latency.timeout_ms > context.max_latency_ms {
+        return Some(RejectionReason::Latency);
     }
     None
 }

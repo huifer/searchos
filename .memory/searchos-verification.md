@@ -84,7 +84,8 @@ The SearchOS implementation (`~/git_repo/searchos`) is verified by these command
 - **Federation / RFC-062+063+064+066+069 gates (2026-11, residual pass on
   top of the master-index implementation turn):**
   - Full suite `cargo test --workspace --locked` → **673 passed / 0 failed**
-    (79 suites); clippy `-D warnings`, `cargo fmt --all -- --check`,
+    (79 suites) at that milestone; **682** after the RFC-080 slices below.
+    clippy `-D warnings`, `cargo fmt --all -- --check`,
     route-conflict scan all green. Schema is migration **v9**
     (`decision_traces.federation_json`; append-only). Schema version is read
     from PRAGMA at runtime — no constant to bump when adding migrations.
@@ -131,6 +132,22 @@ The SearchOS implementation (`~/git_repo/searchos`) is verified by these command
     `outcome_updates_every_scope_copy_of_a_source`,
     `explicit_reset_closes_a_fully_open_breaker`,
     `federated_failures_trip_the_source_circuit_in_the_live_pipeline`.
+- **RFC-080 latency budget / feedback (2026-11-13, final slice):**
+  `PlanningContext.max_latency_ms` is wired from
+  `SearchBudget.max_execution_time_ms` on both `/search/plan` and the live
+  pipeline; sources whose declared timeout cannot fit are rejected with the
+  new `RejectionReason::Latency`. `ExecutionControls::with_deadline` carries
+  the absolute request deadline into `FederatedExecutor`, whose
+  `bounded_timeout_ms` caps every per-source timeout by the remaining budget
+  (a slow source can never overrun the request). `registry.record_latency`
+  feeds measured p50 (EMA) / p95 (decaying envelope, p50 floor) into the
+  live profile on every scope copy; declared `timeout_ms` is never inferred
+  downward. `GET /sources` + OpenAPI expose the observed latency.
+  Gates: `planner_rejects_a_source_outside_the_wall_clock_budget`,
+  `latency_feedback_updates_the_live_profile_on_every_scope_copy`,
+  `per_source_timeout_is_capped_by_the_request_deadline`,
+  `federated_execute_respects_a_tiny_wall_clock_budget`. Full suite **682
+  passed / 0 failed**; clippy `-D warnings`, fmt, route scan green.
 
 **Known environment notes:**
 - LanceDB requires `protoc` at build time (`brew install protobuf`).

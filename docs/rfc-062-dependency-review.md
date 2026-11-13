@@ -184,7 +184,20 @@ in §6 — a behaviour-preserving change because `legacy` remains the default.
   purchase now gets one namespaced synthetic open requirement
   (`fallback:<query>`), which keeps INV-30-04's no-re-buy rule and restores
   parity with the legacy path.
-* Full suite: **678 tests, 0 failures**; `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, route-conflict scan all clean.
+* **RFC-080 slice — per-source latency budget:** `PlanningContext` now
+  carries `max_latency_ms` from `SearchBudget.max_execution_time_ms` on both
+  planning surfaces; `RejectionReason::Latency` records an auditable
+  exclusion when a declared timeout cannot fit. The executor receives the
+  absolute request deadline (`ExecutionControls::with_deadline`) and caps
+  every per-source timeout by the REMAINING budget, so a slow source cannot
+  overrun the request. Measured latencies feed live `p50_ms`/`p95_ms`
+  (`registry.record_latency`; declared `timeout_ms` never inferred
+  downward) and are exposed through `GET /sources`.
+  Gates: `planner_rejects_a_source_outside_the_wall_clock_budget`,
+  `latency_feedback_updates_the_live_profile_on_every_scope_copy`,
+  `per_source_timeout_is_capped_by_the_request_deadline`,
+  `federated_execute_respects_a_tiny_wall_clock_budget`.
+* Full suite: **682 tests, 0 failures**; `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, route-conflict scan all clean.
 * Route table unchanged by THIS residue pass; the earlier iteration added
   `GET /sources` with the route table + OpenAPI in the same change.
 
@@ -301,7 +314,7 @@ removed with the migration.
 
 ### 5. 本轮交付（可证伪清单）
 
-见英文 §5。本轮累计：`searchos-federated` 内核（source/registry/resource/planner/executor/fusion，含内核融合与熔断反馈测试）、带权 RRF +9 测试，domain 契约（`ContextBudget`/`FederationExecutionTrace`），application 装配 + 具名测试，三传输层接入与 OpenAPI，planner/executor 管线接线（legacy / plan_only / execute 真实执行）与两级等价性门禁；全套 **678 测试 0 失败**，fmt / clippy / 路由扫描全绿。`GET /sources` 由前一轮随路由表 + OpenAPI 同步交付；本轮残留收尾未新增 HTTP 路由。逐源熔断（RFC-080 切片）由执行结果反哺 `ReliabilityProfile`，三次连续失败开熔断、cooldown 后半开探针、显式健康成功复位；门禁同时发现并修复了 `ExternalOnly` 在 `execute` 下无 requirement id 导致零采集的缺陷。
+见英文 §5。本轮累计：`searchos-federated` 内核（source/registry/resource/planner/executor/fusion，含内核融合、熔断反馈与延迟预算测试）、带权 RRF +9 测试，domain 契约（`ContextBudget`/`FederationExecutionTrace`），application 装配 + 具名测试，三传输层接入与 OpenAPI，planner/executor 管线接线（legacy / plan_only / execute 真实执行）与两级等价性门禁；全套 **682 测试 0 失败**，fmt / clippy / 路由扫描全绿。`GET /sources` 由前一轮随路由表 + OpenAPI 同步交付；本轮残留收尾未新增 HTTP 路由。逐源熔断（RFC-080 切片）由执行结果反哺 `ReliabilityProfile`，三次连续失败开熔断、cooldown 后半开探针、显式健康成功复位；门禁同时发现并修复了 `ExternalOnly` 在 `execute` 下无 requirement id 导致零采集的缺陷。逐源延迟预算把请求 `max_execution_time_ms` 同时接入两个规划面（超时不匹配的来源以 `Latency` 原因拒绝）与执行器（每源 timeout 被剩余预算截断），并把实测 p50/p95 反哺注册表。
 
 ### 6. 风险说明（为什么执行器单独交付）
 

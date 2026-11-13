@@ -98,6 +98,7 @@ fn context(
         max_sources: 4,
         max_parallel_sources: 4,
         max_estimated_cost_micros: 100_000,
+        max_latency_ms: 30_000,
         stop_when_covered: true,
         generic_sources_can_answer: true,
     }
@@ -1268,5 +1269,116 @@ fn outcome_updates_every_scope_copy_of_a_source() {
             .success_rate,
         references[0].descriptor.reliability.success_rate,
         "the resolved descriptor agrees with every copy"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// RFC-080 — per-source latency budget
+// ---------------------------------------------------------------------------
+
+#[test]
+fn planner_rejects_a_source_outside_the_wall_clock_budget() {
+    let mut slow = descriptor(
+        "too_slow",
+        SourceCategory::WebSearch,
+        SourceScope::Global,
+        50,
+        1_000,
+        true,
+        &["gap"],
+    );
+    slow.latency.timeout_ms = 8_000;
+    let mut fast = descriptor(
+        "fits",
+        SourceCategory::WebSearch,
+        SourceScope::Global,
+        50,
+        1_000,
+        true,
+        &["gap"],
+    );
+    fast.latency.timeout_ms = 100;
+    let ctx = PlanningContext {
+        requirements: vec!["gap".into()],
+        max_latency_ms: 1_000,
+        ..context(SearchMode::ExternalOnly, FederationStrategy::Auto, &["gap"])
+    };
+    let plan = FederatedPlanner::plan(&ctx, &[slow, fast]);
+    assert_eq!(plan.selected_source_ids(), vec!["fits".to_string()]);
+    assert_eq!(
+        plan.rejections
+            .iter()
+            .find(|r| r.source_id == "too_slow")
+            .map(|r| r.reason),
+        Some(RejectionReason::Latency),
+        "the slow source is excluded with an auditable reason"
+    );
+    assert_eq!(RejectionReason::Latency.as_str(), "latency");
+}
+
+#[test]
+fn latency_feedback_updates_the_live_profile_on_every_scope_copy() {
+    let registry = InMemorySourceRegistry::new();
+    registry
+        .register(stub(
+            "shared",
+            SourceCategory::WebSearch,
+            SourceScope::Global,
+            Vec::new(),
+        ))
+        .unwrap();
+    let mut overridden = descriptor(
+        "shared",
+        SourceCategory::WebSearch,
+        SourceScope::Workspace(WS.into()),
+        99,
+        0,
+        false,
+        &[],
+    );
+    overridden.latency.timeout_ms = 9_000;
+    registry
+        .register(Arc::new(StubSource {
+            descriptor: overridden,
+            outcome: Ok(SourceSearchResponse::success("shared", Vec::new(), 1)),
+            calls: Arc::new(AtomicUsize::new(0)),
+        }) as Arc<dyn SearchSource>)
+        .unwrap();
+
+    let id = SourceId::new("shared");
+    // Repeated slow observations move p50 up and push the p95 envelope up.
+    for _ in 0..6 {
+        registry.record_latency(&id, 2_000);
+    }
+    let references = registry.all_references();
+    assert_eq!(references.len(), 2);
+    for r in &references {
+        assert!(
+            r.descriptor.latency.p50_ms > 50,
+            "declared p50 is replaced by observed latency: {:?}",
+            r.descriptor.latency
+        );
+        assert!(r.descriptor.latency.p95_ms >= 2_000);
+        assert_eq!(
+            r.descriptor.latency.timeout_ms,
+            if r.descriptor.scope == SourceScope::Global {
+                5_000
+            } else {
+                9_000
+            },
+            "declared timeout stays a hard bound, never inferred downward"
+        );
+    }
+    // Fast observations after a slow streak decay the envelope (with a
+    // p50-based floor), so recovery is visible too.
+    for _ in 0..20 {
+        registry.record_latency(&id, 5);
+    }
+    let resolved = registry.descriptor_for(&id, &workspace()).unwrap().latency;
+    assert!(resolved.p50_ms < 50, "p50 follows fast observations");
+    assert!(resolved.p95_ms < 2_000, "the p95 envelope decays");
+    assert!(
+        resolved.p95_ms >= resolved.p50_ms * 2,
+        "p95 stays above p50"
     );
 }

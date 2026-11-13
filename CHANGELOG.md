@@ -65,6 +65,21 @@ multi-arch images, and attaches the matching section of this file.
   fallback purchase now gets one namespaced synthetic open requirement
   (`fallback:<query>`), preserving INV-30-04's no-re-buy rule while restoring
   parity with the legacy loop.
+- **Per-source latency budget (RFC-080 slice).** `PlanningContext.max_latency_ms`
+  is wired from `SearchBudget.max_execution_time_ms` on BOTH planning surfaces
+  (`/search/plan` and the live pipeline): a source whose declared timeout
+  cannot fit the wall-clock budget is rejected with the new auditable
+  `RejectionReason::Latency` instead of being started and silently cut off.
+  `ExecutionControls.with_deadline` now carries the request deadline into the
+  executor, whose `bounded_timeout_ms` caps every per-source timeout by the
+  REMAINING budget — a slow source can never overrun the request. Execution
+  results also feed measured latency back into the live `p50_ms` / `p95_ms`
+  (`registry.record_latency`, declared `timeout_ms` never inferred downward),
+  and `GET /sources` exposes the observed profile. Gates:
+  `planner_rejects_a_source_outside_the_wall_clock_budget`,
+  `latency_feedback_updates_the_live_profile_on_every_scope_copy`,
+  `per_source_timeout_is_capped_by_the_request_deadline` and the live-pipeline
+  gate `federated_execute_respects_a_tiny_wall_clock_budget`.
 - **Federated residuals closed (RFC-062 tasks 5/6/7).** Session transcripts
   are now a federated source (`SessionTranscriptSource`, registered at
   runtime): past research turns are workspace-scoped, mapped onto RFC-064

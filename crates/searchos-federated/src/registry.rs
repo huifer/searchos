@@ -219,6 +219,35 @@ impl InMemorySourceRegistry {
         Some(just_opened)
     }
 
+    /// Live latency feedback (RFC-080 slice): observed execution latency
+    /// updates the source's p50 (EMA) and p95 (decaying upper envelope, with
+    /// a p50-based floor). `timeout_ms` is a DECLARED hard bound and is never
+    /// inferred downward — a fast source must not acquire a false-short
+    /// timeout. All scope registrations of the id are updated.
+    ///
+    /// The planner and `GET /sources` read these live values, so a source
+    /// that became slow is visible before it breaks a latency SLA.
+    pub fn record_latency(&self, source_id: &SourceId, observed_ms: u64) {
+        const P50_EMA_WEIGHT: f32 = 0.3;
+        const P95_DECAY: f64 = 0.9;
+        let Ok(mut guard) = self.inner.write() else {
+            return;
+        };
+        let Some(entries) = guard.get_mut(source_id.as_str()) else {
+            return;
+        };
+        for entry in entries.iter_mut() {
+            let latency = &mut entry.descriptor.latency;
+            let p50 = latency.p50_ms as f32 * (1.0 - P50_EMA_WEIGHT)
+                + observed_ms as f32 * P50_EMA_WEIGHT;
+            latency.p50_ms = p50.max(1.0) as u64;
+            let envelope = (latency.p95_ms as f64 * P95_DECAY)
+                .max(observed_ms as f64)
+                .max(latency.p50_ms as f64 * 2.0);
+            latency.p95_ms = envelope.max(1.0) as u64;
+        }
+    }
+
     pub fn health(&self, source_id: &SourceId, requester: &WorkspaceId) -> Option<SourceHealth> {
         let guard = self.inner.read().ok()?;
         let entries = guard.get(source_id.as_str())?;

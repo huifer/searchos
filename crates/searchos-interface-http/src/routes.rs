@@ -2047,6 +2047,12 @@ async fn list_sources(
                 "capabilities": d.capabilities,
                 "estimated_cost_micros": d.cost.estimated_cost_micros,
                 "timeout_ms": d.latency.timeout_ms,
+                // RFC-080: observed p50/p95 from live execution feedback.
+                "latency": {
+                    "p50_ms": d.latency.p50_ms,
+                    "p95_ms": d.latency.p95_ms,
+                    "timeout_ms": d.latency.timeout_ms,
+                },
                 // RFC-080 slice: operators must see WHY a source stopped
                 // being selected. The breaker is authoritative here —
                 // `list()` already derived these from the live breaker.
@@ -2735,6 +2741,10 @@ mod tests {
             .unwrap();
         assert_eq!(local["capabilities"]["lexical_search"], true);
         assert_eq!(local["billable"], false);
+        // RFC-080: declared + observed latency are visible to operators.
+        assert!(local["latency"]["p50_ms"].as_u64().unwrap() > 0);
+        assert!(local["latency"]["p95_ms"].as_u64().unwrap() > 0);
+        assert_eq!(local["latency"]["timeout_ms"], local["timeout_ms"]);
         // RFC-080: live reliability is visible to operators.
         assert!(local["reliability"]["success_rate"].as_f64().unwrap() > 0.0);
         assert_eq!(local["reliability"]["circuit_open"], false);

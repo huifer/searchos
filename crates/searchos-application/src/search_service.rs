@@ -492,6 +492,7 @@ impl SearchServiceImpl {
             max_sources: self.deps.federation_limits.max_sources.max(1),
             max_parallel_sources: self.deps.federation_limits.max_parallel_sources.max(1),
             max_estimated_cost_micros: req.budget.max_total_cost_micros,
+            max_latency_ms: req.budget.max_execution_time_ms,
             stop_when_covered: true,
             generic_sources_can_answer: true,
         };
@@ -2986,6 +2987,7 @@ impl SearchServiceImplStub {
                 .budget
                 .max_total_cost_micros
                 .saturating_sub(state.spent_micros),
+            max_latency_ms: req.budget.max_execution_time_ms,
             stop_when_covered: true,
             generic_sources_can_answer: true,
         };
@@ -3023,7 +3025,13 @@ impl SearchServiceImplStub {
                 workspace_id: req.workspace_id.clone(),
                 max_parallel_sources: self.deps.federation_limits.max_parallel_sources.max(1),
             },
-            searchos_federated::ExecutionControls::new(),
+            // RFC-080: the caller's wall-clock budget becomes the executor's
+            // absolute deadline. Every per-source timeout is capped by the
+            // remaining part of it (no source may overrun the request).
+            searchos_federated::ExecutionControls::new().with_deadline(
+                chrono::Utc::now()
+                    + chrono::Duration::milliseconds(req.budget.max_execution_time_ms as i64),
+            ),
         );
         let request = SourceSearchRequest::new(
             req.query.clone(),
@@ -3049,6 +3057,11 @@ impl SearchServiceImplStub {
             {
                 searchos_observability::MetricsRegistry::global()
                     .inc_counter("federation.source.circuit_opened_total");
+            }
+            // Only a response that actually arrived carries a MEASURED
+            // latency; a timeout or failure has no trustworthy sample.
+            if let Some(latency_ms) = result.response.as_ref().map(|r| r.latency_ms) {
+                registry.record_latency(&source_key, latency_ms);
             }
         }
 

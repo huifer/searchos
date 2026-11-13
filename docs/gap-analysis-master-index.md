@@ -77,7 +77,7 @@ Legend: **Have** = implemented & tested · **Partial** = exists but narrower tha
 | 077 | Search Cache Intelligence | **Partial** | exact/canonical/semantic caches with mode+freshness keys and a 0.92 similarity gate; no "is the evidence still valid / source changed" judgement | RFC-077 (P2) |
 | 078 | Cost Attribution | **Have** | full cost ledger, reserve→settle, reconciliation, savings views | reuse |
 | 079 | Search Benchmark | **Have** | 500-question dataset, CJK corpus, CI eval gate, ranking metrics | reuse |
-| 080 | Provider Fallback & Routing | **Partial → per-source circuit breaker wired** | ADR-029 multi-key rotation, crawler failure isolation; federated execution outcomes feed a live `ReliabilityProfile` (3 failures → open, cooldown → half-open probe, success → reset), planner rejects tripped sources | per-source latency budget (P1) |
+| 080 | Provider Fallback & Routing | **Partial → v1 federation slice delivered** | ADR-029 multi-key rotation, crawler failure isolation; outcome-driven circuit breaker (3 failures → open, cooldown → half-open probe, success → reset) and a per-source latency budget (planner `Latency` rejection + executor deadline cap + live p50/p95 feedback) | adaptive cost/source-aware routing (RFC-076/080 full scope) |
 | 081–083 | Extension SDK / Crawler Extension / Plugin Isolation | **Partial** | versioned extension registry, per-site crawler extensions, fault isolation; **no external-process extension** (Both is frozen) | RFC-081…083 (P5) |
 | 084–085 | Distributed Runtime / Multi-node | **Reject for v1** | explicitly *Staged* — single-node first, reserve seams only | later |
 | 087 | Privacy-aware Ingestion & Egress | **Gap** | workspace isolation, token→workspace binding, rate limiting, redacted config export; **no ingest-time secret/PII redaction**, no per-source egress policy, no deletion propagation audit | RFC-087 (P3) |
@@ -101,7 +101,7 @@ The Master Index orders work **Foundation → Retrieval → Intelligence → Mem
 | Phase | RFCs | This iteration |
 |---|---|---|
 | P0 | 001–025 verification, 046, 054, 055, **063, 064, 062**, 061 | **Delivered**: final Master Index, bilingual RFC-062/063/064, [P0 dependency review](rfc-062-dependency-review.md), `searchos-federated` kernel (trait + registry + resource model + planner + executor + Phase 2 adapters, 56 tests) |
-| P1 | 065, 047, **066**, 050, 039, 080, 032, 079 | weighted RRF delivered (`rrf_fuse_weighted`) + wired into `execute`; outcome-driven per-source circuit breaker (080 slice) delivered; rest planned |
+| P1 | 065, 047, **066**, 050, 039, 080, 032, 079 | weighted RRF delivered (`rrf_fuse_weighted`) + wired into `execute`; outcome-driven per-source circuit breaker and per-source latency budget (080 slice) delivered; rest planned |
 | P2 | 034, 076, 077, 078, 075, 086, 040 | **Context wiring delivered**: `context_budget` on `SearchRequest` → `SearchResponse.context`, HTTP/MCP/CLI + OpenAPI |
 | P3 | 030, 036, 057, 058, **069, 070, 087** | planned (sessions already persist, `ff8b2be`) |
 | P4 | 038, 071, 072, 073, 074, 059, **067, 068** | **Delivered**: `searchos-context` engine + assembly, ahead of its slot (pure/additive/independently testable) |
@@ -206,7 +206,7 @@ The design documents are text-only and cannot break the Rust or frontend gates.
 | 077 | Search Cache Intelligence | **部分** | exact/canonical/semantic 缓存、mode+freshness 键、0.92 相似度门；无「证据是否仍有效 / 来源是否变化」判断 | RFC-077（P2） |
 | 078 | Cost Attribution | **已有** | 完整成本账本、reserve→settle、对账、节省视图 | 复用 |
 | 079 | Search Benchmark | **已有** | 500 题数据集、中文语料、CI eval gate、排序指标 | 复用 |
-| 080 | Provider Fallback & Routing | **部分 → 逐源熔断已接线** | ADR-029 多 key 轮换、爬虫故障隔离；联邦执行结果反哺实时 `ReliabilityProfile`（3 次失败开熔断、cooldown 半开探针、成功复位），planner 拒绝熔断中的来源 | 逐源延迟预算（P1） |
+| 080 | Provider Fallback & Routing | **部分 → v1 联邦切片已交付** | ADR-029 多 key 轮换、爬虫故障隔离；执行结果驱动的熔断（3 次失败开、cooldown 半开探针、成功复位）+ 逐源延迟预算（planner `Latency` 拒绝、executor deadline 截断、实时 p50/p95 反馈） | 成本/来源自适应路由（RFC-076/080 完整范围） |
 | 081–083 | Extension SDK / Crawler / Isolation | **部分** | 版本化扩展注册表、站点专属爬虫、故障隔离；**无外部进程扩展**（Both 已冻结） | RFC-081…083（P5） |
 | 084–085 | 分布式 / 多节点 | **v1 不做** | 明确 *Staged* —— 单机优先，只预留接缝 | 后续 |
 | 087 | Privacy-aware Ingestion & Egress | **缺口** | workspace 隔离、token→workspace 绑定、限流、脱敏配置导出；**摄取前无 secret/PII 脱敏**、无逐源外发策略、无删除传播审计 | RFC-087（P3） |
@@ -230,7 +230,7 @@ Master Index 的推进顺序是 **Foundation → Retrieval → Intelligence → 
 | 阶段 | RFC | 本轮 |
 |---|---|---|
 | P0 | 001–025 核对、046、054、055、**063、064、062**、061 | **已交付**：最终 Master Index、双语 RFC-062/063/064、[P0 依赖审查](rfc-062-dependency-review.md)、`searchos-federated` 内核（trait + registry + 资源模型 + planner + 执行器 + Phase 2 适配器，56 测试） |
-| P1 | 065、047、**066**、050、039、080、032、079 | 带权 RRF 已交付（`rrf_fuse_weighted`）并接入 `execute`；逐源熔断（080 切片）已交付；其余计划中 |
+| P1 | 065、047、**066**、050、039、080、032、079 | 带权 RRF 已交付（`rrf_fuse_weighted`）并接入 `execute`；逐源熔断 + 逐源延迟预算（080 切片）已交付；其余计划中 |
 | P2 | 034、076、077、078、075、086、040 | **上下文接入已交付**：`context_budget` → `SearchResponse.context`，HTTP/MCP/CLI + OpenAPI |
 | P3 | 030、036、057、058、**069、070、087** | 计划中（会话已持久化，`ff8b2be`） |
 | P4 | 038、071、072、073、074、059、**067、068** | **已交付**：`searchos-context` 引擎与装配，先于其位置落地（纯函数、加法式、可独立验证） |

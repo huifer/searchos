@@ -166,5 +166,15 @@ the same Resource Model / Source Registry.
   Fix at the wiring boundary: synthesize ONE namespaced open requirement
   `fallback:<query>`; NEVER weaken the planner's "no open requirement ⇒ no
   billable source" rule (INV-30-04 generalised).
+- **Final slice — per-source latency budget (2026-11-13):**
+  `PlanningContext.max_latency_ms` (from `SearchBudget.max_execution_time_ms`)
+  gives the planner an auditable `RejectionReason::Latency`; the executor now
+  gets the absolute request deadline and caps each per-source timeout by the
+  REMAINING budget; measured latencies feed live `p50_ms`/`p95_ms` in the
+  registry (declared `timeout_ms` stays a hard bound). `GET /sources` exposes
+  both reliability and latency. All tests/literals of `PlanningContext` carry
+  the new field (30s default) — a new context field must be wired at EVERY
+  construction site, not just the service. Full suite **682 passed / 0
+  failed**; clippy/fmt/route scan green.
 
 **Related:** [[searchos-project]], [[searchos-verification]], [[searchos-decision-red-lines]], docs/rfc/rfc-master-index.md
