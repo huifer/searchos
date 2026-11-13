@@ -489,6 +489,7 @@ mod tests {
             coverage_gaps: Vec::new(),
             session_id: None,
             focus_requirements: Vec::new(),
+            context: None,
         };
         let out = TavilySearchResponse::from_domain(&core, 5, vec![], 10);
         let json = serde_json::to_value(&out).unwrap();
@@ -551,6 +552,7 @@ mod tests {
             coverage_gaps: Vec::new(),
             session_id: None,
             focus_requirements: Vec::new(),
+            context: None,
         };
         let out = TavilySearchResponse::from_domain(&core, 5, vec![], 120);
         assert_eq!(out.results.len(), 1);

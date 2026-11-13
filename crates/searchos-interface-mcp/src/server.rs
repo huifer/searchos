@@ -29,7 +29,20 @@ pub fn tools() -> Vec<Value> {
                     "max_acquisition_rounds": { "type": "integer", "minimum": 1, "maximum": 5, "description": "Bounded iterative retrieval rounds; total query and cost caps remain cumulative." },
                     "max_total_cost": { "type": "number", "minimum": 0 },
                     "max_results": { "type": "integer", "minimum": 1, "maximum": 100 },
-                    "request_id": { "type": "string", "description": "Client idempotency key; replaying it does not re-run or re-bill an external search." }
+                    "request_id": { "type": "string", "description": "Client idempotency key; replaying it does not re-run or re-bill an external search." },
+                    "context_budget": {
+                        "type": "object",
+                        "description": "Agent-facing context budget (RFC-067/068). When present the response carries a `context` block: deduplicated evidence, preserved citations and an honest truncation status, fitted to your token budget.",
+                        "properties": {
+                            "max_tokens": { "type": "integer", "minimum": 1 },
+                            "reserved_tokens": { "type": "integer", "minimum": 0 },
+                            "max_sources": { "type": "integer", "minimum": 1 },
+                            "max_chunks_per_source": { "type": "integer", "minimum": 1 },
+                            "deduplicate": { "type": "boolean" },
+                            "preserve_citations": { "type": "boolean" },
+                            "include_conflicts": { "type": "boolean" }
+                        }
+                    }
                 },
                 "required": ["query"]
             }
@@ -49,7 +62,20 @@ pub fn tools() -> Vec<Value> {
                     "max_acquisition_rounds": { "type": "integer", "minimum": 1, "maximum": 5 },
                     "max_external_queries": { "type": "integer", "minimum": 0 },
                     "max_total_cost": { "type": "number", "minimum": 0 },
-                    "max_results": { "type": "integer", "minimum": 1, "maximum": 100 }
+                    "max_results": { "type": "integer", "minimum": 1, "maximum": 100 },
+                    "context_budget": {
+                        "type": "object",
+                        "description": "Agent-facing context budget (RFC-067/068); see the `search` tool.",
+                        "properties": {
+                            "max_tokens": { "type": "integer", "minimum": 1 },
+                            "reserved_tokens": { "type": "integer", "minimum": 0 },
+                            "max_sources": { "type": "integer", "minimum": 1 },
+                            "max_chunks_per_source": { "type": "integer", "minimum": 1 },
+                            "deduplicate": { "type": "boolean" },
+                            "preserve_citations": { "type": "boolean" },
+                            "include_conflicts": { "type": "boolean" }
+                        }
+                    }
                 },
                 "required": ["query"]
             }
@@ -249,6 +275,26 @@ pub async fn handle_message(runtime: Arc<SearchOsRuntime>, msg: &Value) -> Optio
     })
 }
 
+/// Applies the optional `context_budget` argument (RFC-067/068) to a request.
+///
+/// Validation happens at the edge so an invalid budget is a client error
+/// (`-32602`), never a silently ignored field.
+fn apply_context_budget(args: &Value, req: &mut SearchRequest) -> Result<(), Value> {
+    let Some(value) = args.get("context_budget") else {
+        return Ok(());
+    };
+    if value.is_null() {
+        return Ok(());
+    }
+    let budget: searchos_domain::context::ContextBudget = serde_json::from_value(value.clone())
+        .map_err(|error| rpc_error(-32602, "VALIDATION_FAILED", error.to_string()))?;
+    budget
+        .validate()
+        .map_err(|message| rpc_error(-32602, "VALIDATION_FAILED", message))?;
+    req.context_budget = Some(budget);
+    Ok(())
+}
+
 /// JSON-RPC error with a shared uppercase transport code in `data.code`
 /// (Part 30 INV-30-19).
 fn rpc_error(code: i64, error_code: &str, message: impl ToString) -> Value {
@@ -298,6 +344,7 @@ async fn call_tool(runtime: Arc<SearchOsRuntime>, params: &Value) -> Result<Valu
             if let Some(c) = args.get("max_total_cost").and_then(|c| c.as_f64()) {
                 req.budget.max_total_cost_micros = (c * 1_000_000.0).round() as i64;
             }
+            apply_context_budget(&args, &mut req)?;
             if let Some(rid) = args.get("request_id").and_then(|r| r.as_str()) {
                 req = req.with_request_id(rid);
             }
@@ -363,6 +410,7 @@ async fn call_tool(runtime: Arc<SearchOsRuntime>, params: &Value) -> Result<Valu
             if let Some(c) = args.get("max_total_cost").and_then(|c| c.as_f64()) {
                 req.budget.max_total_cost_micros = (c * 1_000_000.0).round() as i64;
             }
+            apply_context_budget(&args, &mut req)?;
             if let Some(max) = args.get("max_results").and_then(|m| m.as_u64()) {
                 req = req.with_max_results(max as u32);
             }
@@ -413,6 +461,7 @@ async fn call_tool(runtime: Arc<SearchOsRuntime>, params: &Value) -> Result<Valu
             if let Some(c) = args.get("max_total_cost").and_then(|c| c.as_f64()) {
                 req.budget.max_total_cost_micros = (c * 1_000_000.0).round() as i64;
             }
+            apply_context_budget(&args, &mut req)?;
             let report = runtime
                 .application
                 .search_service

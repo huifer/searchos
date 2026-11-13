@@ -181,8 +181,8 @@ impl<'a> DecisionRepo<'a> {
     pub fn insert_trace(&self, t: &DecisionTrace) -> Result<(), SearchOsError> {
         self.store.with_conn(|c| {
             c.execute(
-                "INSERT OR REPLACE INTO decision_traces (id, task_id, intents_json, profile_version, local_candidates, accepted_candidates, freshness_status, coverage_status, source_status, selected_path, rejection_reasons_json, estimated_cost_micros, estimated_currency, actual_cost_micros, decision_at, stages_json, final_strategy, final_outcome)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)",
+                "INSERT OR REPLACE INTO decision_traces (id, task_id, intents_json, profile_version, local_candidates, accepted_candidates, freshness_status, coverage_status, source_status, selected_path, rejection_reasons_json, estimated_cost_micros, estimated_currency, actual_cost_micros, decision_at, stages_json, final_strategy, final_outcome, federation_json)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)",
                 params![
                     t.trace_id.as_str(),
                     t.task_id.as_str(),
@@ -203,6 +203,11 @@ impl<'a> DecisionRepo<'a> {
                         .map_err(|er| SearchOsError::Internal(er.to_string()))?,
                     t.final_strategy,
                     t.final_outcome,
+                    t.federation_execution
+                        .as_ref()
+                        .map(serde_json::to_string)
+                        .transpose()
+                        .map_err(|er| SearchOsError::Internal(er.to_string()))?,
                 ],
             )
             .map(|_| ())
@@ -261,7 +266,7 @@ impl<'a> DecisionRepo<'a> {
         self.store.with_conn(|c| {
             let row = c
                 .query_row(
-                    "SELECT dt.id, dt.task_id, dt.intents_json, dt.profile_version, dt.local_candidates, dt.accepted_candidates, dt.freshness_status, dt.coverage_status, dt.source_status, dt.selected_path, dt.rejection_reasons_json, dt.estimated_cost_micros, dt.estimated_currency, dt.actual_cost_micros, dt.decision_at, dt.stages_json, dt.final_strategy, dt.final_outcome
+                    "SELECT dt.id, dt.task_id, dt.intents_json, dt.profile_version, dt.local_candidates, dt.accepted_candidates, dt.freshness_status, dt.coverage_status, dt.source_status, dt.selected_path, dt.rejection_reasons_json, dt.estimated_cost_micros, dt.estimated_currency, dt.actual_cost_micros, dt.decision_at, dt.stages_json, dt.final_strategy, dt.final_outcome, dt.federation_json
                      FROM decision_traces dt
                      LEFT JOIN search_tasks st ON st.id = dt.task_id
                      WHERE dt.id = ?1
@@ -287,6 +292,7 @@ impl<'a> DecisionRepo<'a> {
                             r.get::<_, String>(15)?,
                             r.get::<_, Option<String>>(16)?,
                             r.get::<_, Option<String>>(17)?,
+                            r.get::<_, Option<String>>(18)?,
                         ))
                     },
                 )
@@ -301,6 +307,12 @@ impl<'a> DecisionRepo<'a> {
             let stages: Vec<searchos_domain::decision::DecisionStageTrace> =
                 serde_json::from_str(&row.15)
                     .map_err(|er| SearchOsError::Internal(er.to_string()))?;
+            let federation_execution = row
+                .18
+                .as_deref()
+                .map(serde_json::from_str)
+                .transpose()
+                .map_err(|er| SearchOsError::Internal(er.to_string()))?;
             Ok(Some(DecisionTrace {
                 trace_id: searchos_domain::ids::TraceId::new(row.0),
                 task_id: searchos_domain::ids::TaskId::new(row.1),
@@ -321,6 +333,7 @@ impl<'a> DecisionRepo<'a> {
                 stages,
                 final_strategy: row.16,
                 final_outcome: row.17,
+                federation_execution,
             }))
         })
     }
@@ -2402,6 +2415,7 @@ mod tests {
             }],
             final_strategy: Some("local_resolve".into()),
             final_outcome: Some("completed".into()),
+            federation_execution: None,
         };
         d.insert_trace(&trace).unwrap();
         let back = d.get_trace(trace.trace_id.as_str()).unwrap().unwrap();
@@ -2413,6 +2427,67 @@ mod tests {
             vec![searchos_domain::request::SearchIntent::Technical]
         );
         assert!(d.get_trace("nope").unwrap().is_none());
+    }
+
+    #[test]
+    fn federation_execution_summary_survives_trace_re_record() {
+        // The pipeline records a trace at decision time, then RE-RECORDS it
+        // after federated execution with the per-source summary. INSERT OR
+        // REPLACE must update the row (not create a second trace), and the
+        // summary must round-trip through JSON (RFC-062 §16).
+        let s = store();
+        let d = DecisionRepo::new(&s);
+        let mut trace = DecisionTrace {
+            trace_id: searchos_domain::ids::TraceId::generate(),
+            task_id: searchos_domain::ids::TaskId::generate(),
+            intents: vec![],
+            profile_version: "1.0.0".into(),
+            local_candidates: 0,
+            accepted_candidates: 0,
+            freshness_status: "recent".into(),
+            coverage_status: "1".into(),
+            source_status: "open".into(),
+            selected_path: "hybrid".into(),
+            rejection_reasons: vec![],
+            estimated_cost: Money::zero("USD"),
+            actual_cost: None,
+            decision_at: Utc::now(),
+            stages: vec![],
+            final_strategy: Some("external_acquire".into()),
+            final_outcome: Some("partial_then_external".into()),
+            federation_execution: None,
+        };
+        d.insert_trace(&trace).unwrap();
+        assert!(d
+            .get_trace(trace.trace_id.as_str())
+            .unwrap()
+            .unwrap()
+            .federation_execution
+            .is_none());
+
+        let summary = searchos_domain::decision::FederationExecutionTrace {
+            strategy: "execute".into(),
+            planned_sources: vec!["provider_a".into(), "provider_b".into()],
+            executed_sources: vec!["provider_a".into()],
+            failed_sources: vec!["provider_b".into()],
+            timed_out_sources: vec![],
+            not_executed_sources: vec![],
+            candidates: 3,
+        };
+        trace.federation_execution = Some(summary.clone());
+        d.insert_trace(&trace).unwrap();
+
+        let back = d.get_trace(trace.trace_id.as_str()).unwrap().unwrap();
+        assert_eq!(back.federation_execution, Some(summary));
+        // Still ONE row for the trace id (list_traces_scoped counts rows).
+        assert_eq!(
+            d.list_traces(100)
+                .unwrap()
+                .iter()
+                .filter(|t| t.trace_id == trace.trace_id)
+                .count(),
+            1
+        );
     }
 
     #[test]
@@ -4698,6 +4773,139 @@ impl<'a> SessionRepo<'a> {
             c.execute("DELETE FROM agent_sessions WHERE id = ?1", params![id])
                 .map_err(e)?;
             Ok(())
+        })
+    }
+}
+
+/// Federated source catalog projection (RFC-063, migration v8).
+///
+/// The in-process registry stays authoritative for execution; this table is
+/// an auditable projection so operators can see which sources a deployment
+/// registered and what health was last observed. Rows are upserted by
+/// `source_id`, so re-registering the same source updates rather than
+/// duplicates it.
+pub struct SourceCatalogRepo<'a> {
+    pub store: &'a SqliteStore,
+}
+
+/// One persisted catalog row. The descriptor is stored as JSON so the full
+/// declared contract survives without a column per capability.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceCatalogRow {
+    pub source_id: String,
+    pub name: String,
+    pub category: String,
+    pub scope: String,
+    pub workspace_id: Option<String>,
+    pub enabled: bool,
+    pub billable: bool,
+    pub version: String,
+    pub health: String,
+    pub descriptor_json: String,
+}
+
+impl<'a> SourceCatalogRepo<'a> {
+    pub fn new(store: &'a SqliteStore) -> Self {
+        Self { store }
+    }
+
+    /// Upserts one source. `registered_at` is preserved on update.
+    pub fn upsert(&self, row: &SourceCatalogRow) -> Result<(), SearchOsError> {
+        let now = chrono::Utc::now().to_rfc3339();
+        self.store.with_conn(|c| {
+            c.execute(
+                "INSERT INTO search_sources
+                   (source_id, name, category, scope, workspace_id, enabled, billable,
+                    version, health, descriptor, registered_at, updated_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?11)
+                 ON CONFLICT(source_id) DO UPDATE SET
+                    name = excluded.name,
+                    category = excluded.category,
+                    scope = excluded.scope,
+                    workspace_id = excluded.workspace_id,
+                    enabled = excluded.enabled,
+                    billable = excluded.billable,
+                    version = excluded.version,
+                    health = excluded.health,
+                    descriptor = excluded.descriptor,
+                    updated_at = excluded.updated_at",
+                params![
+                    row.source_id,
+                    row.name,
+                    row.category,
+                    row.scope,
+                    row.workspace_id,
+                    row.enabled as i64,
+                    row.billable as i64,
+                    row.version,
+                    row.health,
+                    row.descriptor_json,
+                    now,
+                ],
+            )
+            .map_err(|e| SearchOsError::Storage(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    /// Records an observed health transition without touching the descriptor.
+    pub fn set_health(&self, source_id: &str, health: &str) -> Result<(), SearchOsError> {
+        let now = chrono::Utc::now().to_rfc3339();
+        self.store.with_conn(|c| {
+            c.execute(
+                "UPDATE search_sources SET health = ?2, updated_at = ?3 WHERE source_id = ?1",
+                params![source_id, health, now],
+            )
+            .map_err(|e| SearchOsError::Storage(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    /// Removes a source that is no longer registered.
+    pub fn remove(&self, source_id: &str) -> Result<(), SearchOsError> {
+        self.store.with_conn(|c| {
+            c.execute(
+                "DELETE FROM search_sources WHERE source_id = ?1",
+                params![source_id],
+            )
+            .map_err(|e| SearchOsError::Storage(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    /// Lists the catalog, optionally filtered to enabled sources.
+    pub fn list(&self, enabled_only: bool) -> Result<Vec<SourceCatalogRow>, SearchOsError> {
+        self.store.with_conn(|c| {
+            let sql = if enabled_only {
+                "SELECT source_id, name, category, scope, workspace_id, enabled, billable,
+                        version, health, descriptor
+                 FROM search_sources WHERE enabled = 1 ORDER BY source_id ASC"
+            } else {
+                "SELECT source_id, name, category, scope, workspace_id, enabled, billable,
+                        version, health, descriptor
+                 FROM search_sources ORDER BY source_id ASC"
+            };
+            let mut stmt = c
+                .prepare(sql)
+                .map_err(|e| SearchOsError::Storage(e.to_string()))?;
+            let rows = stmt
+                .query_map([], |r| {
+                    Ok(SourceCatalogRow {
+                        source_id: r.get(0)?,
+                        name: r.get(1)?,
+                        category: r.get(2)?,
+                        scope: r.get(3)?,
+                        workspace_id: r.get(4)?,
+                        enabled: r.get::<_, i64>(5)? != 0,
+                        billable: r.get::<_, i64>(6)? != 0,
+                        version: r.get(7)?,
+                        health: r.get(8)?,
+                        descriptor_json: r.get(9)?,
+                    })
+                })
+                .map_err(|e| SearchOsError::Storage(e.to_string()))?;
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(|e| SearchOsError::Storage(e.to_string()))
         })
     }
 }

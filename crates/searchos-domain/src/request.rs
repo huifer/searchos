@@ -102,6 +102,31 @@ impl FreshnessRequirement {
     }
 }
 
+/// Federation execution limits resolved from configuration (RFC-062 8.2).
+///
+/// They live on the budget rather than being passed as separate arguments so
+/// every transport inherits the same caps it already validates, and so a
+/// plan can never be built with limits the caller did not authorise.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FederationLimits {
+    /// How many sources one plan may select (ADR-062-002).
+    pub max_sources: usize,
+    /// How many sources may run at once for one request.
+    pub max_parallel_sources: usize,
+    /// Per-source deadline in milliseconds.
+    pub source_timeout_ms: u64,
+}
+
+impl Default for FederationLimits {
+    fn default() -> Self {
+        Self {
+            max_sources: 8,
+            max_parallel_sources: 8,
+            source_timeout_ms: 5_000,
+        }
+    }
+}
+
 /// Budget bounds for one search task (RFC-009 9.6).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SearchBudget {
@@ -120,6 +145,10 @@ pub struct SearchBudget {
     pub max_retries: u32,
     pub max_query_expansions: u32,
     pub currency: String,
+    /// Federated source fan-out / deadline limits (RFC-062). Additive with a
+    /// default so cached payloads and older configs stay deserializable.
+    #[serde(default)]
+    pub federation: FederationLimits,
 }
 
 fn default_max_acquisition_rounds() -> u32 {
@@ -137,6 +166,7 @@ impl Default for SearchBudget {
             max_retries: 2,
             max_query_expansions: 3,
             currency: "USD".into(),
+            federation: FederationLimits::default(),
         }
     }
 }
@@ -216,6 +246,12 @@ pub struct SearchRequest {
     /// open instead of re-deriving them from scratch.
     #[serde(default)]
     pub focus_requirements: Vec<String>,
+    /// Caller-declared context budget (RFC-067/068). When present, the
+    /// response carries an Agent-facing `context` block assembled under this
+    /// budget. `None` means "no context block" — the raw results and
+    /// provenance stay the contract, and nothing extra is computed.
+    #[serde(default)]
+    pub context_budget: Option<crate::context::ContextBudget>,
 }
 
 impl SearchRequest {
@@ -263,6 +299,7 @@ impl SearchRequest {
             max_results: DEFAULT_MAX_RESULTS,
             session_id: None,
             focus_requirements: Vec::new(),
+            context_budget: None,
         })
     }
 }

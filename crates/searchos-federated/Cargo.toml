@@ -1,0 +1,23 @@
+[package]
+name = "searchos-federated"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Federated search kernel: unified SearchSource contract, scoped Source Registry, unified Resource Model and the explainable source-selection planner (RFC-062 / RFC-063 / RFC-064, final RFC Master Index)."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+searchos-domain = { workspace = true }
+searchos-retrieval = { workspace = true }
+searchos-provider = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+searchos-retrieval = { workspace = true }

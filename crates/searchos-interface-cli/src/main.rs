@@ -105,6 +105,11 @@ enum Command {
         /// Client idempotency key (replaying it must not re-bill a search)
         #[arg(long)]
         request_id: Option<String>,
+        /// Assemble an Agent-facing context block under this token budget
+        /// (RFC-067/068). The block is deduplicated, keeps every citation
+        /// even when content must shrink, and reports truncation honestly.
+        #[arg(long)]
+        max_context_tokens: Option<usize>,
     },
     /// Fetch, extract and persist a URL
     Fetch {
@@ -740,6 +745,7 @@ async fn run(cli: Cli) -> Result<(), SearchOsError> {
             max_cost,
             max_results,
             request_id,
+            max_context_tokens,
         } => {
             let rt = runtime(cli_ref).await?;
             let mode = parse_mode(mode)?;
@@ -772,6 +778,19 @@ async fn run(cli: Cli) -> Result<(), SearchOsError> {
             }
             if let Some(rid) = request_id {
                 req = req.with_request_id(rid.clone());
+            }
+            if let Some(max_tokens) = max_context_tokens {
+                let budget = searchos_domain::context::ContextBudget {
+                    max_tokens: *max_tokens,
+                    ..Default::default()
+                };
+                if let Err(message) = budget.validate() {
+                    return Err(searchos_domain::SearchOsError::validation(
+                        "max-context-tokens",
+                        message,
+                    ));
+                }
+                req.context_budget = Some(budget);
             }
             if let Some(max) = max_results {
                 req = req.with_max_results(*max);

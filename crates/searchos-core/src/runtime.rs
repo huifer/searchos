@@ -14,11 +14,12 @@ use searchos_cache::{
     CanonicalQueryCache, EmbeddingCache, ExactQueryCache, RerankCache, RetrievalCache,
     SemanticCache, DEFAULT_MAX_CACHE_ENTRIES,
 };
-use searchos_cost::CostModelConfig;
+use searchos_cost::{CostEstimator, CostModelConfig};
 
 use searchos_decision::trace::TraceCollector;
 use searchos_domain::cost::{CostEvent, CostQuery, CostSummary};
 use searchos_domain::memory::MemoryEntry;
+use searchos_domain::FederationLimits;
 use searchos_domain::SearchOsError;
 use searchos_fetch::{FetchLimits, RobotsChecker, UrlGuard};
 use searchos_provider::embedding::{cosine_similarity, EmbeddingProvider, HashingEmbedder};
@@ -140,6 +141,8 @@ pub struct SearchOsRuntime {
     /// RFC-031 external evidence promotion service (capture worker input).
     pub promotion:
         Option<Arc<dyn searchos_application::promotion_service::EvidencePromotionService>>,
+    /// RFC-062: the federated source registry (local index + providers).
+    pub federation_registry: Arc<searchos_federated::InMemorySourceRegistry>,
     /// Config fields consumed by the runtime, for `config validate` parity.
     pub config_consumption: BTreeMap<String, String>,
     pub metrics_enabled: bool,
@@ -633,6 +636,59 @@ impl SearchOsRuntime {
             ),
         );
 
+        // RFC-062 Phase 2/3: the federated source kernel. The two adapters
+        // wrap the paths that already exist — the active full-text index and
+        // the configured search providers — so registering them adds no new
+        // retrieval behaviour. `federation.strategy` decides whether the
+        // kernel is consulted at all; the default `legacy` leaves the
+        // pipeline exactly as it was (see the equivalence gate).
+        let federation_registry = Arc::new(searchos_federated::InMemorySourceRegistry::new());
+        let local_source = searchos_federated::LocalIndexSource::with_id(
+            searchos_federated::LocalIndexSource::DEFAULT_ID,
+            Arc::clone(&fulltext),
+            searchos_federated::SourceScope::Global,
+            100,
+        );
+        federation_registry
+            .register(Arc::new(local_source) as Arc<dyn searchos_federated::SearchSource>)
+            .map_err(|e| SearchOsError::Internal(format!("register local source: {e}")))?;
+        let federation_estimator = CostEstimator::from_config(&cost_config);
+        for provider in &search_providers {
+            // The estimate comes from the same estimator the pipeline uses to
+            // price a real call, so a federated plan and the eventual bill
+            // cannot disagree (P-005). The registered provider stats seed the
+            // reliability/latency profile the planner reasons over.
+            let estimate = federation_estimator
+                .estimate_request(provider.id())
+                .amount_micros
+                .max(0);
+            let registered = registry.get(provider.id());
+            let latency_ms = registered
+                .as_ref()
+                .map(|r| *r.latency_ms.read().unwrap())
+                .unwrap_or(200);
+            let reliability = registered
+                .as_ref()
+                .map(|r| *r.reliability.read().unwrap())
+                .unwrap_or(1.0);
+            let mut source = searchos_federated::WebSearchProviderSource::new(
+                Arc::clone(provider),
+                searchos_federated::SourceScope::Global,
+                50,
+                estimate,
+                searchos_federated::SourceLatencyProfile {
+                    p50_ms: latency_ms.min(200),
+                    p95_ms: latency_ms,
+                    timeout_ms: config.federation.source_timeout_ms,
+                },
+            );
+            source = source.with_reliability(reliability, false);
+
+            federation_registry
+                .register(Arc::new(source) as Arc<dyn searchos_federated::SearchSource>)
+                .map_err(|e| SearchOsError::Internal(format!("register provider source: {e}")))?;
+        }
+
         let deps = Arc::new(searchos_application::search_service::SearchDependencies {
             profiles: searchos_policy::ProfileRegistry::builtin(),
             quality: searchos_policy::QualityPolicy::default(),
@@ -672,6 +728,16 @@ impl SearchOsRuntime {
             allow_external: config.tavily_api_key().is_some() || config.brave_api_key().is_some(),
             promotion: promotion_service,
             session_store: Some(Arc::clone(&session_store)),
+            // RFC-062: kernel wiring. `strategy = legacy` (the default) keeps
+            // the existing pipeline authoritative; the registry and limits are
+            // still carried so `plan_report` can show a federated plan.
+            federation_registry: Some(federation_registry.clone()),
+            federation_strategy: config.federation.strategy.clone(),
+            federation_limits: FederationLimits {
+                max_sources: config.federation.max_sources,
+                max_parallel_sources: config.federation.max_parallel_sources,
+                source_timeout_ms: config.federation.source_timeout_ms,
+            },
         });
 
         let search_service: Arc<dyn searchos_application::search_service::SearchService> =
@@ -709,6 +775,63 @@ impl SearchOsRuntime {
         let memory_service: Arc<dyn searchos_memory::MemoryService> = memory_sqlite;
         let memory_facade = MemoryFacade::new(Arc::clone(&memory_service));
         let memory_service_facade: Arc<dyn MemoryUseCase> = Arc::new(memory_facade);
+
+        // RFC-069: agent memory is a federated source too. It is registered
+        // per the DEFAULT workspace here; the adapter always reads with the
+        // REQUESTER's namespace, and `MemoryService` enforces the sharing
+        // policy, so registration can never widen access.
+        if config.memory.enabled {
+            let memory_source = searchos_application::memory_source::AgentMemorySource::new(
+                Arc::clone(&memory_service),
+                searchos_domain::ids::WorkspaceId::new("default"),
+                90,
+            );
+            federation_registry
+                .register(Arc::new(memory_source) as Arc<dyn searchos_federated::SearchSource>)
+                .map_err(|e| SearchOsError::Internal(format!("register memory source: {e}")))?;
+        }
+
+        // RFC-069 residue: past session transcripts are a federated source
+        // too. The adapter filters by the session's own workspace_id and
+        // never reads across workspaces, so registration cannot widen
+        // access; it lets follow-up turns see what this workspace already
+        // asked instead of silently re-buying the same question.
+        {
+            let transcript_source =
+                searchos_application::session_source::SessionTranscriptSource::new(
+                    Arc::clone(&session_store),
+                    searchos_domain::ids::WorkspaceId::new("default"),
+                    80,
+                );
+            federation_registry
+                .register(Arc::new(transcript_source) as Arc<dyn searchos_federated::SearchSource>)
+                .map_err(|e| SearchOsError::Internal(format!("register session source: {e}")))?;
+        }
+
+        // RFC-063: project the resolved catalog into SQLite so operators and
+        // the console can audit which sources this deployment registered.
+        // The in-process registry stays authoritative for execution.
+        {
+            let catalog = repos::SourceCatalogRepo::new(&sqlite);
+            for reference in federation_registry.all_references() {
+                let d = &reference.descriptor;
+                let row = repos::SourceCatalogRow {
+                    source_id: d.source_id.to_string(),
+                    name: d.name.clone(),
+                    category: d.category.as_str().to_string(),
+                    scope: searchos_federated::scope_label(&d.scope),
+                    workspace_id: d.scope.workspace().map(|w| w.to_string()),
+                    enabled: d.enabled,
+                    billable: d.cost.billable,
+                    version: d.version.clone(),
+                    health: format!("{:?}", reference.health).to_lowercase(),
+                    descriptor_json: serde_json::to_string(d).unwrap_or_else(|_| "{}".into()),
+                };
+                if let Err(e) = catalog.upsert(&row) {
+                    tracing::warn!(%e, source = %d.source_id, "source catalog projection failed");
+                }
+            }
+        }
 
         let cost_service: Arc<dyn CostUseCase> = Arc::new(SqliteCostSink {
             store: Arc::clone(&sqlite),
@@ -759,6 +882,7 @@ impl SearchOsRuntime {
             singleflight,
             promotion: promotion_for_runtime,
             session_store,
+            federation_registry,
             config_consumption,
             metrics_enabled: config.observability.metrics_enabled,
             trace_retention_days: config.observability.trace_retention_days,

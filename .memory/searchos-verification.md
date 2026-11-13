@@ -73,12 +73,37 @@ The SearchOS implementation (`~/git_repo/searchos`) is verified by these command
     actually called (RFC-007 7.7 trigger threshold 30 candidates).
   - `cargo test -p searchos-core --test runtime_test` includes
     `agent_sessions_survive_runtime_restart` (migration v7, `agent_sessions`).
-  - Schema is migration **v7** (append-only; never edit released migrations).
+  - Schema is migration **v7** at that commit (append-only; never edit
+    released migrations; now superseded by v8/v9, see below).
   - Live gateway smoke: `/search` with `session_id`, kill + restart the
     gateway, then `/search/follow-up` on the same session resolves.
   - CI zh gate: `check_eval_gate.py ... --min-questions 12 --min-mrr 0.8
     --min-ndcg 0.8 --min-recall 0.8`; with graded qrels observed
     MRR 1.0 / nDCG@5 0.968 / Recall@5 1.0.
+
+- **Federation / RFC-062+063+064+066+069 gates (2026-11, residual pass on
+  top of the master-index implementation turn):**
+  - Full suite `cargo test --workspace --locked` → **673 passed / 0 failed**
+    (79 suites); clippy `-D warnings`, `cargo fmt --all -- --check`,
+    route-conflict scan all green. Schema is migration **v9**
+    (`decision_traces.federation_json`; append-only). Schema version is read
+    from PRAGMA at runtime — no constant to bump when adding migrations.
+  - Federation kernel: `cargo test -p searchos-federated` (incl. 4
+    `fusion` tests for `fuse_ranks`); retrieval: `rrf_fuse_weighted` tests.
+  - Session transcript source: `cargo test -p searchos-application --lib
+    session_source` (5 tests: workspace isolation, ranking, no-match,
+    max_results, resource mapping).
+  - Cross-source ordering: `cargo test -p searchos-application --lib
+    reliability_weight` (ordering overrides plan order; deterministic;
+    single-source untouched).
+  - Trace summary: `cargo test -p searchos-storage-sqlite federation_execution_summary_survives`
+    (v9 round-trip + INSERT OR REPLACE single-row) and the extended
+    `federated_execute_mode_bills_once_and_matches_legacy_results` in
+    `tests/integration/tests/full_pipeline.rs` (execute trace carries the
+    summary; legacy trace keeps `None`).
+  - OpenAPI documents `DecisionTrace.federation_execution` +
+    `FederationExecutionTrace`; gates `openapi_spec_matches_the_route_table`
+    / `every_registered_route_resolves` stay green.
 
 **Known environment notes:**
 - LanceDB requires `protoc` at build time (`brew install protobuf`).

@@ -15,6 +15,117 @@ multi-arch images, and attaches the matching section of this file.
 
 ### Added
 
+- **Final RFC Master Index (RFC-001…087).** A bilingual
+  [`RFC Master Index`](docs/rfc/rfc-master-index.md) freezes the architecture
+  baseline from the 83-node share: All-in-One scope, Both extension modes,
+  Staged distribution and Full Agent Memory, with 8 RFC groups, ownership rules,
+  a dependency matrix, P0–P6 priority, M0–M8 milestones and a 24-section RFC
+  template. The earlier 087–094 proposal is dissolved and merged into 062–087.
+  [`RFC-062: Federated Search Architecture`](docs/rfc/rfc-062-federated-search-architecture.md)
+  and [`Master Index Gap Analysis`](docs/gap-analysis-master-index.md) record the
+  repo reconciliation (029/031/087 number collisions) and the engineering
+  corrections (federation strategy orthogonal to `SearchMode`, additive response
+  evolution, RRF generalisation instead of a rewrite).
+- **Federated planner wired into the pipeline (RFC-062, task 4 first half).**
+  A new `federation` config section (`strategy`, `max_sources`,
+  `max_parallel_sources`, `source_timeout_ms`) is consumed per INV-30-20.
+  `legacy` (the default) leaves the search pipeline byte-identical;
+  `plan_only` makes `/search/plan` report the selected federated sources and
+  logs the plan inside the pipeline without perturbing the verdict;
+  `execute` migrates provider execution into `FederatedExecutor` (per-source
+  deadline, bounded fan-out, failure isolation) while BILLING stays in the
+  service: one WebSearch cost event per executed source, priced by the same
+  estimator as the legacy loop, settled by the pipeline's reservation guard —
+  so the executor can never double-bill (integration gate
+  `federated_execute_mode_bills_once_and_matches_legacy_results` asserts one
+  event under `execute` vs the legacy ledger's per-query re-buy). The runtime
+  registers the local index and every configured provider as federated
+  sources; `/system/status` exposes the catalog. The pipeline-level
+  equivalence gate `federated_default_matches_legacy_pipeline` runs the
+  assembled service under `legacy` and `plan_only` over identical knowledge
+  and asserts decision, status, quality, results, provenance content, cost
+  and coverage are identical.
+- **Federated residuals closed (RFC-062 tasks 5/6/7).** Session transcripts
+  are now a federated source (`SessionTranscriptSource`, registered at
+  runtime): past research turns are workspace-scoped, mapped onto RFC-064
+  `ResourceType::Transcript`, and never billed — a follow-up can see what the
+  workspace already asked. Trust-weighted cross-source fusion is wired into
+  the `execute` path: `fuse_ranks` orders per-source outcomes by the sources'
+  `ReliabilityProfile.success_rate`, never by plan order or incomparable
+  provider scores; the full math stays in `searchos-retrieval`'s
+  `rrf_fuse_weighted` and this generic kernel form only ORDERS (payload,
+  billing and per-provider attribution are untouched). Single-source plans
+  are unchanged; gates `reliability_weight_overrides_plan_order_in_federated_outcomes`,
+  `federated_outcome_order_is_deterministic` and `single_source_outcomes_are_left_untouched`
+  lock the semantics. Finally, a `FederationExecutionTrace` summary (planned /
+  executed / failed / timed-out / not-executed source ids + candidate count)
+  is attached to the `DecisionTrace` and re-recorded by the pipeline;
+  append-only migration **v9** adds `decision_traces.federation_json`, so
+  `trace show` / `GET /traces` expose what happened to every planned source.
+  Legacy traces keep `null` (byte-compatible); gate
+  `federation_execution_summary_survives_trace_re_record` and the extended
+  `federated_execute_mode_bills_once_and_matches_legacy_results` verify both
+  paths.
+- **Agent memory as a federated source (RFC-069).** `AgentMemorySource`
+  (application layer, so the kernel keeps no storage dependency) exposes
+  distilled agent knowledge through the same `SearchSource` contract, reading
+  with the requester's namespace and letting `NamespaceGuard` decide sharing —
+  a workspace-level read never surfaces an agent-private entry and never leaks
+  across workspaces. `memory_resource` maps entries onto the RFC-064 resource
+  model with permission derived from the sharing policy (egress still forbidden).
+- **Federated telemetry (RFC-062 §16).** Eleven zero-seeded `federation.*`
+  invariant counters — plan totals, selected/rejected sources, executed/failed/
+  timeout/candidate/not-executed sources, memory searched/hits — emitted at the
+  planner and executor call sites and exported through `/metrics`.
+- **Durable source catalog + `GET /sources` (RFC-063).** Append-only migration
+  **v8** adds `search_sources`; `SourceCatalogRepo` upserts the resolved catalog
+  at startup (the in-process registry stays authoritative for execution), and
+  `GET /sources` serves either the live registry or the persisted projection
+  (`?persisted=true`), workspace-scoped, with `enabled_only` filtering. Route
+  table and OpenAPI updated in the same change.
+- **`searchos-federated` crate (RFC-062/063/064 kernel).** The unified
+  `SearchSource` contract (descriptor, capabilities, cost/latency/reliability
+  profiles, execution status), the scoped `InMemorySourceRegistry`
+  (Agent > Project > Workspace > Global precedence, capability filtering,
+  enable/disable, health), the unified `SearchResource` model (11 resource
+  kinds, stable cross-source identity, content-hash-first dedup keys,
+  fail-closed permission with agent allow-lists and egress-forbidden defaults),
+  and the pure `FederatedPlanner` (policy → permission → scope → capability →
+  existing evidence → cost → reliability, with a recorded rejection reason for
+  every excluded source). 56 tests (incl. executor + adapter suites), including the named gates
+  `federated_auto_never_escapes_local_only`,
+  `required_source_failure_forces_partial`,
+  `covered_requirements_are_never_repurchased` and
+  `plan_rejections_are_auditable`.
+- **Trust-weighted RRF (RFC-066 slice).** `rrf_fuse_weighted` generalises
+  reciprocal rank fusion to N ranked lists with per-source weights; the
+  two-list `rrf_fuse` stays as the compatibility wrapper. Ties now break by
+  chunk id, so fused ordering is reproducible (P-011).
+- **Context budget wired end to end (RFC-067/068).** `SearchRequest` accepts a
+  `context_budget`; the application assembles an Agent-facing `context` block
+  (dedup, source diversity, counter-evidence ranked first, citations reserved
+  before content, verbatim-prefix truncation, honest
+  `complete`/`budget_limited`/`citation_limited` status) and `SearchResponse`
+  carries it additively. HTTP, MCP and CLI accept the identical object and
+  validate it at the edge; the invalid budget is a client error, never a
+  silently ignored field. `docs/openapi.yaml` documents `ContextBudget` and
+  `ContextBlockSummary`.
+- **[RFC-062 P0 dependency review](docs/rfc-062-dependency-review.md).**
+  Contract-by-contract mapping of 046/054/055/063/064 → 062 with the residual
+  ordered task list, and it separates the two
+  equivalence-gate levels: the delivered **adapter-level** gate
+  `legacy_pipeline_matches_federated_adapters` (the adapter's query and mapped
+  output equal the legacy local path field by field) and the still-planned
+  **pipeline-level** gate `federated_default_matches_legacy_pipeline`, which is
+  the first test of the change that replaces the inline paths in
+  `search_service.rs`.
+- **`searchos-context` crate (RFC-067 + RFC-068).** Pure, deterministic
+  Context Assembly & Token Budget: permission gate, cross-source dedup with
+  provenance, counter-evidence ranked first, source diversity caps,
+  citation-first budget allocation, UTF-8-safe verbatim-prefix truncation (never
+  a generated summary), and honest `Complete` / `BudgetLimited` /
+  `CitationLimited` reporting. 25 unit tests.
+
 - **Graded relevance labels, live remote-provider integration, and durable
   agent sessions.** Evaluation qrels now support 0..3 graded labels
   (`relevance_grades`): nDCG uses `2^grade - 1`, while MRR/Recall count only

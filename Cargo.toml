@@ -11,6 +11,8 @@ members = [
     "crates/searchos-cost",
     "crates/searchos-cache",
     "crates/searchos-retrieval",
+    "crates/searchos-context",
+    "crates/searchos-federated",
     "crates/searchos-document",
     "crates/searchos-memory",
     "crates/searchos-provider",
@@ -48,6 +50,8 @@ searchos-cost = { path = "crates/searchos-cost" }
 searchos-document = { path = "crates/searchos-document" }
 searchos-cache = { path = "crates/searchos-cache" }
 searchos-retrieval = { path = "crates/searchos-retrieval" }
+searchos-context = { path = "crates/searchos-context" }
+searchos-federated = { path = "crates/searchos-federated" }
 searchos-memory = { path = "crates/searchos-memory" }
 searchos-decision = { path = "crates/searchos-decision" }
 searchos-planner = { path = "crates/searchos-planner" }

@@ -417,6 +417,8 @@ pub fn api_route_table() -> Vec<RouteSpec> {
         RouteSpec::new("GET", "/trace/{trace_id}", get(get_decision)),
         RouteSpec::new("GET", "/traces", get(list_traces)),
         RouteSpec::new("GET", "/system/status", get(system_status)),
+        // RFC-063: the federated source catalog (read-only observability).
+        RouteSpec::new("GET", "/sources", get(list_sources)),
         RouteSpec::new("GET", "/profiles", get(list_profiles)),
         RouteSpec::new("GET", "/profiles/{id}", get(get_profile)),
         // RFC-031 external evidence promotion (read-only observability).
@@ -747,6 +749,10 @@ pub struct SearchDto {
     /// Explicit focus requirements for a follow-up turn.
     #[serde(default)]
     pub focus_requirements: Option<Vec<String>>,
+    /// Caller-declared context budget (RFC-067/068). When present the
+    /// response carries an Agent-facing `context` block assembled under it.
+    #[serde(default)]
+    pub context_budget: Option<searchos_domain::context::ContextBudget>,
 }
 
 /// Tavily-shaped bodies are routed through the compatibility layer; plain
@@ -973,6 +979,16 @@ async fn search(
     }
     if let Some(focus) = dto.focus_requirements.as_ref() {
         req.focus_requirements = focus.clone();
+    }
+    if let Some(budget) = dto.context_budget.clone() {
+        if let Err(message) = budget.validate() {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "VALIDATION_FAILED",
+                message,
+            ));
+        }
+        req.context_budget = Some(budget);
     }
     if let Some(cost) = dto.max_total_cost {
         req.budget.max_total_cost_micros = (cost * 1_000_000.0).round() as i64;
@@ -1930,6 +1946,118 @@ async fn system_status(
         "extensions_quarantined": state.runtime.extensions.quarantined().len(),
         "auth_required": !state.auth_token.is_empty(),
         "rate_limit_per_minute": state.runtime.config.server.rate_limit_per_minute,
+        // RFC-062: the federated source catalog, resolved for the caller's
+        // default workspace view. `legacy` means the kernel is not consulted.
+        "federation": {
+            "strategy": state.runtime.config.federation.strategy,
+            "max_sources": state.runtime.config.federation.max_sources,
+            "max_parallel_sources": state.runtime.config.federation.max_parallel_sources,
+            "sources": state.runtime.federation_registry.list(
+                &searchos_federated::SourceFilter { enabled_only: true, ..Default::default() },
+                &searchos_domain::ids::WorkspaceId::new("default"),
+            ).iter().map(|d| serde_json::json!({
+                "source_id": d.source_id.as_str(),
+                "category": d.category.as_str(),
+                "enabled": d.enabled,
+                "billable": d.cost.billable,
+            })).collect::<Vec<_>>(),
+        },
+    })))
+}
+
+/// `GET /sources` — the federated source catalog (RFC-063).
+///
+/// Resolved for the caller's workspace, so a workspace can never enumerate
+/// another workspace's private sources. `?enabled_only=true` filters disabled
+/// registrations; `?persisted=true` reads the SQLite projection instead of the
+/// live registry, which is what an operator audits after a restart.
+async fn list_sources(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    state.authorize(&headers)?;
+    let workspace = params
+        .get("workspace_id")
+        .map(|s| s.as_str())
+        .unwrap_or("default");
+    state.authorize_workspace(&headers, workspace)?;
+    let enabled_only = params
+        .get("enabled_only")
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(false);
+    let persisted = params
+        .get("persisted")
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(false);
+
+    if persisted {
+        let catalog = searchos_storage_sqlite::repos::SourceCatalogRepo::new(&state.runtime.sqlite);
+        let rows = catalog
+            .list(enabled_only)
+            .map_err(|e| ApiError::from_domain(&e))?;
+        let sources: Vec<serde_json::Value> = rows
+            .into_iter()
+            .filter(|row| match row.workspace_id.as_deref() {
+                // Global sources are visible to everyone; workspace-bound
+                // rows only to their own workspace.
+                None => true,
+                Some(ws) => ws == workspace,
+            })
+            .map(|row| {
+                serde_json::json!({
+                    "source_id": row.source_id,
+                    "name": row.name,
+                    "category": row.category,
+                    "scope": row.scope,
+                    "workspace_id": row.workspace_id,
+                    "enabled": row.enabled,
+                    "billable": row.billable,
+                    "version": row.version,
+                    "health": row.health,
+                })
+            })
+            .collect();
+        return Ok(Json(serde_json::json!({
+            "strategy": state.runtime.config.federation.strategy,
+            "projection": "persisted",
+            "sources": sources,
+        })));
+    }
+
+    let descriptors = state.runtime.federation_registry.list(
+        &searchos_federated::SourceFilter {
+            enabled_only,
+            ..Default::default()
+        },
+        &searchos_domain::ids::WorkspaceId::new(workspace),
+    );
+    let sources: Vec<serde_json::Value> = descriptors
+        .iter()
+        .map(|d| {
+            serde_json::json!({
+                "source_id": d.source_id.as_str(),
+                "name": d.name,
+                "category": d.category.as_str(),
+                "scope": searchos_federated::scope_label(&d.scope),
+                "enabled": d.enabled,
+                "billable": d.cost.billable,
+                "version": d.version,
+                "priority": d.priority,
+                "capabilities": d.capabilities,
+                "estimated_cost_micros": d.cost.estimated_cost_micros,
+                "timeout_ms": d.latency.timeout_ms,
+                "health": state.runtime.federation_registry.health(
+                    &d.source_id,
+                    &searchos_domain::ids::WorkspaceId::new(workspace),
+                ).map(|h| format!("{h:?}").to_lowercase()),
+            })
+        })
+        .collect();
+    Ok(Json(serde_json::json!({
+        "strategy": state.runtime.config.federation.strategy,
+        "projection": "live",
+        "sources": sources,
     })))
 }
 
@@ -2541,6 +2669,221 @@ mod tests {
         let app = router(st);
         let (status, body) = call_post(app, "/search", serde_json::json!({"query": "  "})).await;
         assert_eq!(status, 400);
+        assert_eq!(body["error"]["code"], "VALIDATION_FAILED");
+    }
+
+    // RFC-067/068 (RFC-062 §12): the request contract accepts a context
+    // budget on every transport path, validates it at the edge, and the
+    // response carries the assembled block.
+    // RFC-062: plan_only federation is observable on the plan surface and
+    // legacy stays the default (no federation fields populated).
+    /// RFC-063: the catalog is readable live and from the persisted
+    /// projection, and a workspace cannot enumerate another workspace's
+    /// workspace-bound sources.
+    #[tokio::test]
+    async fn sources_endpoint_reports_live_and_persisted_catalogs() {
+        let (st, _d) = state().await;
+        let app = router(st);
+
+        let get = |app: Router, uri: &'static str| async move {
+            use tower::ServiceExt;
+            let resp = app
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method("GET")
+                        .uri(uri)
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = resp.status().as_u16();
+            let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+                .await
+                .unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            (status, body)
+        };
+
+        let (status, live) = get(app.clone(), "/sources").await;
+        assert_eq!(status, 200, "{live}");
+        assert_eq!(live["projection"], "live");
+        assert_eq!(live["strategy"], "legacy");
+        let ids: Vec<&str> = live["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["source_id"].as_str().unwrap())
+            .collect();
+        assert!(ids.contains(&"local_knowledge"), "{ids:?}");
+        assert!(ids.contains(&"agent_memory"), "memory is a source: {ids:?}");
+        // Capabilities are declared, not inferred.
+        let local = live["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["source_id"] == "local_knowledge")
+            .unwrap();
+        assert_eq!(local["capabilities"]["lexical_search"], true);
+        assert_eq!(local["billable"], false);
+
+        // The persisted projection recorded the same catalog at startup.
+        let (status, persisted) = get(app.clone(), "/sources?persisted=true").await;
+        assert_eq!(status, 200, "{persisted}");
+        assert_eq!(persisted["projection"], "persisted");
+        let persisted_ids: Vec<&str> = persisted["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["source_id"].as_str().unwrap())
+            .collect();
+        assert!(persisted_ids.contains(&"local_knowledge"));
+
+        // enabled_only keeps the enabled sources.
+        let (status, enabled) = get(app, "/sources?enabled_only=true").await;
+        assert_eq!(status, 200, "{enabled}");
+        assert!(enabled["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|s| s["enabled"] == true));
+    }
+
+    #[tokio::test]
+    async fn system_status_reports_the_federated_catalog() {
+        let (st, _d) = state().await;
+        let app = router(st);
+        let (status, body) = {
+            use tower::ServiceExt;
+            let resp = app
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method("GET")
+                        .uri("/system/status")
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = resp.status().as_u16();
+            let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+                .await
+                .unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            (status, body)
+        };
+        assert_eq!(status, 200, "{body}");
+        let federation = &body["federation"];
+        assert_eq!(federation["strategy"], "legacy");
+        let sources = federation["sources"].as_array().unwrap();
+        assert!(
+            sources.iter().any(|s| s["source_id"] == "local_knowledge"),
+            "the local index source is registered even in legacy mode: {sources:?}"
+        );
+        assert!(sources.iter().all(|s| s["billable"] == false));
+    }
+
+    #[tokio::test]
+    async fn federated_plan_is_visible_on_the_plan_surface() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = searchos_core::SearchOsConfig::default();
+        cfg.app.data_dir = dir.path().to_path_buf();
+        cfg.federation.strategy = "plan_only".into();
+        let rt = searchos_core::SearchOsRuntime::init(cfg).await.unwrap();
+        let app = router(AppState::new(rt));
+        let (status, body) = call_post(
+            app,
+            "/search/plan",
+            serde_json::json!({"query": "rust edition 2024"}),
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["federation_strategy"], "auto");
+        let sources = body["federated_sources"].as_array().unwrap();
+        assert!(
+            sources.iter().any(|s| s == "local_knowledge"),
+            "the local source must appear in the federated plan: {sources:?}"
+        );
+        // Planning never executed anything: the plan stays cost-estimated.
+        assert!(body.get("trace_id").is_none());
+    }
+
+    #[tokio::test]
+    async fn legacy_mode_plan_has_no_federation_fields() {
+        let (st, _d) = state().await;
+        let app = router(st);
+        let (status, body) = call_post(
+            app,
+            "/search/plan",
+            serde_json::json!({"query": "rust edition 2024"}),
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+        assert!(body["federation_strategy"].is_null());
+        assert_eq!(body["federated_sources"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn context_budget_round_trips_through_http_search() {
+        let (st, _d) = state().await;
+        let app = router(st);
+
+        let (status, body) = call_post(
+            app.clone(),
+            "/search",
+            serde_json::json!({
+                "query": "rust release notes",
+                "max_results": 3,
+                "context_budget": {
+                    "max_tokens": 600,
+                    "reserved_tokens": 50,
+                    "max_sources": 4,
+                    "max_chunks_per_source": 2,
+                    "deduplicate": true,
+                    "preserve_citations": true,
+                    "include_conflicts": true
+                }
+            }),
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+        let context = &body["context"];
+        assert!(
+            context.is_object(),
+            "a declared budget must yield a context block"
+        );
+        assert_eq!(
+            context["status"].as_str(),
+            Some("complete"),
+            "the fixture corpus fits easily; anything else would be a budget bug"
+        );
+        assert!(
+            context["used_tokens"].as_u64().unwrap() <= context["usable_tokens"].as_u64().unwrap()
+        );
+        let citations = context["citations"].as_array().unwrap();
+        assert_eq!(
+            citations.len(),
+            context["evidence"].as_array().unwrap().len(),
+            "compression never deletes a citation"
+        );
+        for evidence in context["evidence"].as_array().unwrap() {
+            assert!(
+                !evidence["citation"].as_str().unwrap_or("").is_empty(),
+                "every entry keeps its citation"
+            );
+        }
+
+        // An invalid budget is a client error, not a silently ignored field.
+        let (status, body) = call_post(
+            app,
+            "/search",
+            serde_json::json!({
+                "query": "rust release notes",
+                "context_budget": { "max_tokens": 10, "reserved_tokens": 20 }
+            }),
+        )
+        .await;
+        assert_eq!(status, 400, "{body}");
         assert_eq!(body["error"]["code"], "VALIDATION_FAILED");
     }
 

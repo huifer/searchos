@@ -46,9 +46,19 @@ The canonical specification is the **RFC Suite v1.0** under [`docs/rfc/`](rfc/).
 - [Part 30: Search Execution Correctness Baseline](rfc/part-30-execution-correctness-baseline.md) — 执行侧正确性不变量（INV-30-01…21）与验收测试映射（已实现）
 - [RFC-031: External Evidence Promotion & Knowledge Compounding](rfc/rfc-031-external-evidence-promotion.md) — 外部证据沉淀与知识复利（已实现） |
 
+## Final RFC Master Index (RFC-001…087)
+
+> 冻结版架构基线；早前的 087–094 提案已解散并合并到 062–087。032–086 是规划目录编号，不是缺失文件。
+
+- [RFC Master Index](rfc/rfc-master-index.md) — 最终总目录（A–H 八组）、四项架构决策、职责归属、依赖矩阵、P0–P6 优先级、M0–M8 里程碑与 24 节 RFC 模板
+- [RFC-062: Federated Search Architecture](rfc/rfc-062-federated-search-architecture.md) — 多源统一 `SearchSource`、作用域 Registry、联邦 Planner、信任融合、证据覆盖（Proposed / Engineering Baseline）
+- [Final Master Index Gap Analysis](gap-analysis-master-index.md) — 两个分享的差异、解散映射、三处编号冲突、按最终编号的逐能力差距表
+- RFC-067（Context Assembly）与 RFC-068（Token Budget Management）的 P1 切片已落在 `crates/searchos-context/`；063/064/065/066/069–074/075–086/087 为规划中或部分实现。
+
 ## Gap Analysis
 
 - [Feature Gap Analysis: source conversation vs. implementation](gap-analysis.md) — 源对话功能遗漏分析与补强清单。
+- [Final RFC Master Index Gap Analysis](gap-analysis-master-index.md) — 最终目录与仓库实现的完整差距映射（本轮）。
 - [RFC Implementation Gap Register](rfc-implementation-gaps.md) — RFC / Part 30 缺口登记（已全部修复，含验收测试映射）。
 
 ## Guides & References

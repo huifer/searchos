@@ -313,6 +313,9 @@ fn deps(
         allow_external,
         promotion: None,
         session_store: None,
+        federation_registry: None,
+        federation_strategy: "legacy".into(),
+        federation_limits: searchos_domain::FederationLimits::default(),
     })
 }
 

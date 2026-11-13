@@ -155,6 +155,11 @@ pub struct SearchResponse {
     /// `coverage_gaps[].question`, flattened for convenience).
     #[serde(default)]
     pub focus_requirements: Vec<String>,
+    /// Agent-facing context assembled under the caller's budget (RFC-067/068).
+    /// Present only when the request carried a `context_budget`; the raw
+    /// `results` and `provenance` remain the untruncated contract.
+    #[serde(default)]
+    pub context: Option<crate::context::ContextBlockSummary>,
 }
 
 impl CoverageStatus {

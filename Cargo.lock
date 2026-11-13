@@ -5488,11 +5488,13 @@ dependencies = [
  "async-trait",
  "chrono",
  "searchos-cache",
+ "searchos-context",
  "searchos-cost",
  "searchos-crawler",
  "searchos-decision",
  "searchos-document",
  "searchos-domain",
+ "searchos-federated",
  "searchos-fetch",
  "searchos-memory",
  "searchos-observability",
@@ -5543,6 +5545,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "searchos-context"
+version = "0.1.1"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "searchos-core"
 version = "0.1.1"
 dependencies = [
@@ -5558,6 +5568,7 @@ dependencies = [
  "searchos-document",
  "searchos-domain",
  "searchos-extension",
+ "searchos-federated",
  "searchos-fetch",
  "searchos-index-remote",
  "searchos-index-tantivy",
@@ -5688,6 +5699,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "searchos-federated"
+version = "0.1.1"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "searchos-domain",
+ "searchos-provider",
+ "searchos-retrieval",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "searchos-fetch"
 version = "0.1.1"
 dependencies = [
@@ -5753,6 +5780,7 @@ dependencies = [
  "searchos-decision",
  "searchos-document",
  "searchos-domain",
+ "searchos-federated",
  "searchos-fetch",
  "searchos-index-tantivy",
  "searchos-interface-http",
@@ -5817,6 +5845,7 @@ dependencies = [
  "searchos-application",
  "searchos-core",
  "searchos-domain",
+ "searchos-federated",
  "searchos-observability",
  "searchos-policy",
  "searchos-storage-sqlite",

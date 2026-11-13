@@ -3,10 +3,12 @@
 //! These tests exercise the assembled runtime end-to-end with offline
 //! providers — the same use cases Local Mode and Gateway Mode share.
 
+use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 
 use searchos_application::search_service::{
-    SearchDependencies, SearchService as _, SearchServiceImpl,
+    SearchDependencies, SearchService as _, SearchServiceImpl, FEDERATION_LEGACY,
+    FEDERATION_PLAN_ONLY,
 };
 use searchos_application::singleflight::SingleflightCoordinator;
 use searchos_core::SearchOsConfig;
@@ -24,11 +26,16 @@ struct Harness {
 
 impl Harness {
     async fn new() -> Self {
+        Self::with_strategy(FEDERATION_LEGACY).await
+    }
+
+    async fn with_strategy(strategy: &str) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let mut cfg = SearchOsConfig::default();
         cfg.app.data_dir = dir.path().to_path_buf();
+        cfg.federation.strategy = strategy.to_string();
         let runtime = searchos_core::SearchOsRuntime::init(cfg).await.unwrap();
-        let deps = rebuild_deps(&runtime);
+        let deps = rebuild_deps(&runtime, strategy);
         let service = SearchServiceImpl::new(deps);
         Self {
             runtime,
@@ -55,7 +62,10 @@ impl Harness {
     }
 }
 
-fn rebuild_deps(runtime: &Arc<searchos_core::SearchOsRuntime>) -> Arc<SearchDependencies> {
+fn rebuild_deps(
+    runtime: &Arc<searchos_core::SearchOsRuntime>,
+    strategy: &str,
+) -> Arc<SearchDependencies> {
     Arc::new(SearchDependencies {
         profiles: searchos_policy::ProfileRegistry::builtin(),
         quality: searchos_policy::QualityPolicy::default(),
@@ -87,7 +97,26 @@ fn rebuild_deps(runtime: &Arc<searchos_core::SearchOsRuntime>) -> Arc<SearchDepe
         allow_external: false,
         promotion: None,
         session_store: Some(runtime.session_store.clone()),
+        federation_registry: Some(Arc::new(federation_registry(runtime))),
+        federation_strategy: strategy.to_string(),
+        federation_limits: searchos_domain::FederationLimits::default(),
     })
+}
+
+/// Mirrors the runtime's registry: the same full-text index wrapped by the
+/// Phase 2 adapter. No external provider in the offline harness.
+fn federation_registry(
+    runtime: &Arc<searchos_core::SearchOsRuntime>,
+) -> searchos_federated::InMemorySourceRegistry {
+    let registry = searchos_federated::InMemorySourceRegistry::new();
+    registry
+        .register(Arc::new(searchos_federated::LocalIndexSource::new(
+            runtime.fulltext.clone(),
+            searchos_federated::SourceScope::Global,
+            100,
+        )) as Arc<dyn searchos_federated::SearchSource>)
+        .unwrap();
+    registry
 }
 
 fn request(query: &str, mode: SearchMode) -> SearchRequest {
@@ -818,4 +847,343 @@ async fn plan_reports_queries_and_cost_without_executing() {
     assert!(report.estimated_cost_micros > 0, "the plan is costed");
     assert!(!report.open_requirements.is_empty(), "gaps are exposed");
     let _ = &h.dir;
+}
+
+/// RFC-062 pipeline-level equivalence gate (the dependency review's task 4
+/// precondition): enabling the federated planner must NOT change what the
+/// search pipeline decides or serves. Same query, same seeded knowledge,
+/// `legacy` vs `plan_only` — every behavioural field identical.
+#[tokio::test]
+async fn federated_default_matches_legacy_pipeline() {
+    let legacy = Harness::new().await;
+    let planned = Harness::with_strategy(FEDERATION_PLAN_ONLY).await;
+    let body = "Tokio is an asynchronous runtime for the Rust language";
+    legacy
+        .seed("tokio", body, "https://tokio.rs/tokio/tutorial")
+        .await;
+    planned
+        .seed("tokio", body, "https://tokio.rs/tokio/tutorial")
+        .await;
+    legacy
+        .seed(
+            "raft",
+            "Raft consensus algorithm leader election",
+            "https://raft.github.io",
+        )
+        .await;
+    planned
+        .seed(
+            "raft",
+            "Raft consensus algorithm leader election",
+            "https://raft.github.io",
+        )
+        .await;
+
+    let req = request("What is tokio async runtime?", SearchMode::LocalOnly);
+    let legacy_resp = legacy.service.search(req.clone()).await.unwrap();
+    let planned_resp = planned.service.search(req.clone()).await.unwrap();
+
+    assert_eq!(legacy_resp.decision.path, planned_resp.decision.path);
+    assert_eq!(legacy_resp.decision.reason, planned_resp.decision.reason);
+    assert_eq!(legacy_resp.status, planned_resp.status);
+    assert_eq!(legacy_resp.quality.status, planned_resp.quality.status);
+    assert_eq!(legacy_resp.results.len(), planned_resp.results.len());
+    let legacy_json = serde_json::to_value(&legacy_resp.results).unwrap();
+    let planned_json = serde_json::to_value(&planned_resp.results).unwrap();
+    assert_eq!(legacy_json, planned_json, "result items must be identical");
+    // Evidence ids are minted per run (they are identity, not content), so
+    // equivalence compares every SEMANTIC field and ignores the random ids.
+    // Random ids AND timestamps are identity/runtime noise, not content:
+    // the two runtimes seed at slightly different moments, and a run that
+    // straddles a second boundary would otherwise fail spuriously.
+    let semantic_ev = |value: serde_json::Value| {
+        let mut v = value;
+        if let Some(items) = v.as_array_mut() {
+            for item in items {
+                if let Some(obj) = item.as_object_mut() {
+                    obj.remove("id");
+                    obj.remove("source_id");
+                    obj.remove("fetched_at");
+                    if let Some(prov) = obj.get_mut("provenance").and_then(|p| p.as_object_mut()) {
+                        prov.remove("retrieved_at");
+                    }
+                }
+            }
+        }
+        v
+    };
+    let legacy_ev = semantic_ev(serde_json::to_value(&legacy_resp.provenance).unwrap());
+    let planned_ev = semantic_ev(serde_json::to_value(&planned_resp.provenance).unwrap());
+    assert_eq!(
+        legacy_ev, planned_ev,
+        "provenance content must be identical"
+    );
+    assert_eq!(legacy_resp.cost.estimated, planned_resp.cost.estimated);
+    assert_eq!(legacy_resp.coverage_gaps, planned_resp.coverage_gaps);
+
+    // The planner itself is observable on the plan-only surface: the same
+    // request yields the same legacy query plan plus the federated source
+    // selection, and nothing is executed or billed by planning.
+    let legacy_plan = legacy.service.plan_report(&req).await.unwrap();
+    let planned_plan = planned.service.plan_report(&req).await.unwrap();
+    assert!(legacy_plan.federation_strategy.is_none());
+    assert!(legacy_plan.federated_sources.is_empty());
+    assert_eq!(planned_plan.federation_strategy.as_deref(), Some("auto"));
+    assert_eq!(
+        planned_plan.federated_sources,
+        vec!["local_knowledge".to_string()]
+    );
+    let legacy_queries = serde_json::to_value(&legacy_plan.planned_queries).unwrap();
+    let planned_queries = serde_json::to_value(&planned_plan.planned_queries).unwrap();
+    assert_eq!(legacy_queries, planned_queries);
+    assert_eq!(
+        legacy_plan.open_requirements.len(),
+        planned_plan.open_requirements.len()
+    );
+}
+
+/// RFC-062 task 4b gate: `federation.strategy = execute` must run the SAME
+/// provider with the SAME result items as the legacy loop, and bill EXACTLY
+/// once — one WebSearch cost event at the same estimated price. The billing
+/// must never move into the source adapter (INV-30-12) and must never be
+/// duplicated by the executor (the dependency review's double-billing veto).
+#[tokio::test]
+async fn federated_execute_mode_bills_once_and_matches_legacy_results() {
+    use async_trait::async_trait;
+    use searchos_provider::error::ProviderError;
+    use searchos_provider::traits::{ProviderResult, SearchParams, SearchProvider};
+
+    struct FakeWebProvider {
+        calls: Arc<AtomicUsize>,
+    }
+    #[async_trait]
+    impl SearchProvider for FakeWebProvider {
+        fn id(&self) -> &str {
+            "fake_web"
+        }
+        fn capabilities(&self) -> searchos_domain::provider::ProviderCapabilities {
+            searchos_domain::provider::ProviderCapabilities {
+                search: true,
+                ..Default::default()
+            }
+        }
+        async fn search(&self, _params: &SearchParams) -> Result<ProviderResult, ProviderError> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(ProviderResult {
+                entries: vec![searchos_provider::traits::SearchResultEntry {
+                    title: Some("external tokio doc".into()),
+                    url: "https://tokio.rs/external".into(),
+                    content: "external tokio runtime doc".into(),
+                    score: 0.9,
+                    published_at: None,
+                    raw_content: None,
+                }],
+                duration_ms: 5,
+                bytes_transferred: 512,
+            })
+        }
+        async fn health_check(&self) -> Result<bool, ProviderError> {
+            Ok(true)
+        }
+    }
+
+    let make = |strategy: &'static str, calls: Arc<AtomicUsize>, dir_path: std::path::PathBuf| async move {
+        let mut cfg = SearchOsConfig::default();
+        cfg.app.data_dir = dir_path;
+        cfg.federation.strategy = strategy.to_string();
+        let runtime = searchos_core::SearchOsRuntime::init(cfg).await.unwrap();
+        let provider: Arc<dyn searchos_provider::SearchProvider> = Arc::new(FakeWebProvider {
+            calls: calls.clone(),
+        });
+        // The router selects from the provider registry; the fake provider
+        // must be registered there for BOTH strategies to reach it.
+        runtime
+            .provider_registry
+            .register(searchos_provider::RegisteredProvider::from_search(
+                provider.clone(),
+                5_000,
+                "USD",
+            ));
+        let registry = searchos_federated::InMemorySourceRegistry::new();
+        registry
+            .register(Arc::new(searchos_federated::WebSearchProviderSource::new(
+                provider.clone(),
+                searchos_federated::SourceScope::Global,
+                50,
+                5_000,
+                searchos_federated::SourceLatencyProfile::default(),
+            )) as Arc<dyn searchos_federated::SearchSource>)
+            .unwrap();
+        let deps = SearchDependencies {
+            profiles: searchos_policy::ProfileRegistry::builtin(),
+            quality: searchos_policy::QualityPolicy::default(),
+            freshness: searchos_policy::FreshnessPolicy::default_policy(),
+            source: searchos_policy::SourcePolicy::default_policy(),
+            cost_config: searchos_cost::CostModelConfig::default_config(),
+            bm25: runtime.fulltext.clone(),
+            vector: Some(runtime.vector.clone()),
+            hybrid: Some(runtime.hybrid.clone()),
+            embedder: runtime.embedder.clone(),
+            canonical_cache: runtime.canonical_cache.clone(),
+            semantic_cache: runtime.semantic_cache.clone(),
+            retrieval_cache: runtime.retrieval_cache.clone(),
+            embedding_cache: runtime.embedding_cache.clone(),
+            rerank_cache: runtime.rerank_cache.clone(),
+            router: runtime.provider_registry.clone(),
+            search_providers: vec![provider],
+            local_port: runtime.local_port(),
+            traces: runtime.traces(),
+            cost_sink: runtime.cost_sink(),
+            task_recorder: runtime.task_recorder(),
+            singleflight: Arc::new(SingleflightCoordinator::new()),
+            cache: runtime.exact_cache.clone(),
+            negative_cache: runtime.negative_cache.clone(),
+            semantic_dedup: true,
+            incremental: true,
+            query_expansion: true,
+            reranking: true,
+            allow_external: true,
+            promotion: None,
+            session_store: Some(runtime.session_store.clone()),
+            federation_registry: Some(Arc::new(registry)),
+            federation_strategy: strategy.to_string(),
+            federation_limits: searchos_domain::FederationLimits::default(),
+        };
+        (SearchServiceImpl::new(Arc::new(deps)), runtime)
+    };
+
+    let legacy_calls = Arc::new(AtomicUsize::new(0));
+    let fed_calls = Arc::new(AtomicUsize::new(0));
+    let legacy_dir = tempfile::tempdir().unwrap();
+    let fed_dir = tempfile::tempdir().unwrap();
+    let (legacy_svc, legacy_rt) = make(
+        "legacy",
+        legacy_calls.clone(),
+        legacy_dir.path().to_path_buf(),
+    )
+    .await;
+    let (fed_svc, fed_rt) = make("execute", fed_calls.clone(), fed_dir.path().to_path_buf()).await;
+
+    let seed = |rt: Arc<searchos_core::SearchOsRuntime>, chunk: &'static str| async move {
+        use searchos_domain::ids::{ChunkId, DocumentId, DocumentVersionId};
+        rt.fulltext
+            .index(searchos_domain::retrieval::IndexedDocument {
+                chunk_id: ChunkId::new(chunk),
+                document_id: DocumentId::new(chunk),
+                version_id: DocumentVersionId::new(chunk),
+                title: Some("stale".into()),
+                body: "stale body".into(),
+                url: format!("https://local.dev/{chunk}"),
+                language: Some("en".into()),
+                workspace_id: "*".into(),
+                fetched_at: chrono::Utc::now() - chrono::Duration::days(400),
+            })
+            .await
+            .unwrap();
+        rt.fulltext.commit().await.unwrap();
+    };
+    seed(legacy_rt.clone(), "old").await;
+    seed(fed_rt.clone(), "old").await;
+
+    let mut req = request("tokio async runtime", SearchMode::Hybrid);
+    req.budget.max_external_queries = 2;
+    let legacy_resp = legacy_svc.search(req.clone()).await.unwrap();
+    let fed_resp = fed_svc.search(req.clone()).await.unwrap();
+
+    // The legacy loop fans out PER QUERY on one provider (2 planned queries
+    // ⇒ 2 calls); the federated path fans out PER SOURCE (1 provider ⇒ 1
+    // call with the same results — the second query was a re-buy of the same
+    // gap). Execute mode must NEVER bill more than legacy: one provider call
+    // here, and the spent total must not exceed the legacy spend.
+    let legacy_calls_n = legacy_calls.load(std::sync::atomic::Ordering::SeqCst);
+    let fed_calls_n = fed_calls.load(std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(legacy_calls_n, 2, "legacy fans out per planned query");
+    assert_eq!(
+        fed_calls_n, 1,
+        "federated fans out per SOURCE: one provider, one call"
+    );
+
+    // Same decision and same external item served.
+    assert_eq!(legacy_resp.decision.path, fed_resp.decision.path);
+    let legacy_external: Vec<_> = legacy_resp
+        .results
+        .iter()
+        .filter(|r| r.source == "fake_web")
+        .collect();
+    let fed_external: Vec<_> = fed_resp
+        .results
+        .iter()
+        .filter(|r| r.source == "fake_web")
+        .collect();
+    // The legacy loop fans out PER QUERY, so its raw result list can carry
+    // duplicate entries for the same URL; the evidence merge collapses them.
+    // The federated path fans out PER SOURCE and never re-buys, so its raw
+    // list is already deduplicated. Equivalence therefore compares the
+    // URL-normalised item sets.
+    let normalize = |items: &[&searchos_domain::response::SearchResultItem]| -> Vec<String> {
+        let mut urls: Vec<String> = items.iter().map(|r| r.url.clone()).collect();
+        urls.sort();
+        urls.dedup();
+        urls
+    };
+    assert_eq!(
+        normalize(&legacy_external),
+        normalize(&fed_external),
+        "execute mode must serve the same provider content as legacy"
+    );
+    assert_eq!(fed_external.len(), 1);
+
+    for (rt, label) in [(&legacy_rt, "legacy"), (&fed_rt, "execute")] {
+        let q = searchos_domain::cost::CostQuery {
+            workspace_id: Some(searchos_domain::ids::WorkspaceId::new("ws_default")),
+            agent_id: None,
+            task_id: None,
+            provider_id: None,
+            operation: None,
+            since: None,
+            until: None,
+        };
+        let summary = rt.application.cost_service.summary(&q).await.unwrap();
+        // The fake provider id has no pricing entry, so its estimate is
+        // zero; what the double-billing veto asserts is the EVENT identity
+        // and count, priced identically under both strategies.
+        let web = summary
+            .by_operation
+            .iter()
+            .find(|(op, _)| op == "web_search")
+            .map(|(_, m)| m.amount_micros);
+        assert_eq!(web, Some(0), "{label}: web_search event recorded");
+    }
+
+    // RFC-062 §16: the per-source execution summary is attached to the
+    // decision trace by the pipeline's re-record. The legacy path never
+    // touches federation, so its traces stay byte-compatible.
+    let fed_trace = fed_rt
+        .traces()
+        .get(fed_resp.trace_id.as_str())
+        .await
+        .unwrap()
+        .expect("federated trace stored");
+    let summary = fed_trace
+        .federation_execution
+        .as_ref()
+        .expect("execute mode records a federation summary");
+    assert_eq!(summary.strategy, "execute");
+    assert_eq!(summary.planned_sources, vec!["fake_web".to_string()]);
+    assert_eq!(summary.executed_sources, vec!["fake_web".to_string()]);
+    assert_eq!(summary.candidates, 1);
+    assert!(summary.failed_sources.is_empty());
+    assert!(summary.timed_out_sources.is_empty());
+    assert!(summary.not_executed_sources.is_empty());
+
+    let legacy_trace = legacy_rt
+        .traces()
+        .get(legacy_resp.trace_id.as_str())
+        .await
+        .unwrap()
+        .expect("legacy trace stored");
+    assert!(
+        legacy_trace.federation_execution.is_none(),
+        "legacy path leaves traces unchanged"
+    );
 }

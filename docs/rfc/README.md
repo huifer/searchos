@@ -79,6 +79,35 @@ SearchOS 负责前两者及其成本优化，不在核心产品中重新实现�
 | Part 30 | Search Execution Correctness Baseline (invariant-driven) |
 | RFC-031 | External Evidence Promotion & Knowledge Compounding (implemented) |
 
+### 0.1.1 Final RFC Master Index — RFC-001…087
+
+A later design share (`6af69118-d0f4-83ee-bbbb-948eeeb623c8`, 83 nodes)
+**freezes the final RFC catalogue**: All-in-One scope, Both extension modes,
+Staged distribution and Full Agent Memory. It explicitly dissolves the earlier
+087–094 proposal: *"087–094 不再重复创建，而是将其内容合并到对应 RFC"*. The
+authoritative document is [`rfc-master-index.md`](rfc-master-index.md) — 8
+architecture groups (A–H), ownership rules, a dependency matrix, P0–P6
+priority, M0–M8 milestones and a 24-section RFC template.
+
+| 最终编号 | 名称 | 状态 |
+| --- | --- | --- |
+| RFC-062 | [Federated Search Architecture](rfc-062-federated-search-architecture.md) | Implemented (kernel: `searchos-federated`) |
+| RFC-063 | [Search Source Registry](rfc-063-source-registry.md) | Implemented (in-process kernel) |
+| RFC-064 | [Unified Resource Model](rfc-064-unified-resource-model.md) | Implemented (kernel) |
+| RFC-065 | Hybrid Retrieval | Partially implemented |
+| RFC-066 | Trust-aware Result Fusion | Partially implemented |
+| RFC-067 | Context Assembly | P1 slice delivered (`searchos-context`) |
+| RFC-068 | Token Budget Management | P1 slice delivered (`searchos-context`) |
+| RFC-069–074 | Agent Memory & Deep Research | Planned / partially implemented |
+| RFC-075–086 | Cost, Provider, Extension, Distributed | Planned / staged |
+| RFC-087 | Privacy-aware Ingestion & Egress | Planned (P3) |
+| [RFC Master Index](rfc-master-index.md) | 最终总目录、职责、依赖、优先级 | Frozen baseline |
+
+编号冲突（029 / 031 / 087）与逐能力差距见
+[`../gap-analysis-master-index.md`](../gap-analysis-master-index.md)。最重要的工程
+修正：联邦策略必须与 `SearchMode` 正交，不得新增 mode 变体，否则会破坏
+`INV-30-18`、Tavily 兼容契约、看板 `search_mode` 下推与缓存键。
+
 ## 0.2 RFC 规范
 
 每份 RFC 必须包含：
@@ -131,6 +160,6 @@ RFC 不允许仅描述功能目标而缺少可验证的接口、数据结构和�
 2. **跨 Agent 知识隔离**：默认 Workspace 隔离，显式授权后才共享，不应该默认全局共享。
 3. **质量评估边界**：SearchOS 验证证据质量，不保证上层 LLM 最终答案绝对正确。
 
-**RFC Suite Version:** 1.0 (+ Annexes 23/24/30; Annex 30 and RFC-031 implemented)
-**Status:** Implemented Engineering Baseline (Annex 30: execution correctness invariants; RFC-031: external evidence promotion)
-**Next Step:** Keep RFC-004 v1.1 acceptance tests (Part 23) green on every change; revisit deferred distributed/WASM capabilities in v1.5+.
+**RFC Suite Version:** 1.0 (+ Annexes 23/24/30; Annex 30 and RFC-031 implemented) · Final RFC Master Index 001–087 (frozen)
+**Status:** Implemented Engineering Baseline (Annex 30 / RFC-031); final Master Index + RFC-062/063/064 kernels + `searchos-context` (067/068) wired through all transports
+**Next Step:** RFC-062 Phase 2 — wrap local retrieval and the provider router as `SearchSource`s, then the Phase 3 executor with the equivalence gate `federated_default_matches_legacy_pipeline`. Keep RFC-004 v1.1 acceptance tests (Part 23) green on every change; revisit deferred distributed/WASM capabilities in v1.5+.

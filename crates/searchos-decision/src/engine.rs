@@ -788,6 +788,10 @@ impl DefaultDecisionEngine {
                 SearchDecision::Hybrid { .. } => "partial_then_external".into(),
                 _ => "completed".into(),
             }),
+            // Federation execution is attached by the pipeline AFTER the
+            // federated executor ran, via a trace re-record (INSERT OR
+            // REPLACE). The engine never knows about execution.
+            federation_execution: None,
         }
     }
 }

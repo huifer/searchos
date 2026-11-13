@@ -693,6 +693,50 @@ CREATE INDEX IF NOT EXISTS idx_agent_sessions_ws
     ON agent_sessions(workspace_id, updated_at DESC);
 "#,
     },
+    // v8 - federated source catalog (RFC-063).
+    // Released migrations above remain immutable.
+    Migration {
+        version: 8,
+        name: "federated_sources",
+        sql: r#"
+-- One row per registered federated source (RFC-063). This is a PROJECTION of
+-- the in-process registry, not a second source of truth: adapters are
+-- registered in code, and the table records the resolved catalog plus its
+-- last observed health so the console and operators can audit which sources
+-- existed for a given deployment. `descriptor` keeps the full declared
+-- capabilities/cost/latency/scope for replay.
+CREATE TABLE IF NOT EXISTS search_sources (
+    source_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    category TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    workspace_id TEXT,
+    enabled INTEGER NOT NULL,
+    billable INTEGER NOT NULL,
+    version TEXT NOT NULL,
+    health TEXT NOT NULL,
+    descriptor TEXT NOT NULL,
+    registered_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_search_sources_category
+    ON search_sources(category);
+CREATE INDEX IF NOT EXISTS idx_search_sources_workspace
+    ON search_sources(workspace_id);
+"#,
+    },
+    // v9 - federation execution summary on decision traces (RFC-062 §16).
+    // Released migrations above remain immutable.
+    Migration {
+        version: 9,
+        name: "trace_federation_execution",
+        sql: r#"
+-- One JSON column: which federated sources a task planned, executed, and
+-- lost. NULL on the legacy path (old traces stay byte-compatible). A new
+-- column is append-only; existing rows keep their stored values.
+ALTER TABLE decision_traces ADD COLUMN federation_json TEXT;
+"#,
+    },
 ];
 
 /// Applies pending migrations to a connection. Each version is atomic: SQL

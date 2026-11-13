@@ -11,7 +11,7 @@ pub mod rerank;
 pub mod reranker_adapters;
 pub mod traits;
 
-pub use fusion::{rrf_fuse, RrfConfig};
+pub use fusion::{rrf_fuse, rrf_fuse_weighted, RankedSource, RrfConfig};
 pub use rerank::{NeverReranker, Reranker, RerankerPolicy};
 pub use reranker_adapters::{
     build_reranker, default_policy, FeatureReranker, RemoteReranker, RemoteRerankerConfig,
@@ -131,7 +131,13 @@ pub fn candidate_allowed(query: &RetrievalQuery, c: &RetrievalCandidate) -> bool
     true
 }
 
-fn host_of(url: &str) -> Option<String> {
+/// Host extraction used by the domain policy filter.
+///
+/// Public because `searchos-federated` implements the *same* policy for
+/// external results; a shared implementation is the only way the two paths
+/// cannot drift, and the consistency is locked by a cross-crate test
+/// (`local_and_external_domain_policy_agree`).
+pub fn host_of(url: &str) -> Option<String> {
     let rest = url
         .strip_prefix("https://")
         .or_else(|| url.strip_prefix("http://"))

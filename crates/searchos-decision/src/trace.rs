@@ -48,11 +48,15 @@ impl TraceCollector for InMemoryTraceCollector {
     }
 
     async fn get(&self, trace_id: &str) -> Result<Option<DecisionTrace>, SearchOsError> {
+        // Last match wins: the pipeline re-records a trace after federated
+        // execution attaches the per-source summary, mirroring the SQLite
+        // collector's INSERT OR REPLACE semantics.
         Ok(self
             .traces
             .read()
             .unwrap()
             .iter()
+            .rev()
             .find(|t| t.trace_id.as_str() == trace_id)
             .cloned())
     }

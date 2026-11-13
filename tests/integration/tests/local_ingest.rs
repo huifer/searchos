@@ -73,6 +73,9 @@ fn rebuild_deps(runtime: &Arc<searchos_core::SearchOsRuntime>) -> Arc<SearchDepe
         allow_external: false,
         promotion: None,
         session_store: None,
+        federation_registry: None,
+        federation_strategy: "legacy".into(),
+        federation_limits: searchos_domain::FederationLimits::default(),
     })
 }
 

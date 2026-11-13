@@ -21,6 +21,7 @@ searchos-decision = { workspace = true }
 searchos-cost = { workspace = true }
 searchos-cache = { workspace = true }
 searchos-retrieval = { workspace = true }
+searchos-federated = { workspace = true }
 searchos-memory = { workspace = true }
 searchos-provider = { workspace = true }
 searchos-application = { workspace = true }

@@ -666,6 +666,33 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/SystemStatus' }
 
+  /sources:
+    get:
+      tags: [Search]
+      summary: List federated search sources (RFC-063)
+      description: >-
+        The federated source catalog, resolved for the caller's workspace.
+        `enabled_only` filters disabled registrations; `persisted` reads the
+        SQLite projection (what an operator audits after a restart) instead of
+        the live in-process registry, which stays authoritative for execution.
+      parameters:
+        - name: workspace_id
+          in: query
+          schema: { type: string, default: default }
+        - name: enabled_only
+          in: query
+          schema: { type: boolean, default: false }
+        - name: persisted
+          in: query
+          schema: { type: boolean, default: false }
+      responses:
+        '200':
+          description: Source catalog.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SourceCatalog' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
   /profiles:
     get:
       tags: [Search]
@@ -1072,6 +1099,12 @@ components:
           type: array
           items: { type: string }
           description: Explicit requirements for a follow-up turn; replaces the derived decomposition.
+        context_budget:
+          $ref: '#/components/schemas/ContextBudget'
+          description: >-
+            Caller-declared context budget (RFC-067/068). When present the
+            response carries an Agent-facing `context` block: deduplicated
+            evidence, preserved citations and an honest truncation status.
     SearchResponse:
       type: object
       required: [query, results, status]
@@ -1121,6 +1154,14 @@ components:
           type: array
           items: { type: string }
           description: Open requirements a follow-up turn should target.
+        context:
+          allOf:
+            - $ref: '#/components/schemas/ContextBlockSummary'
+          nullable: true
+          description: >-
+            Agent-facing context assembled under the request's
+            `context_budget`. Present only when the caller declared one; the
+            raw `results` and `provenance` remain the untruncated contract.
         coverage_gaps:
           description: >-
             Sub-questions the final quality gate found uncovered. This is the
@@ -1174,7 +1215,84 @@ components:
               requirement_id: { type: string }
               strategy: { type: string }
         estimated_cost_micros: { type: integer, format: int64 }
+        federation_strategy:
+          type: string
+          nullable: true
+          enum: [auto, parallel, sequential, selective, null]
+          description: >-
+            RFC-062 planner strategy used for this plan. Null means the legacy
+            pipeline is authoritative and no federated plan was produced.
+        federated_sources:
+          type: array
+          items: { type: string }
+          description: Selected source ids in execution order, empty in legacy mode.
+
         currency: { type: string }
+    ContextBudget:
+      type: object
+      description: >-
+        Caller-declared budget for one assembled context (RFC-068). Citations
+        are reserved before content; compression never deletes a source.
+      required: [max_tokens]
+      properties:
+        max_tokens: { type: integer, minimum: 1, default: 8000 }
+        reserved_tokens: { type: integer, minimum: 0, default: 1000 }
+        max_sources: { type: integer, minimum: 1, default: 12 }
+        max_chunks_per_source: { type: integer, minimum: 1, default: 3 }
+        deduplicate: { type: boolean, default: true }
+        preserve_citations: { type: boolean, default: true }
+        include_conflicts: { type: boolean, default: true }
+    ContextBlockSummary:
+      type: object
+      description: >-
+        The Agent-facing context block (RFC-067). `used_tokens` never exceeds
+        `usable_tokens`; content is always a verbatim prefix of the original
+        text (never a generated summary); `status` is never `complete` when
+        anything was truncated or dropped.
+      required: [status, max_tokens, usable_tokens, used_tokens, truncated, evidence, citations]
+      properties:
+        status:
+          type: string
+          enum: [complete, budget_limited, citation_limited]
+        max_tokens: { type: integer }
+        reserved_tokens: { type: integer }
+        usable_tokens: { type: integer }
+        used_tokens: { type: integer }
+        truncated: { type: boolean }
+        citations:
+          type: array
+          items: { type: string }
+          description: One citation per surviving evidence entry, in evidence order.
+        evidence:
+          type: array
+          items:
+            type: object
+            required: [citation, source_id, content, truncated, conflicting, occurrences, estimated_tokens]
+            properties:
+              citation: { type: string }
+              source_id: { type: string }
+              title: { type: string, nullable: true }
+              content:
+                type: string
+                description: Verbatim original text or a verbatim prefix; empty when only the citation survived.
+              truncated: { type: boolean }
+              conflicting: { type: boolean }
+              occurrences:
+                type: integer
+                description: Source observations merged into this entry. Provenance, not independence.
+              estimated_tokens: { type: integer }
+        dropped:
+          type: array
+          items:
+            type: object
+            required: [chunk_id, source_id, canonical_ref, reason]
+            properties:
+              chunk_id: { type: string }
+              source_id: { type: string }
+              canonical_ref: { type: string }
+              reason:
+                type: string
+                enum: [permission_denied, duplicate, conflict_excluded, source_cap, chunks_per_source_cap, token_budget, citation_budget]
     SearchResultItem:
       type: object
       properties:
@@ -1431,6 +1549,70 @@ components:
                 items: { type: string }
         final_strategy: { type: string, nullable: true }
         final_outcome: { type: string, nullable: true }
+        federation_execution:
+          allOf:
+            - $ref: '#/components/schemas/FederationExecutionTrace'
+          nullable: true
+    FederationExecutionTrace:
+      type: object
+      description: >
+        Per-source federation execution summary (RFC-062 §16). Present only when
+        the federated executor ran sources for this task; null on the legacy
+        path. The plan/selection chain explains why a source ran, this records
+        what actually happened to it.
+      properties:
+        strategy:
+          type: string
+          enum: [legacy, plan_only, execute]
+        planned_sources:
+          type: array
+          items: { type: string }
+        executed_sources:
+          type: array
+          items: { type: string }
+        failed_sources:
+          type: array
+          items: { type: string }
+        timed_out_sources:
+          type: array
+          items: { type: string }
+        not_executed_sources:
+          type: array
+          items: { type: string }
+        candidates: { type: integer }
+    SourceCatalog:
+      type: object
+      required: [strategy, projection, sources]
+      properties:
+        strategy:
+          type: string
+          enum: [legacy, plan_only, execute]
+        projection:
+          type: string
+          enum: [live, persisted]
+        sources:
+          type: array
+          items:
+            type: object
+            required: [source_id, category, enabled, billable]
+            properties:
+              source_id: { type: string }
+              name: { type: string }
+              category:
+                type: string
+                enum: [local_knowledge, web_search, web_document, file_system, agent_memory, conversation, knowledge_graph, vector_store, external_api, structured_database, custom]
+              scope: { type: string }
+              workspace_id: { type: string, nullable: true }
+              enabled: { type: boolean }
+              billable: { type: boolean }
+              version: { type: string }
+              health: { type: string, nullable: true }
+              priority: { type: integer }
+              estimated_cost_micros: { type: integer, format: int64 }
+              timeout_ms: { type: integer, format: int64 }
+              capabilities:
+                type: object
+                additionalProperties: { type: boolean }
     SystemStatus:
       type: object
       properties:
@@ -1452,6 +1634,25 @@ components:
         extensions: { type: integer }
         auth_required: { type: boolean }
         rate_limit_per_minute: { type: integer }
+        federation:
+          type: object
+          description: >-
+            RFC-062 federated source catalog. `legacy` means the kernel is
+            not consulted by the search pipeline; the registry is still
+            reported for diagnostics.
+          properties:
+            strategy: { type: string, enum: [legacy, plan_only, execute] }
+            max_sources: { type: integer }
+            max_parallel_sources: { type: integer }
+            sources:
+              type: array
+              items:
+                type: object
+                properties:
+                  source_id: { type: string }
+                  category: { type: string }
+                  enabled: { type: boolean }
+                  billable: { type: boolean }
     DashboardMeta:
       type: object
       properties:

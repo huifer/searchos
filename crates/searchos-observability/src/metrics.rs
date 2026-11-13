@@ -46,6 +46,19 @@ pub const INVARIANT_METRICS: &[&str] = &[
     "quality.conflict_declared_total",
     "metrics.sample_overflow_total",
     "ratelimit.windows_evicted_total",
+    // RFC-062 §16: federated search telemetry. Zero-seeded like every other
+    // invariant so a dashboard can distinguish "feature unused" from
+    // "metric missing".
+    "federation.plan.total",
+    "federation.plan.sources_selected",
+    "federation.plan.sources_rejected",
+    "federation.source.executed_total",
+    "federation.source.failed_total",
+    "federation.source.timeout_total",
+    "federation.source.candidates_total",
+    "federation.source.not_executed_total",
+    "federation.memory.searched_total",
+    "federation.memory.hits_total",
 ];
 
 /// Latency percentiles in ms.

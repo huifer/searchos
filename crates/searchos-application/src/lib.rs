@@ -12,10 +12,12 @@
 pub mod analytics;
 pub mod fetch_service;
 pub mod ingest_service;
+pub mod memory_source;
 pub mod merge;
 pub mod promotion_service;
 pub mod search_service;
 pub mod session;
+pub mod session_source;
 pub mod singleflight;
 
 pub use analytics::{AnalyticsQuery, AnalyticsQueryService};

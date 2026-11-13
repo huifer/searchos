@@ -803,6 +803,9 @@ mod pipeline {
                 reranking: true,
                 allow_external: true,
                 promotion,
+                federation_registry: None,
+                federation_strategy: "legacy".into(),
+                federation_limits: searchos_domain::FederationLimits::default(),
             });
             Self {
                 runtime,

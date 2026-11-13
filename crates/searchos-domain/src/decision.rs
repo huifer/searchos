@@ -242,4 +242,31 @@ pub struct DecisionTrace {
     /// Final outcome (success / partial / insufficient / budget_exceeded).
     #[serde(default)]
     pub final_outcome: Option<String>,
+    /// Per-source federation execution summary (RFC-062 §16). Present only
+    /// when the federated executor ran sources for this task; `None` on the
+    /// legacy path so old traces stay byte-compatible.
+    #[serde(default)]
+    pub federation_execution: Option<FederationExecutionTrace>,
+}
+
+/// Which federated sources a task planned, executed, and lost (RFC-062 §16).
+/// Audit data on the trace: the plan/selection chain explains WHY a source
+/// ran; this records what actually happened to it, so a timeout or failure
+/// is visible in `trace show` without cross-referencing cost events.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct FederationExecutionTrace {
+    /// Federation strategy in force (`legacy` / `plan_only` / `execute`).
+    pub strategy: String,
+    /// Source ids the planner selected, in plan order.
+    pub planned_sources: Vec<String>,
+    /// Source ids that produced a result (success or partial).
+    pub executed_sources: Vec<String>,
+    /// Source ids that failed.
+    pub failed_sources: Vec<String>,
+    /// Source ids cut off by their deadline.
+    pub timed_out_sources: Vec<String>,
+    /// Sources planned but never started (cancellation / deadline / fan-out).
+    pub not_executed_sources: Vec<String>,
+    /// Total candidates returned across executed sources.
+    pub candidates: usize,
 }

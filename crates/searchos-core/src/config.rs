@@ -25,6 +25,43 @@ pub struct SearchOsConfig {
     pub security: SecurityConfig,
     pub observability: ObservabilityConfig,
     pub providers: ProvidersConfig,
+    /// RFC-062 (final Master Index, group D): federated search wiring.
+    pub federation: FederationConfig,
+}
+
+/// RFC-062: how the federated source kernel participates in execution.
+///
+/// `strategy = legacy` is the DEFAULT and the safe mode: the pipeline keeps
+/// its current local/external branches and the kernel is not consulted, so
+/// turning the feature on can never silently change search behaviour.
+/// `plan_only` lets the kernel plan (and report the plan) without executing a
+/// single source. `execute` is accepted but currently behaves as `plan_only`
+/// with a warning: provider execution stays in the legacy reserve → execute →
+/// settle lifecycle until the billing-aware executor migration lands, because
+/// running the executor alongside it would double-bill provider calls.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FederationConfig {
+    /// `legacy` | `plan_only` | `execute`.
+    pub strategy: String,
+    /// Per-request source fan-out limit (RFC-062 8.2).
+    pub max_parallel_sources: usize,
+    /// Default per-source deadline in milliseconds when a descriptor does
+    /// not carry one.
+    pub source_timeout_ms: u64,
+    /// Maximum sources one plan may select (ADR-062-002).
+    pub max_sources: usize,
+}
+
+impl Default for FederationConfig {
+    fn default() -> Self {
+        Self {
+            strategy: "legacy".into(),
+            max_parallel_sources: 8,
+            source_timeout_ms: 5_000,
+            max_sources: 8,
+        }
+    }
 }
 
 /// RFC-019 19.3: the remaining configuration sections. All are optional
@@ -238,6 +275,7 @@ impl Default for SearchOsConfig {
             budgets: BudgetsConfig::default(),
             crawler: CrawlerConfig::default(),
             extensions: ExtensionsConfig::default(),
+            federation: FederationConfig::default(),
             security: SecurityConfig::default(),
             observability: ObservabilityConfig::default(),
             providers: ProvidersConfig::default(),
@@ -705,6 +743,10 @@ pub const ALL_CONFIG_FIELDS: &[&str] = &[
     "memory.embedding.timeout_seconds",
     "memory.embedding.model_version",
     "memory.embedding.max_batch_size",
+    "federation.strategy",
+    "federation.max_parallel_sources",
+    "federation.source_timeout_ms",
+    "federation.max_sources",
     "intelligence.query_expansion",
     "intelligence.reranking",
     "intelligence.reranker_provider",
@@ -808,6 +850,10 @@ pub const CONSUMED_CONFIG_FIELDS: &[&str] = &[
     "memory.embedding.timeout_seconds",
     "memory.embedding.model_version",
     "memory.embedding.max_batch_size",
+    "federation.strategy",
+    "federation.max_parallel_sources",
+    "federation.source_timeout_ms",
+    "federation.max_sources",
     "intelligence.query_expansion",
     "intelligence.reranking",
     "intelligence.reranker_provider",
@@ -901,6 +947,21 @@ impl SearchOsConfig {
         }
         if !(0.0..=1.0).contains(&self.policies.minimum_quality) {
             errors.push("policies.minimum_quality must be in [0,1]".into());
+        }
+        match self.federation.strategy.as_str() {
+            "legacy" | "plan_only" | "execute" => {}
+            other => errors.push(format!(
+                "federation.strategy must be legacy|plan_only|execute, got {other}"
+            )),
+        }
+        if self.federation.max_sources == 0 {
+            errors.push("federation.max_sources must be > 0".into());
+        }
+        if self.federation.max_parallel_sources == 0 {
+            errors.push("federation.max_parallel_sources must be > 0".into());
+        }
+        if self.federation.source_timeout_ms == 0 {
+            errors.push("federation.source_timeout_ms must be > 0".into());
         }
         if self.budgets.baseline_per_query_micros < 0
             || self.budgets.default_max_total_cost_micros <= 0
@@ -1148,7 +1209,23 @@ providers:
         assert_eq!(c.budgets.baseline_per_query_micros, 5_000);
         assert!(c.security.ssrf_protection);
         assert!(!c.extensions.wasm_enabled);
+        assert_eq!(c.federation.strategy, "legacy");
+        assert_eq!(c.federation.max_sources, 8);
+        assert_eq!(c.federation.max_parallel_sources, 8);
+        assert_eq!(c.federation.source_timeout_ms, 5_000);
         assert!(c.validate().is_ok());
+    }
+
+    #[test]
+    fn federation_strategy_is_validated_not_silently_accepted() {
+        let mut c = SearchOsConfig::default();
+        c.federation.strategy = "typo".into();
+        let errs = c.validate().unwrap_err();
+        assert!(errs.iter().any(|e| e.contains("federation.strategy")));
+        c.federation.strategy = "execute".into();
+        assert!(c.validate().is_ok());
+        c.federation.max_sources = 0;
+        assert!(c.validate().is_err());
     }
 
     /// Part 30 §30.11: every validated config field is consumed or

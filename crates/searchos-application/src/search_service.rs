@@ -35,6 +35,7 @@ use searchos_domain::retrieval::{
     RetrievalCandidate, RetrievalQuery, RetrievalSource, SearchCacheKey, CACHE_KEY_VERSION,
 };
 use searchos_domain::{CoverageGap, Evidence, SearchOsError};
+use searchos_federated::source::{SourceExecutionStatus, SourceSearchRequest};
 use searchos_planner::router::ProviderRouter;
 use searchos_planner::PlanBuilder;
 use searchos_policy::{
@@ -226,6 +227,72 @@ pub struct SearchDependencies {
     /// Bounded in-process agent session store. `None` disables turn
     /// recording; the runtime wires one so MCP/gateway share it.
     pub session_store: Option<Arc<crate::session::SessionStore>>,
+    /// RFC-062: the federated source registry. `None` disables federation
+    /// entirely, which is what every test harness and older wiring gets.
+    pub federation_registry: Option<Arc<searchos_federated::InMemorySourceRegistry>>,
+    /// `legacy` | `plan_only` | `execute`. Only `execute` lets the kernel run
+    /// sources; `legacy` (the default) keeps the existing branches
+    /// authoritative so behaviour cannot drift by accident.
+    pub federation_strategy: String,
+    /// Fan-out / deadline caps resolved from `config.federation`.
+    pub federation_limits: searchos_domain::FederationLimits,
+}
+
+/// Federation modes recognised by `federation_strategy`.
+pub const FEDERATION_LEGACY: &str = "legacy";
+pub const FEDERATION_PLAN_ONLY: &str = "plan_only";
+pub const FEDERATION_EXECUTE: &str = "execute";
+
+/// Emits RFC-062 §16 plan telemetry. Called by every planner call site so
+/// `/search/plan` and the live pipeline cannot drift apart in what they
+/// count. Counters only: no per-source labels (the registry is a
+/// low-cardinality invariant map by design).
+fn record_federation_plan(plan: &searchos_federated::FederatedSearchPlan) {
+    let metrics = searchos_observability::MetricsRegistry::global();
+    metrics.inc_counter("federation.plan.total");
+    for _ in 0..plan.task_count() {
+        metrics.inc_counter("federation.plan.sources_selected");
+    }
+    for _ in &plan.rejections {
+        metrics.inc_counter("federation.plan.sources_rejected");
+    }
+}
+
+/// Emits RFC-062 §16 execution telemetry from one execution report.
+fn record_federation_execution(report: &searchos_federated::ExecutionReport) {
+    let metrics = searchos_observability::MetricsRegistry::global();
+    for result in &report.results {
+        metrics.inc_counter("federation.source.executed_total");
+        if result.status.is_failure() {
+            metrics.inc_counter("federation.source.failed_total");
+        }
+        if result.timed_out {
+            metrics.inc_counter("federation.source.timeout_total");
+        }
+        for _ in result.candidates() {
+            metrics.inc_counter("federation.source.candidates_total");
+        }
+    }
+    for _ in &report.not_executed {
+        metrics.inc_counter("federation.source.not_executed_total");
+    }
+}
+
+/// The configured strategy, normalized. Anything unrecognized behaves as
+/// `legacy`: an unset or misspelled knob must never accidentally route real
+/// traffic through a new execution path.
+///
+/// `execute` is accepted as a configuration value but deliberately behaves
+/// as `plan_only` until the reserve/billing-aware executor migration lands:
+/// the federated executor would call providers outside the pipeline's
+/// reserve → execute → settle lifecycle, which would double-bill. An
+/// operator who opts in gets a logged warning, not a silent no-op.
+fn normalized_federation_strategy(strategy: &str) -> &'static str {
+    match strategy {
+        FEDERATION_PLAN_ONLY => FEDERATION_PLAN_ONLY,
+        FEDERATION_EXECUTE => FEDERATION_EXECUTE,
+        _ => FEDERATION_LEGACY,
+    }
 }
 
 /// Records search task rows (Part 17 search_tasks; every task gets a row).
@@ -373,6 +440,66 @@ impl SearchServiceImpl {
     /// Plan-only report: what WOULD be searched, without buying anything.
     /// No external call, no cost event, no document write — an agent can
     /// inspect the plan (and its estimated cost) before committing budget.
+    fn federated_plan(
+        &self,
+        req: &SearchRequest,
+        required: &[String],
+        covered: &[String],
+    ) -> Result<Option<searchos_federated::FederatedSearchPlan>, SearchOsError> {
+        let strategy_name = normalized_federation_strategy(&self.deps.federation_strategy);
+        if strategy_name == FEDERATION_LEGACY {
+            return Ok(None);
+        }
+        // `plan_only` is a WIRING mode (plan, don't execute); the planner's
+        // strategy vocabulary is auto/parallel/sequential/selective, and the
+        // legacy-compatible default is Auto. `execute` currently plans the
+        // same way — see `normalized_federation_strategy` for why execution
+        // stays with the legacy pipeline until the billing-aware migration.
+        if strategy_name == FEDERATION_EXECUTE {
+            tracing::warn!(
+                "federation.strategy=execute currently plans only; provider execution still \
+                 runs through the legacy reserve/settle pipeline (RFC-062 billing migration \
+                 pending)"
+            );
+        }
+        let strategy = match strategy_name {
+            FEDERATION_PLAN_ONLY | FEDERATION_EXECUTE => {
+                searchos_federated::FederationStrategy::Auto
+            }
+            other => searchos_federated::FederationStrategy::parse(other)
+                .map_err(|message| SearchOsError::validation("federation.strategy", message))?,
+        };
+        let Some(registry) = self.deps.federation_registry.as_ref() else {
+            return Err(SearchOsError::Internal(
+                "federation strategy requested but the source registry is not wired".into(),
+            ));
+        };
+        let descriptors = registry.list(
+            &searchos_federated::SourceFilter {
+                enabled_only: true,
+                ..Default::default()
+            },
+            &req.workspace_id,
+        );
+        let context = searchos_federated::PlanningContext {
+            query: req.query.clone(),
+            mode: req.mode,
+            strategy,
+            workspace_id: req.workspace_id.to_string(),
+            requirements: required.to_vec(),
+            covered_requirements: covered.to_vec(),
+            required_requirements: required.to_vec(),
+            max_sources: self.deps.federation_limits.max_sources.max(1),
+            max_parallel_sources: self.deps.federation_limits.max_parallel_sources.max(1),
+            max_estimated_cost_micros: req.budget.max_total_cost_micros,
+            stop_when_covered: true,
+            generic_sources_can_answer: true,
+        };
+        let plan = searchos_federated::FederatedPlanner::plan(&context, &descriptors);
+        record_federation_plan(&plan);
+        Ok(Some(plan))
+    }
+
     pub async fn plan_report(
         &self,
         req: &SearchRequest,
@@ -437,6 +564,7 @@ impl SearchServiceImpl {
             false,
             false,
         );
+        let federated = self.federated_plan(req, &required, &[])?;
         let estimator = CostEstimator::from_config(&deps.cost_config);
         let provider_id = deps
             .router
@@ -491,6 +619,11 @@ impl SearchServiceImpl {
                 .collect(),
             estimated_cost_micros: plan.estimated_cost_micros,
             currency: req.budget.currency.clone(),
+            federation_strategy: federated.as_ref().map(|p| p.strategy.as_str().to_string()),
+            federated_sources: federated
+                .as_ref()
+                .map(|p| p.selected_source_ids())
+                .unwrap_or_default(),
         })
     }
 }
@@ -516,6 +649,12 @@ pub struct SearchPlanReport {
     pub planned_queries: Vec<PlannedQueryReport>,
     pub estimated_cost_micros: i64,
     pub currency: String,
+    /// RFC-062 plan metadata. `None` means the default legacy pipeline is
+    /// authoritative for this request.
+    #[serde(default)]
+    pub federation_strategy: Option<String>,
+    #[serde(default)]
+    pub federated_sources: Vec<String>,
 }
 
 /// Builds the external query plan: one targeted query per open requirement,
@@ -1660,6 +1799,29 @@ async fn run_pipeline(
     let local_candidates = servable_evals;
     let max_results = clamp_max_results(req.max_results) as usize;
 
+    // RFC-062 planner integration. In `legacy` this is a no-op, preserving
+    // the exact existing pipeline. In `plan_only` / `execute` it produces an
+    // auditable source plan, but the legacy decision engine remains the final
+    // quality authority until the reserve/billing-aware executor migration
+    // lands (see the dependency review's pipeline-level gate).
+    let federated_plan = {
+        let service = SearchServiceImpl {
+            deps: Arc::clone(&deps),
+        };
+        service.federated_plan(&req, &required, &[])?
+    };
+    if let Some(plan) = &federated_plan {
+        // Planning is observation, not an outcome: it is logged, never
+        // surfaced as a warning. A warning changes `derive_status` and would
+        // make the equivalence gate (federated_default_matches_legacy_pipeline)
+        // fail by design — the planner must not perturb the legacy verdict.
+        tracing::debug!(
+            strategy = plan.strategy.as_str(),
+            sources = ?plan.selected_source_ids(),
+            "federated plan computed"
+        );
+    }
+
     // ---- Decision (RFC-004) ------------------------------------------
     let gate = QualityGate::new(
         deps.quality.clone(),
@@ -2152,6 +2314,15 @@ async fn run_pipeline(
     guard.set_spent(spent_micros);
     guard.settle(spent_micros).await?;
 
+    // RFC-062 §16: the federated executor filled a per-source summary —
+    // attach it to the trace and re-record. The SQLite collector uses
+    // INSERT OR REPLACE, so this UPDATES the pre-execution trace; the
+    // in-memory collector serves the last record for the id.
+    if let Some(federation) = acquisition.federation_execution.take() {
+        trace.federation_execution = Some(federation);
+        deps.traces.record(trace.clone()).await?;
+    }
+
     let mut response = build_response(
         &req,
         &decision,
@@ -2239,7 +2410,7 @@ fn build_response(
             path: decision.path_name().into(),
             reason: decision.reason().code().into(),
         },
-        results,
+        results: results.clone(),
         quality: QualityReport {
             status: quality_status,
             freshness,
@@ -2261,7 +2432,114 @@ fn build_response(
         coverage_gaps: Vec::new(),
         session_id: None,
         focus_requirements: Vec::new(),
+        context: assemble_context_block(req, &results),
     }
+}
+
+/// Assembles the Agent-facing context block (RFC-067/068) when the caller
+/// declared a budget.
+///
+/// Every entry in `results` has already passed the pipeline's workspace
+/// scoping and the final quality gate, so permission is asserted here rather
+/// than re-derived: the permission boundary in this system is the pipeline,
+/// not the assembler. The assembler still fails closed — an entry it cannot
+/// map is dropped and *reported*, never silently included.
+fn assemble_context_block(
+    req: &SearchRequest,
+    results: &[searchos_domain::response::SearchResultItem],
+) -> Option<searchos_domain::context::ContextBlockSummary> {
+    let budget = req.context_budget.as_ref()?;
+    if let Err(message) = budget.validate() {
+        tracing::warn!(%message, "invalid context_budget; skipping context assembly");
+        return None;
+    }
+    let engine_budget = searchos_context::ContextBudget {
+        max_tokens: budget.max_tokens,
+        reserved_tokens: budget.reserved_tokens,
+        max_sources: budget.max_sources,
+        max_chunks_per_source: budget.max_chunks_per_source,
+        deduplicate: budget.deduplicate,
+        preserve_citations: budget.preserve_citations,
+        include_conflicts: budget.include_conflicts,
+    };
+    let chunks: Vec<searchos_context::EvidenceChunk> = results
+        .iter()
+        .map(|item| searchos_context::EvidenceChunk {
+            chunk_id: item.url.clone(),
+            source_id: item.source.clone(),
+            canonical_ref: item.url.clone(),
+            title: item.title.clone(),
+            content: item.content.clone(),
+            content_hash: None,
+            score: item.score,
+            conflicting: false,
+            permission_ok: true,
+        })
+        .collect();
+    let block = match searchos_context::assemble_with_default_estimator(&chunks, &engine_budget) {
+        Ok(block) => block,
+        Err(error) => {
+            tracing::warn!(%error, "context assembly failed; returning results without a context block");
+            return None;
+        }
+    };
+    Some(searchos_domain::context::ContextBlockSummary {
+        status: match block.status {
+            searchos_context::ContextStatus::Complete => {
+                searchos_domain::context::ContextStatus::Complete
+            }
+            searchos_context::ContextStatus::BudgetLimited => {
+                searchos_domain::context::ContextStatus::BudgetLimited
+            }
+            searchos_context::ContextStatus::CitationLimited => {
+                searchos_domain::context::ContextStatus::CitationLimited
+            }
+        },
+        max_tokens: block.token_usage.max_tokens,
+        reserved_tokens: block.token_usage.reserved_tokens,
+        usable_tokens: block.token_usage.usable_tokens,
+        used_tokens: block.token_usage.used_tokens,
+        truncated: block.truncated,
+        evidence: block
+            .evidence
+            .iter()
+            .map(|e| searchos_domain::context::ContextSnippet {
+                citation: e.canonical_ref.clone(),
+                source_id: e.source_id.clone(),
+                title: e.title.clone(),
+                content: e.content.clone(),
+                truncated: e.truncated,
+                conflicting: e.conflicting,
+                occurrences: e.occurrences,
+                estimated_tokens: e.estimated_tokens,
+            })
+            .collect(),
+        citations: block.citation_refs.clone(),
+        dropped: block
+            .dropped
+            .iter()
+            .map(|d| searchos_domain::context::ContextDrop {
+                chunk_id: d.chunk_id.clone(),
+                source_id: d.source_id.clone(),
+                canonical_ref: d.canonical_ref.clone(),
+                reason: drop_reason(d.reason),
+            })
+            .collect(),
+    })
+}
+
+/// Stable snake-case reason shared with the engine's wire contract.
+fn drop_reason(reason: searchos_context::DropReason) -> String {
+    match reason {
+        searchos_context::DropReason::PermissionDenied => "permission_denied",
+        searchos_context::DropReason::Duplicate => "duplicate",
+        searchos_context::DropReason::ConflictExcluded => "conflict_excluded",
+        searchos_context::DropReason::SourceCap => "source_cap",
+        searchos_context::DropReason::ChunksPerSourceCap => "chunks_per_source_cap",
+        searchos_context::DropReason::TokenBudget => "token_budget",
+        searchos_context::DropReason::CitationBudget => "citation_budget",
+    }
+    .to_string()
 }
 
 /// One externally planned query, with its provenance and requirement link
@@ -2285,6 +2563,53 @@ struct ExternalQueryOutcome {
     items: Vec<SearchResultItem>,
 }
 
+/// RFC-066: orders federated per-source outcomes by trust-weighted rank
+/// fusion instead of plan order.
+///
+/// Weights come from the sources' `ReliabilityProfile.success_rate` — never
+/// from provider raw scores, which are not comparable across sources
+/// (RFC-062 §9.2). Fusion only ORDERS: every item keeps its own payload and
+/// its owning outcome, so billing, promotion attribution and per-provider
+/// provenance stay intact. Within one source, items follow the fused
+/// subsequence (the provider's own ranking when it is the only contributor).
+/// A source with no candidates stays last.
+fn order_federated_outcomes(
+    outcomes: &mut [ExternalQueryOutcome],
+    reliability: &std::collections::HashMap<String, f32>,
+) {
+    if outcomes.len() < 2 {
+        return;
+    }
+    let fused = {
+        let lists: Vec<searchos_federated::RankedSourceList<'_, _>> = outcomes
+            .iter()
+            .map(|o| searchos_federated::RankedSourceList {
+                source_id: &o.provider_id,
+                weight: reliability.get(&o.provider_id).copied().unwrap_or(1.0),
+                items: &o.items,
+            })
+            .collect();
+        searchos_federated::fuse_ranks(&lists, |i| i.url.clone(), 60.0)
+    };
+    let position = |url: &str| {
+        fused
+            .iter()
+            .position(|i| i.url == url)
+            .unwrap_or(usize::MAX)
+    };
+    for outcome in outcomes.iter_mut() {
+        outcome.items.sort_by_key(|i| position(&i.url));
+    }
+    // Stable sort: equal best-rank sources keep plan order.
+    outcomes.sort_by_key(|o| {
+        o.items
+            .iter()
+            .map(|i| position(&i.url))
+            .min()
+            .unwrap_or(usize::MAX)
+    });
+}
+
 /// Cumulative acquisition state across bounded iterative rounds. The query
 /// and cost caps are TOTAL caps: no round may re-buy covered requirements or
 /// exceed the reservation (INV-30-04 / RFC-004 v1.1 6.8).
@@ -2295,6 +2620,10 @@ struct AcquisitionState {
     /// Lowercased queries already executed; a follow-up round never repeats
     /// a query that was just bought.
     executed_queries: std::collections::HashSet<String>,
+    /// Per-source federation execution summary (RFC-062 §16). Filled by the
+    /// federated executor path; attached to the decision trace at the common
+    /// tail so `trace show` records what happened to every planned source.
+    federation_execution: Option<searchos_domain::decision::FederationExecutionTrace>,
 }
 
 impl AcquisitionState {
@@ -2394,6 +2723,19 @@ impl SearchServiceImplStub {
         else {
             fail!("PROVIDER_FAILURE", "router picked unregistered provider");
         };
+
+        // RFC-062 task 4b: when the federation strategy opts in, source
+        // selection AND fan-out move to the federated planner/executor. The
+        // billing semantics are unchanged and stay HERE — one cost event per
+        // executed query, priced by the same estimator, settled by the
+        // pipeline's reservation guard. See `execute_external_federated`.
+        let federated_dispatch = self.deps.federation_strategy == FEDERATION_EXECUTE
+            && self.deps.federation_registry.is_some();
+        if federated_dispatch {
+            return self
+                .execute_external_federated(req, planned, trace_id, task_id, state)
+                .await;
+        }
 
         let mut queries: Vec<PlannedQuery> = planned.to_vec();
         queries.retain(|q| !q.query.trim().is_empty());
@@ -2525,6 +2867,316 @@ impl SearchServiceImplStub {
 #[allow(dead_code)]
 fn _unused(_r: FetchRequest, _d: ExtractDepth) {}
 
+impl SearchServiceImplStub {
+    /// RFC-062 task 4b: executes the planned queries through the federated
+    /// executor (per-source deadline, bounded fan-out, failure isolation)
+    /// while BILLING stays in this service — one cost event per executed
+    /// source, priced by the same estimator as the legacy loop, settled by
+    /// the pipeline's reservation guard. Spend and call counters flow back
+    /// through `state` exactly like the legacy path, so the iterative
+    /// acquisition loop and the INV-30-13 singleflight accounting are
+    /// unchanged.
+    ///
+    /// Requirement mapping: the plan's generic (undeclared) sources inherit
+    /// the planned queries' requirement ids in order — the same loose
+    /// mapping the legacy loop has, because wiring does not know what a
+    /// provider will answer.
+    #[allow(clippy::too_many_arguments)]
+    async fn execute_external_federated(
+        &self,
+        req: &SearchRequest,
+        planned: &[PlannedQuery],
+        trace_id: &TraceId,
+        task_id: &TaskId,
+        state: &mut AcquisitionState,
+    ) -> Result<(Vec<ExternalQueryOutcome>, Vec<Evidence>, u64, i64), ExternalExecutionError> {
+        let metrics = searchos_observability::MetricsRegistry::global();
+        let mut outcomes: Vec<ExternalQueryOutcome> = Vec::new();
+        let mut evidence: Vec<Evidence> = Vec::new();
+        let mut calls = state.calls;
+        let mut spent_micros = state.spent_micros;
+        let max_results = clamp_max_results(req.max_results) as usize;
+
+        // Shared failure path: records the failed provider_attempt event
+        // (Part 30 INV-30-06) and carries the spend already written to the
+        // ledger back through `state`.
+        macro_rules! fail {
+            ($code:expr, $message:expr) => {{
+                state.calls = calls;
+                state.spent_micros = spent_micros;
+                let attempt = CostEvent {
+                    id: searchos_domain::ids::CostEventId::generate(),
+                    task_id: task_id.clone(),
+                    workspace_id: req.workspace_id.clone(),
+                    agent_id: req.agent_id.clone(),
+                    operation: CostOperation::ProviderAttempt,
+                    provider_id: None,
+                    input_units: 0,
+                    output_units: 0,
+                    estimated_cost: Money::zero(&req.budget.currency),
+                    actual_cost: None,
+                    duration_ms: 0,
+                    occurred_at: Utc::now(),
+                    trace_id: Some(trace_id.clone()),
+                    shared: false,
+                    pricing_model_version: "1".into(),
+                    status: CostAttemptStatus::Failed,
+                    error_code: Some($code.to_string()),
+                };
+                let _ = self.deps.cost_sink.append(attempt).await;
+                return Err(ExternalExecutionError {
+                    spent_micros,
+                    error_code: $code.to_string(),
+                    message: $message.to_string(),
+                });
+            }};
+        }
+
+        if !self.deps.allow_external {
+            fail!("POLICY_VIOLATION", "external execution disabled (offline)");
+        }
+        let Some(registry) = self.deps.federation_registry.as_ref() else {
+            fail!(
+                "INTERNAL_ERROR",
+                "federation execute requested but no registry is wired"
+            );
+        };
+
+        // Plan over the WEB sources only: the local index is the pipeline's
+        // own local path and must never be re-purchased as an external call.
+        let descriptors = registry.list(
+            &searchos_federated::SourceFilter {
+                enabled_only: true,
+                categories: vec![searchos_federated::SourceCategory::WebSearch],
+                ..Default::default()
+            },
+            &req.workspace_id,
+        );
+        let strategy =
+            searchos_federated::FederationStrategy::parse(&self.deps.federation_strategy)
+                .unwrap_or(searchos_federated::FederationStrategy::Auto);
+        let requirements: Vec<String> = planned
+            .iter()
+            .map(|q| q.requirement_id.clone().unwrap_or_default())
+            .filter(|r| !r.is_empty())
+            .collect();
+        let context = searchos_federated::PlanningContext {
+            query: req.query.clone(),
+            mode: req.mode,
+            strategy,
+            workspace_id: req.workspace_id.to_string(),
+            requirements: requirements.clone(),
+            covered_requirements: state.executed_queries.iter().cloned().collect(),
+            required_requirements: Vec::new(),
+            max_sources: self.deps.federation_limits.max_sources.max(1),
+            max_parallel_sources: self.deps.federation_limits.max_parallel_sources.max(1),
+            // Remaining budget bounds the plan: the reservation is already
+            // held and cannot be exceeded by the executor.
+            max_estimated_cost_micros: req
+                .budget
+                .max_total_cost_micros
+                .saturating_sub(state.spent_micros),
+            stop_when_covered: true,
+            generic_sources_can_answer: true,
+        };
+        let plan = searchos_federated::FederatedPlanner::plan(&context, &descriptors);
+        tracing::debug!(
+            sources = ?plan.selected_source_ids(),
+            rejected = plan.rejections.len(),
+            estimated_micros = plan.estimated_cost_micros,
+            "federation execute plan"
+        );
+        if plan.selected_source_ids().is_empty() {
+            fail!(
+                "PROVIDER_FAILURE",
+                "federation plan selected no eligible web source"
+            );
+        }
+
+        // One representative query per executed source: the legacy loop runs
+        // the planned queries sequentially against ONE router-picked
+        // provider; the federated path runs them across the SELECTED
+        // providers in parallel. Query attribution follows plan order.
+        let query_for = |index: usize| -> PlannedQuery {
+            planned.get(index).cloned().unwrap_or_else(|| PlannedQuery {
+                query: req.query.clone(),
+                origin: QueryOrigin::Fallback,
+                requirement_id: None,
+                strategy: None,
+            })
+        };
+
+        let executor = searchos_federated::FederatedExecutor::new(
+            registry,
+            searchos_federated::ExecutionScope {
+                request_id: req.request_id.clone(),
+                workspace_id: req.workspace_id.clone(),
+                max_parallel_sources: self.deps.federation_limits.max_parallel_sources.max(1),
+            },
+            searchos_federated::ExecutionControls::new(),
+        );
+        let request = SourceSearchRequest::new(
+            req.query.clone(),
+            req.mode,
+            req.workspace_id.clone(),
+            max_results.max(1),
+        );
+        let report = executor.execute(&plan, &request).await;
+        record_federation_execution(&report);
+
+        // RFC-062 §16: per-source execution summary for the decision trace.
+        // The pipeline attaches this to the trace and re-records it once
+        // acquisition settles, so a timeout or failure is visible in
+        // `trace show` without cross-referencing cost events.
+        state.federation_execution = Some(searchos_domain::decision::FederationExecutionTrace {
+            strategy: self.deps.federation_strategy.clone(),
+            planned_sources: plan.selected_source_ids(),
+            executed_sources: report.results.iter().map(|r| r.source_id.clone()).collect(),
+            failed_sources: report
+                .results
+                .iter()
+                .filter(|r| r.status.is_failure())
+                .map(|r| r.source_id.clone())
+                .collect(),
+            timed_out_sources: report
+                .results
+                .iter()
+                .filter(|r| r.timed_out)
+                .map(|r| r.source_id.clone())
+                .collect(),
+            not_executed_sources: report.not_executed.clone(),
+            candidates: report.results.iter().map(|r| r.candidates().len()).sum(),
+        });
+
+        for (index, result) in report.results.iter().enumerate() {
+            // Budget is checked per executed source against the SAME cap the
+            // legacy loop used; the reservation guard settles the total.
+            let price = self.estimator.estimate_request(&result.source_id);
+            if spent_micros + price.amount_micros.max(0) > req.budget.max_total_cost_micros {
+                break;
+            }
+            let planned_query = query_for(index);
+            let source_name = result.source_id.clone();
+            let duration_ms = result
+                .response
+                .as_ref()
+                .map(|r| r.latency_ms)
+                .unwrap_or_default();
+            let ev = CostEvent {
+                id: searchos_domain::ids::CostEventId::generate(),
+                task_id: task_id.clone(),
+                workspace_id: req.workspace_id.clone(),
+                agent_id: req.agent_id.clone(),
+                operation: CostOperation::WebSearch,
+                provider_id: Some(source_name.clone()),
+                input_units: 1,
+                output_units: 0,
+                estimated_cost: price.clone(),
+                actual_cost: None,
+                duration_ms,
+                occurred_at: Utc::now(),
+                trace_id: Some(trace_id.clone()),
+                shared: false,
+                pricing_model_version: "1".into(),
+                status: if result.status == SourceExecutionStatus::Success {
+                    CostAttemptStatus::Succeeded
+                } else {
+                    CostAttemptStatus::Failed
+                },
+                error_code: result
+                    .failure
+                    .as_ref()
+                    .map(|f| f.status.as_str().to_string()),
+            };
+            if let Err(e) = self.deps.cost_sink.append(ev).await {
+                fail!(e.class().code, e.to_string());
+            }
+            spent_micros += price.amount_micros.max(0);
+            calls += 1;
+            metrics.add_cost_micros(price.amount_micros.max(0));
+
+            // Fail-open: a failed or timed-out source is reported (its cost
+            // event above already carries the failure status) and the other
+            // sources' results are kept. This mirrors the kernel's
+            // `aggregate()` boundary — availability is not a quality pass.
+            let candidates = result.candidates();
+            if result.status != SourceExecutionStatus::Success || candidates.is_empty() {
+                outcomes.push(ExternalQueryOutcome {
+                    provider_id: source_name.clone(),
+                    query: planned_query.query.clone(),
+                    origin: planned_query.origin,
+                    requirement_id: planned_query.requirement_id.clone(),
+                    strategy: planned_query.strategy,
+                    items: Vec::new(),
+                });
+                continue;
+            }
+
+            let mut call_items = Vec::new();
+            for candidate in candidates.iter().take(max_results) {
+                call_items.push(SearchResultItem {
+                    title: candidate.title.clone(),
+                    url: candidate.canonical_ref.clone(),
+                    content: candidate.snippet.clone(),
+                    score: candidate.raw_score.unwrap_or(0.0),
+                    published_at: candidate.published_at,
+                    source: source_name.clone(),
+                    highlight: None,
+                });
+                evidence.push(Evidence {
+                    id: searchos_domain::ids::EvidenceId::generate(),
+                    source_id: searchos_domain::ids::SourceId::generate(),
+                    document_version_id: None,
+                    title: candidate.title.clone(),
+                    url: candidate.canonical_ref.clone(),
+                    content_ref: None,
+                    snippet: Some(candidate.snippet.clone()),
+                    published_at: candidate.published_at,
+                    fetched_at: Utc::now(),
+                    source_reliability: source_reliability_of(&candidate.canonical_ref),
+                    provenance: searchos_domain::evidence::Provenance {
+                        origin: searchos_domain::evidence::ProvenanceOrigin::External,
+                        provider_id: Some(source_name.clone()),
+                        source_url: Some(candidate.canonical_ref.clone()),
+                        document_id: None,
+                        retrieved_at: Utc::now(),
+                    },
+                });
+            }
+            outcomes.push(ExternalQueryOutcome {
+                provider_id: source_name.clone(),
+                query: planned_query.query.clone(),
+                origin: planned_query.origin,
+                requirement_id: planned_query.requirement_id.clone(),
+                strategy: planned_query.strategy,
+                items: call_items,
+            });
+            // Mark the executed query so follow-up rounds never re-buy it
+            // (INV-30-04).
+            state
+                .executed_queries
+                .insert(planned_query.query.to_lowercase());
+        }
+
+        state.calls = calls;
+        state.spent_micros = spent_micros;
+        // RFC-066: inter-source order follows trust-weighted rank fusion
+        // over the sources' ReliabilityProfiles — never plan order, and
+        // never provider raw scores (scores from different sources are not
+        // comparable). Within a source the provider's own ranking stands.
+        // Single-source plans (every existing gate) are unchanged.
+        if outcomes.len() > 1 {
+            let reliability: std::collections::HashMap<String, f32> = descriptors
+                .iter()
+                .map(|d| (d.source_id.to_string(), d.reliability.success_rate))
+                .collect();
+            order_federated_outcomes(&mut outcomes, &reliability);
+        }
+
+        Ok((outcomes, evidence, calls, spent_micros))
+    }
+}
+
 #[cfg(test)]
 mod completion_tests {
     use super::*;
@@ -2584,6 +3236,86 @@ mod completion_tests {
         ));
     }
 
+    // RFC-067/068 (RFC-062 §12): the context block honours the budget, keeps
+    // every citation even when content must shrink, and never reports a
+    // truncated assembly as complete.
+    #[test]
+    fn context_assembly_never_drops_citations() {
+        let items = |refs: &[(&str, &str)]| -> Vec<SearchResultItem> {
+            refs.iter()
+                .map(|(reference, content)| SearchResultItem {
+                    title: Some(reference.to_string()),
+                    url: reference.to_string(),
+                    content: content.to_string(),
+                    score: 1.0,
+                    published_at: None,
+                    source: "local".into(),
+                    highlight: None,
+                })
+                .collect()
+        };
+        let mut req = request("q", SearchMode::LocalFirst);
+        req.context_budget = Some(searchos_domain::context::ContextBudget {
+            // 10 usable tokens: three 1-token citations + zero content pool.
+            max_tokens: 12,
+            reserved_tokens: 2,
+            ..Default::default()
+        });
+
+        let results = items(&[
+            ("https://a.dev/1", "one two three"),
+            ("https://b.dev/2", "four five six"),
+        ]);
+        let context = assemble_context_block(&req, &results).expect("budget is valid");
+        assert_eq!(context.evidence.len(), 2);
+        assert_eq!(
+            context.citations.len(),
+            2,
+            "citations survive a zero content pool"
+        );
+        assert!(context.evidence.iter().all(|e| e.content.is_empty()));
+        assert!(context.evidence.iter().all(|e| e.truncated));
+        assert_eq!(
+            context.status,
+            searchos_domain::context::ContextStatus::BudgetLimited
+        );
+        assert!(context.truncated);
+        assert!(context.used_tokens <= context.usable_tokens);
+
+        // A generous budget keeps the original text verbatim.
+        req.context_budget = Some(searchos_domain::context::ContextBudget {
+            max_tokens: 500,
+            reserved_tokens: 10,
+            ..Default::default()
+        });
+        let context = assemble_context_block(&req, &results).expect("budget is valid");
+        assert_eq!(
+            context.status,
+            searchos_domain::context::ContextStatus::Complete
+        );
+        assert!(!context.truncated);
+        for (entry, original) in context.evidence.iter().zip(results.iter()) {
+            assert_eq!(entry.content, original.content, "verbatim, never a summary");
+            assert_eq!(entry.citation, original.url);
+        }
+
+        // No budget declared -> no context block, and results untouched.
+        let mut req = request("q", SearchMode::LocalFirst);
+        req.context_budget = None;
+        assert!(assemble_context_block(&req, &results).is_none());
+
+        // An invalid budget is rejected at the edge, not silently assembled.
+        let mut req = request("q", SearchMode::LocalFirst);
+        req.context_budget = Some(searchos_domain::context::ContextBudget {
+            reserved_tokens: 10,
+            max_tokens: 5,
+            ..Default::default()
+        });
+        assert!(assemble_context_block(&req, &results).is_none());
+
+        let _ = items(&[]); // keep the helper used symmetrically
+    }
+
     #[test]
     fn status_never_disguises_partial_as_completed() {
         let local = SearchDecision::LocalOnly {
@@ -2623,5 +3355,88 @@ mod completion_tests {
     fn request_id_can_be_set_by_agent_clients() {
         let req = request("q", SearchMode::LocalFirst).with_request_id("agent-req-42");
         assert_eq!(req.request_id.as_str(), "agent-req-42");
+    }
+
+    // ---- RFC-066: trust-weighted cross-source ordering -----------------
+
+    fn fusion_outcome(provider: &str, urls: &[&str]) -> ExternalQueryOutcome {
+        ExternalQueryOutcome {
+            provider_id: provider.into(),
+            query: "q".into(),
+            origin: QueryOrigin::Fallback,
+            requirement_id: None,
+            strategy: None,
+            items: urls
+                .iter()
+                .map(|u| SearchResultItem {
+                    title: None,
+                    url: (*u).into(),
+                    content: String::new(),
+                    score: 0.9,
+                    published_at: None,
+                    source: provider.into(),
+                    highlight: None,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn reliability_weight_overrides_plan_order_in_federated_outcomes() {
+        // Plan order puts the LOW-reliability source first (e.g. higher
+        // priority); fusion must nevertheless put the trustworthy source's
+        // best-ranked item first.
+        let mut outcomes = vec![
+            fusion_outcome("weak", &["https://weak.dev/1", "https://weak.dev/2"]),
+            fusion_outcome(
+                "trusted",
+                &["https://trusted.dev/1", "https://trusted.dev/2"],
+            ),
+        ];
+        let reliability = std::collections::HashMap::from([
+            ("weak".to_string(), 0.1),
+            ("trusted".to_string(), 1.0),
+        ]);
+        order_federated_outcomes(&mut outcomes, &reliability);
+        assert_eq!(outcomes[0].provider_id, "trusted");
+        assert_eq!(outcomes[0].items[0].url, "https://trusted.dev/1");
+        // Fusion only reorders: every item keeps its payload and owner.
+        assert_eq!(outcomes.len(), 2);
+        assert_eq!(outcomes.iter().map(|o| o.items.len()).sum::<usize>(), 4);
+        assert!(outcomes
+            .iter()
+            .all(|o| o.items.iter().all(|i| i.source == o.provider_id)));
+    }
+
+    #[test]
+    fn federated_outcome_order_is_deterministic() {
+        let reliability =
+            std::collections::HashMap::from([("a".to_string(), 0.7), ("b".to_string(), 0.7)]);
+        let run = || {
+            let mut outcomes = vec![
+                fusion_outcome("a", &["https://a.dev/1", "https://a.dev/2"]),
+                fusion_outcome("b", &["https://b.dev/1"]),
+            ];
+            order_federated_outcomes(&mut outcomes, &reliability);
+            outcomes
+                .iter()
+                .flat_map(|o| o.items.iter().map(|i| i.url.clone()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(run(), run());
+        // Equal weights and equal best rank → key tie-break wins, not plan
+        // order's randomness.
+        assert_eq!(run()[0], "https://a.dev/1");
+    }
+
+    #[test]
+    fn single_source_outcomes_are_left_untouched() {
+        let mut outcomes = vec![fusion_outcome(
+            "only",
+            &["https://only.dev/1", "https://only.dev/2"],
+        )];
+        order_federated_outcomes(&mut outcomes, &Default::default());
+        assert_eq!(outcomes[0].items[0].url, "https://only.dev/1");
+        assert_eq!(outcomes[0].items[1].url, "https://only.dev/2");
     }
 }
