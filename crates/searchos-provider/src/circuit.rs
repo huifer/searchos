@@ -75,6 +75,17 @@ impl CircuitBreaker {
         }
     }
 
+    /// Explicit recovery from an external health check / operator action.
+    /// Unlike [`Self::record_success`] this also closes a FULLY OPEN breaker,
+    /// because a verified success outside the normal probe path is the same
+    /// evidence a half-open probe would have produced. Additive: the provider
+    /// path keeps its cooldown semantics untouched.
+    pub fn reset(&self) {
+        self.consecutive_failures.store(0, Ordering::SeqCst);
+        self.opened_at_ms.store(0, Ordering::SeqCst);
+        self.state.store(CLOSED, Ordering::SeqCst);
+    }
+
     /// Records failure: threshold reached ⇒ Open the breaker.
     pub fn record_failure(&self) {
         let f = self.consecutive_failures.fetch_add(1, Ordering::SeqCst) + 1;
@@ -129,5 +140,18 @@ mod tests {
         assert_eq!(b.failures(), 0);
         b.record_failure();
         assert_eq!(b.check(), CircuitState::Closed);
+    }
+
+    #[test]
+    fn explicit_reset_closes_a_fully_open_breaker() {
+        let b = CircuitBreaker::new(1, Duration::from_secs(60));
+        b.record_failure();
+        assert_eq!(b.check(), CircuitState::Open);
+        // No cooldown elapsed: record_success alone cannot close it.
+        b.record_success();
+        assert_eq!(b.check(), CircuitState::Open);
+        b.reset();
+        assert_eq!(b.check(), CircuitState::Closed);
+        assert_eq!(b.failures(), 0);
     }
 }

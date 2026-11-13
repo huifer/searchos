@@ -45,6 +45,26 @@ multi-arch images, and attaches the matching section of this file.
   assembled service under `legacy` and `plan_only` over identical knowledge
   and asserts decision, status, quality, results, provenance content, cost
   and coverage are identical.
+- **Outcome-driven per-source circuit breaker (RFC-080 slice).** Every
+  federated execution now feeds its result back into the source's LIVE
+  `ReliabilityProfile`: three consecutive failures open the circuit so the
+  next plan rejects the source with `RejectionReason::Reliability` instead of
+  paying for a dead provider; a 30s cooldown allows exactly one half-open
+  probe (reusing the tested `CircuitBreaker`), and a verified success resets
+  it. All scope registrations of an id trip together, so a workspace override
+  cannot keep a broken global source alive. The transition increments
+  `federation.source.circuit_opened_total`. Gates:
+  `consecutive_failures_open_the_source_circuit_and_the_planner_rejects_it`,
+  `one_success_closes_the_circuit_and_resets_the_failure_streak`,
+  `outcome_updates_every_scope_copy_of_a_source`, `explicit_reset_closes_a_fully_open_breaker`
+  and the live-pipeline gate
+  `federated_failures_trip_the_source_circuit_in_the_live_pipeline`.
+  That gate also found and fixed a real defect: under `execute`,
+  `ExternalOnly`/`ExternalFirst` carry no gap-derived requirement ids, so the
+  federated planner rejected every billable source and acquired NOTHING. The
+  fallback purchase now gets one namespaced synthetic open requirement
+  (`fallback:<query>`), preserving INV-30-04's no-re-buy rule while restoring
+  parity with the legacy loop.
 - **Federated residuals closed (RFC-062 tasks 5/6/7).** Session transcripts
   are now a federated source (`SessionTranscriptSource`, registered at
   runtime): past research turns are workspace-scoped, mapped onto RFC-064
@@ -73,10 +93,11 @@ multi-arch images, and attaches the matching section of this file.
   a workspace-level read never surfaces an agent-private entry and never leaks
   across workspaces. `memory_resource` maps entries onto the RFC-064 resource
   model with permission derived from the sharing policy (egress still forbidden).
-- **Federated telemetry (RFC-062 §16).** Eleven zero-seeded `federation.*`
+- **Federated telemetry (RFC-062 §16).** Thirteen zero-seeded `federation.*`
   invariant counters — plan totals, selected/rejected sources, executed/failed/
-  timeout/candidate/not-executed sources, memory searched/hits — emitted at the
-  planner and executor call sites and exported through `/metrics`.
+  timeout/candidate/not-executed/circuit-opened sources, memory searched/hits,
+  session transcripts searched/hits — emitted at the planner and executor call
+  sites and exported through `/metrics`.
 - **Durable source catalog + `GET /sources` (RFC-063).** Append-only migration
   **v8** adds `search_sources`; `SourceCatalogRepo` upserts the resolved catalog
   at startup (the in-process registry stays authoritative for execution), and

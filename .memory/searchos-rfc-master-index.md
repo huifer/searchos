@@ -149,5 +149,22 @@ the same Resource Model / Source Registry.
   generic claim never vetoes a declared-authoritative source for the same gap.
   `generic_sources_can_answer` gates generic billable participation; Selective
   never treats a generic source as authoritative.
+- **RFC-080 slice + one real defect (2026-11-13, later in the session):**
+  execution outcomes now feed `InMemorySourceRegistry::record_outcome` →
+  LIVE `ReliabilityProfile`: 3 consecutive failures open the circuit and the
+  planner rejects the source; a 30s cooldown allows ONE half-open probe
+  (reusing `searchos-provider::CircuitBreaker`); an explicit verified success
+  calls the new additive `CircuitBreaker::reset()` — `record_success()` alone
+  only closes from HalfOpen, which a failing test exposed. All scope
+  registrations of an id trip together; the read paths derive `circuit_open`
+  from the breaker so a tripped source is never permanently dead. Full suite
+  **678 passed / 0 failed**; clippy/fmt/route scan green. The live gate
+  `federated_failures_trip_the_source_circuit_in_the_live_pipeline` also
+  found and fixed a real `execute`-mode defect: `ExternalOnly`/`ExternalFirst`
+  carry no gap-derived requirement ids, so the planner rejected EVERY
+  billable source and acquired nothing (legacy buys one fallback query).
+  Fix at the wiring boundary: synthesize ONE namespaced open requirement
+  `fallback:<query>`; NEVER weaken the planner's "no open requirement ⇒ no
+  billable source" rule (INV-30-04 generalised).
 
 **Related:** [[searchos-project]], [[searchos-verification]], [[searchos-decision-red-lines]], docs/rfc/rfc-master-index.md

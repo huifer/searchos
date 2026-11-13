@@ -57,8 +57,11 @@ pub const INVARIANT_METRICS: &[&str] = &[
     "federation.source.timeout_total",
     "federation.source.candidates_total",
     "federation.source.not_executed_total",
+    "federation.source.circuit_opened_total",
     "federation.memory.searched_total",
     "federation.memory.hits_total",
+    "federation.sessions.searched_total",
+    "federation.sessions.hits_total",
 ];
 
 /// Latency percentiles in ms.

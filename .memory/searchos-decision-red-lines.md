@@ -19,6 +19,7 @@ and partial results could look successful.
 - Stale local knowledge is refreshed via the `refresh` outbox event, never deleted from the index.
 - The decision state machine rejects illegal transitions; every decision persists structured `stages[]`, `final_strategy`, `final_outcome`.
 - External acquisition is gap-based: one targeted query per open `InformationNeed`, capped by query count and cost; covered requirements are never re-purchased.
+  - **Fallback nuance (2026-11, RFC-080 gate):** `ExternalOnly`/`ExternalFirst` have no gap-derived needs — the legacy loop still buys ONE attributed fallback query. Under `federation.strategy=execute` the wiring MUST synthesize one namespaced open requirement (`fallback:<query>`, never collidable with executed-query strings in `covered_requirements`), otherwise the planner rejects every billable source as "fills nothing" and acquires NOTHING. Do NOT weaken the planner's INV-30-04 check itself.
 - Budget lifecycle is reserve → execute → settle; estimated costs are never rewritten by billing reconciliation (`is_estimate` stays honest).
 - `request_id` is an idempotency key: replaying it must not create a second task, external call, bill, or document version.
 - Evidence merge canonicalizes URLs, retains conflicts, and counts independent sources by host; unresolved conflicts force `QualityStatus::Conflict`.

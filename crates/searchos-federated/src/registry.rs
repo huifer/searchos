@@ -14,8 +14,17 @@ use crate::source::{
     SourceHealth, SourceScope,
 };
 use searchos_domain::ids::{SourceId, WorkspaceId};
+use searchos_provider::circuit::{CircuitBreaker, CircuitState};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
+
+/// Consecutive failures before a source is cut off (RFC-080 slice).
+const CIRCUIT_FAILURE_THRESHOLD: u32 = 3;
+/// How long a tripped source stays out before ONE half-open probe is allowed.
+const CIRCUIT_COOLDOWN: Duration = Duration::from_secs(30);
+/// Weight of the newest outcome in the success-rate moving average.
+const SUCCESS_RATE_EMA_WEIGHT: f32 = 0.2;
 
 /// Registry failure modes.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -26,12 +35,43 @@ pub enum RegistryError {
     NotFound(String),
 }
 
-/// A live registration: descriptor + implementation + health.
+/// A live registration: descriptor + implementation + health + breaker.
 #[derive(Clone)]
 struct Registration {
     descriptor: SearchSourceDescriptor,
     source: Arc<dyn SearchSource>,
     health: SourceHealth,
+    breaker: Arc<CircuitBreaker>,
+}
+
+impl Registration {
+    fn new(descriptor: SearchSourceDescriptor, source: Arc<dyn SearchSource>) -> Self {
+        let breaker = CircuitBreaker::new(CIRCUIT_FAILURE_THRESHOLD, CIRCUIT_COOLDOWN);
+        // A descriptor seeded from the provider registry (keys already
+        // limited at startup) starts in the same state as the live breaker.
+        if descriptor.reliability.circuit_open {
+            for _ in 0..CIRCUIT_FAILURE_THRESHOLD {
+                breaker.record_failure();
+            }
+        }
+        Self {
+            descriptor,
+            source,
+            health: SourceHealth::Unknown,
+            breaker: Arc::new(breaker),
+        }
+    }
+
+    /// Descriptor as the planner must see it: the breaker is authoritative
+    /// for `circuit_open`, so a cooldown that elapsed turns the source into a
+    /// single half-open probe instead of a permanent disable.
+    fn effective_descriptor(&self) -> SearchSourceDescriptor {
+        let mut descriptor = self.descriptor.clone();
+        let state = self.breaker.check();
+        descriptor.reliability.circuit_open = state == CircuitState::Open;
+        descriptor.reliability.consecutive_failures = self.breaker.failures();
+        descriptor
+    }
 }
 
 /// In-process source registry.
@@ -77,11 +117,7 @@ impl InMemorySourceRegistry {
                 scope_label(&existing.descriptor.scope),
             ));
         }
-        entries.push(Registration {
-            descriptor,
-            source,
-            health: SourceHealth::Unknown,
-        });
+        entries.push(Registration::new(descriptor, source));
         Ok(())
     }
 
@@ -115,7 +151,7 @@ impl InMemorySourceRegistry {
     ) -> Option<SearchSourceDescriptor> {
         let guard = self.inner.read().ok()?;
         let entries = guard.get(source_id.as_str())?;
-        pick(entries, requester).map(|r| r.descriptor.clone())
+        pick(entries, requester).map(|r| r.effective_descriptor())
     }
 
     /// Enable/disable applies to every scope registration of this id: turning
@@ -144,6 +180,45 @@ impl InMemorySourceRegistry {
         }
     }
 
+    /// Outcome feedback loop (RFC-080 slice): execution results update the
+    /// source's LIVE reliability profile, which the planner and the trusted
+    /// fusion weights read on the next request.
+    ///
+    /// Three consecutive failures open the circuit (`reject_reason` then
+    /// returns `RejectionReason::Reliability`); after the cooldown ONE
+    /// half-open probe is allowed, and a probe failure re-opens immediately.
+    /// Any success resets the counter and closes it. `success_rate` is an
+    /// exponential moving average over the outcome stream — a rate, not a
+    /// per-request score. All scope registrations of the id are updated, so a
+    /// higher-precedence override can never keep a tripped source alive.
+    ///
+    /// Returns `Some(true)` only on the closed → open TRANSITION (for the
+    /// circuit-opened counter); `None` means the id is not registered.
+    pub fn record_outcome(&self, source_id: &SourceId, success: bool) -> Option<bool> {
+        let mut guard = self.inner.write().ok()?;
+        let entries = guard.get_mut(source_id.as_str())?;
+        let mut just_opened = false;
+        for entry in entries.iter_mut() {
+            let was_open = entry.breaker.check() == CircuitState::Open;
+            let rate = &mut entry.descriptor.reliability.success_rate;
+            if success {
+                entry.breaker.reset();
+                *rate = (*rate * (1.0 - SUCCESS_RATE_EMA_WEIGHT) + SUCCESS_RATE_EMA_WEIGHT)
+                    .clamp(0.0, 1.0);
+            } else {
+                entry.breaker.record_failure();
+                *rate = (*rate * (1.0 - SUCCESS_RATE_EMA_WEIGHT)).clamp(0.0, 1.0);
+            }
+            let is_open = entry.breaker.check() == CircuitState::Open;
+            entry.descriptor.reliability.circuit_open = is_open;
+            entry.descriptor.reliability.consecutive_failures = entry.breaker.failures();
+            if !was_open && is_open {
+                just_opened = true;
+            }
+        }
+        Some(just_opened)
+    }
+
     pub fn health(&self, source_id: &SourceId, requester: &WorkspaceId) -> Option<SourceHealth> {
         let guard = self.inner.read().ok()?;
         let entries = guard.get(source_id.as_str())?;
@@ -168,7 +243,7 @@ impl InMemorySourceRegistry {
             let Some(resolved) = pick(entries, requester) else {
                 continue;
             };
-            let descriptor = resolved.descriptor.clone();
+            let descriptor = resolved.effective_descriptor();
             if filter.enabled_only && !descriptor.enabled {
                 continue;
             }
@@ -198,7 +273,7 @@ impl InMemorySourceRegistry {
         for entries in guard.values() {
             for entry in entries {
                 out.push(SourceDescriptorRef {
-                    descriptor: entry.descriptor.clone(),
+                    descriptor: entry.effective_descriptor(),
                     health: entry.health.clone(),
                 });
             }

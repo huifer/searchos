@@ -110,7 +110,7 @@ in §6 — a behaviour-preserving change because `legacy` remains the default.
 | 4 | Wire the planner/executor into `search_service.rs` behind `federation.strategy` (consumed per INV-30-20), decision engine still owning the final gate | 062 Phase 3 | **Done** (config + registry + plan report + both equivalence gates + provider execution migrated through the executor with service-side billing; see §6) | — |
 | 5 | Memory as a federated source + `MemoryEntry` → `SearchResource` mapping | 064/069 | **Done** (`AgentMemorySource`, `memory_resource`, plus `SessionTranscriptSource` / `transcript_resource` for session transcripts) | — |
 | 6 | Weighted fusion fed by `ReliabilityProfile` (weights from profile, not scores) | 066 | S | **Done** (`rrf_fuse_weighted` + generic `fuse_ranks` wired into `execute` outcome ordering; 3 named service gates) |
-| 7 | Per-source metrics + plan/execution telemetry | 062 §16 | **Done** (11 `federation.*` invariant counters, exported via `/metrics`; `FederationExecutionTrace` on the decision trace via migration v9) | — |
+| 7 | Per-source metrics + plan/execution telemetry | 062 §16 | **Done** (13 `federation.*` invariant counters, exported via `/metrics`; `FederationExecutionTrace` on the decision trace via migration v9) | — |
 | 8 | SQLite projection `search_sources` + gateway `GET /sources` (route table + OpenAPI in the same change) | 063 | **Done** (migration v8, `SourceCatalogRepo`, `GET /sources?persisted=`) | — |
 
 ### 5. What this iteration delivered (so the review is falsifiable)
@@ -162,7 +162,29 @@ in §6 — a behaviour-preserving change because `legacy` remains the default.
     record for an id). Gate:
     `federation_execution_summary_survives_trace_re_record`, plus the execute
     integration gate now asserts the summary (`legacy` traces stay `None`).
-* Full suite: **673 tests, 0 failures**; `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, route-conflict scan all clean.
+* **RFC-080 slice — outcome-driven per-source circuit breaker:** every
+  federated execution feeds its outcome back into the source's LIVE
+  `ReliabilityProfile` (registry `record_outcome`). Three consecutive
+  failures open the circuit, so the next plan rejects the source with
+  `RejectionReason::Reliability` instead of paying for a dead provider; a
+  30s cooldown allows exactly one half-open probe (the tested
+  `CircuitBreaker` is reused, with a new additive `reset()` for an explicit
+  verified success), and a success resets the streak. All scope copies of an
+  id trip together. The transition increments
+  `federation.source.circuit_opened_total`.
+  Gates: `consecutive_failures_open_the_source_circuit_and_the_planner_rejects_it`,
+  `one_success_closes_the_circuit_and_resets_the_failure_streak`,
+  `outcome_updates_every_scope_copy_of_a_source`,
+  `explicit_reset_closes_a_fully_open_breaker`, and the live-pipeline gate
+  `federated_failures_trip_the_source_circuit_in_the_live_pipeline`.
+* **Defect found by that gate (fixed):** under `execute`, `ExternalOnly` /
+  `ExternalFirst` carry no gap-derived requirement ids, so the federated
+  planner rejected every billable source as "fills nothing" and acquired
+  NOTHING — the legacy loop buys one fallback query there. The fallback
+  purchase now gets one namespaced synthetic open requirement
+  (`fallback:<query>`), which keeps INV-30-04's no-re-buy rule and restores
+  parity with the legacy path.
+* Full suite: **678 tests, 0 failures**; `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, route-conflict scan all clean.
 * Route table unchanged by THIS residue pass; the earlier iteration added
   `GET /sources` with the route table + OpenAPI in the same change.
 
@@ -245,14 +267,14 @@ removed with the migration.
 
 | 契约 | 归属 RFC | 现状 | 证据 | 062 的剩余工作 |
 |---|---|---|---|---|
-| 结果标准化（046） | 规划 | **部分 → 由适配器交付** | `merge.rs` 规范化与冲突保留；`searchos-federated::source::SourceCandidate` 是统一跨源形状，两个 Phase 2 适配器都产出它 | 剩余：让 `search_service.rs` 消费适配器输出（任务 4） |
-| 任务编排（054） | 规划 | **部分 → stage 队列已交付** | `search_task` + outbox + 幂等 + 预算预留；`AcquisitionState` 上限；`FederatedSearchPlan.stages` + `FederatedExecutor` 提供逐源队列与 `ExecutionReport` | 剩余：持久化逐源执行记录（Phase 5） |
+| 结果标准化（046） | 规划 | **部分 → 由适配器交付** | `merge.rs` 规范化与冲突保留；`searchos-federated::source::SourceCandidate` 是统一跨源形状，两个 Phase 2 适配器都产出它 | 无（`execute` 路径直接消费适配器输出，等价性门禁锁定） |
+| 任务编排（054） | 规划 | **部分 → stage 队列已交付** | `search_task` + outbox + 幂等 + 预算预留；`AcquisitionState` 上限；`FederatedSearchPlan.stages` + `FederatedExecutor` 提供逐源队列与 `ExecutionReport` | 已交付：持久化逐源执行记录（`FederationExecutionTrace`，migration v9） |
 | 取消与截止时间（055） | 规划 | **部分 → 已交付** | singleflight 超时路径、`max_execution_time_ms`、优雅停机排水；另有 `ExecutionControls`（标记 + deadline）与逐源 `tokio::time::timeout` | 剩余：内核无 |
-| 来源注册（063） | 规划 | **内核已交付** | `registry.rs`：作用域注册、优先级解析、能力过滤、启停、健康；25 个不变量测试 | 网关需要持久目录时再做 SQLite 投影；Local Mode 用进程内 registry 已足够 |
+| 来源注册（063） | 规划 | **内核已交付** | `registry.rs`：作用域注册、优先级解析、能力过滤、启停、健康；25 个不变量测试 | 已交付：migration v8 `search_sources` 投影 + `GET /sources` |
 | 统一资源模型（064） | 规划 | **内核已交付** | `resource.rs`：`SearchResource`、11 种 `ResourceType`、`ContentRef`、fail-closed `PermissionRef`、稳定身份 + 去重键 | 接入来源时把文档/会话行映射为 `SearchResource` |
-| 联邦检索架构（062） | 本 RFC | **Phase 1–3 + planner 接线已交付** | `searchos-federated` 内核 + 执行器 + 适配器；`search_service.rs` 在 `federation.strategy` 背后咨询 planner（默认 `legacy` / `plan_only` / `execute` 告警）；`/search/plan` 报告 source 计划；`/system/status` 暴露目录；等价性门禁 `federated_default_matches_legacy_pipeline` 通过 | 剩余：provider 执行迁移（任务 4b）、逐源指标（任务 7）、持久目录（任务 8） |
+| 联邦检索架构（062） | 本 RFC | **Phase 1–5 已交付；P0 残留清单已关闭** | `searchos-federated` 内核 + 执行器 + 适配器；`search_service.rs` 在 `federation.strategy` 背后咨询 planner（默认 `legacy` / `plan_only` / `execute` 真实执行）；`/search/plan` 报告 source 计划；`/system/status` 与 `GET /sources` 暴露目录；两级等价性门禁通过 | 无 P0 残留（provider 执行迁移 4b、逐源指标 7、持久目录 8、会话逐字稿 5、融合接线 6 均已交付） |
 
-**结论：P0 结构上已解锁，运行时部件也已就位。** 062 依赖的契约（063 注册表、064 资源模型）已是经过测试的轻依赖代码，Phase 2 适配器与 Phase 3 执行器就建在其上。剩下的是任务 4 —— 用这些适配器替换 `search_service.rs` 里的内联本地与 provider 路径 —— 这是受 §6 等价性门禁保护的行为保持型改动。
+**结论：P0 结构上已解锁，运行时部件已就位，§4 残留任务全部关闭。** 062 依赖的契约（063 注册表、064 资源模型）已是经过测试的轻依赖代码，Phase 2 适配器、Phase 3 执行器与 Phase 5 遥测/trace 就建在其上。任务 4 已把 planner 与执行器接入管线 —— 在 §6 等价性门禁保护下是行为保持型改动，`legacy` 仍是默认。
 
 ### 2. 逐契约明细
 
@@ -274,12 +296,12 @@ removed with the migration.
 4. **已完成**：`federation.strategy` 配置（INV-30-20 消费）、registry 接线、`/search/plan` 报告、管线级等价性门禁 `federated_default_matches_legacy_pipeline`，以及 **provider 执行迁移（4b）**——`execute` 模式下来源选择与扇出走 executor（逐源 deadline、故障隔离），计费保持在服务侧逐调用落账，防双计费门禁 `federated_execute_mode_bills_once_and_matches_legacy_results` 通过。
 5. **已完成**：摄取/会话适配器产出 `SearchResource`（记忆成为 Source），会话逐字稿也已接入 —— `SessionTranscriptSource`（workspace 隔离、`ResourceType::Transcript`、非计费）+ `transcript_resource`，5 个验收测试。
 6. **已完成**：融合权重改由 `ReliabilityProfile` 提供 —— `rrf_fuse_weighted`（N 列表带权）+ 内核通用 `fuse_ranks`，`execute` 路径的跨源排序走 `order_federated_outcomes`（只排序，不改载荷/计费/归属）；3 个服务级具名门禁 + 4 个内核融合测试。
-7. **已完成**：逐源指标（11 个 `federation.*` invariant 计数器，经 `/metrics` 导出）+ `DecisionTrace` 逐源字段 —— `FederationExecutionTrace`（planned/executed/failed/timed_out/not_executed/candidates），管线回写（migration v9 `decision_traces.federation_json`，INSERT OR REPLACE）；门禁 `federation_execution_summary_survives_trace_re_record`，execute 集成门禁同时断言摘要、legacy 保持 `None`。
+7. **已完成**：逐源指标（13 个 `federation.*` invariant 计数器，经 `/metrics` 导出）+ `DecisionTrace` 逐源字段 —— `FederationExecutionTrace`（planned/executed/failed/timed_out/not_executed/candidates），管线回写（migration v9 `decision_traces.federation_json`，INSERT OR REPLACE）；门禁 `federation_execution_summary_survives_trace_re_record`，execute 集成门禁同时断言摘要、legacy 保持 `None`。
 8. **已交付**：migration v8 `search_sources` 投影 + `SourceCatalogRepo` + 网关 `GET /sources`（支持 `persisted=true`，路由表与 OpenAPI 同一提交）。
 
 ### 5. 本轮交付（可证伪清单）
 
-见英文 §5。本轮累计：`searchos-federated` 内核（source/registry/resource/planner/executor/fusion，含内核融合测试）、带权 RRF +9 测试，domain 契约（`ContextBudget`/`FederationExecutionTrace`），application 装配 + 具名测试，三传输层接入与 OpenAPI，planner/executor 管线接线（legacy / plan_only / execute 真实执行）与两级等价性门禁；全套 **673 测试 0 失败**，fmt / clippy / 路由扫描全绿。`GET /sources` 由前一轮随路由表 + OpenAPI 同步交付；本轮残留收尾未新增 HTTP 路由。
+见英文 §5。本轮累计：`searchos-federated` 内核（source/registry/resource/planner/executor/fusion，含内核融合与熔断反馈测试）、带权 RRF +9 测试，domain 契约（`ContextBudget`/`FederationExecutionTrace`），application 装配 + 具名测试，三传输层接入与 OpenAPI，planner/executor 管线接线（legacy / plan_only / execute 真实执行）与两级等价性门禁；全套 **678 测试 0 失败**，fmt / clippy / 路由扫描全绿。`GET /sources` 由前一轮随路由表 + OpenAPI 同步交付；本轮残留收尾未新增 HTTP 路由。逐源熔断（RFC-080 切片）由执行结果反哺 `ReliabilityProfile`，三次连续失败开熔断、cooldown 后半开探针、显式健康成功复位；门禁同时发现并修复了 `ExternalOnly` 在 `execute` 下无 requirement id 导致零采集的缺陷。
 
 ### 6. 风险说明（为什么执行器单独交付）
 

@@ -2047,6 +2047,14 @@ async fn list_sources(
                 "capabilities": d.capabilities,
                 "estimated_cost_micros": d.cost.estimated_cost_micros,
                 "timeout_ms": d.latency.timeout_ms,
+                // RFC-080 slice: operators must see WHY a source stopped
+                // being selected. The breaker is authoritative here —
+                // `list()` already derived these from the live breaker.
+                "reliability": {
+                    "success_rate": d.reliability.success_rate,
+                    "circuit_open": d.reliability.circuit_open,
+                    "consecutive_failures": d.reliability.consecutive_failures,
+                },
                 "health": state.runtime.federation_registry.health(
                     &d.source_id,
                     &searchos_domain::ids::WorkspaceId::new(workspace),
@@ -2683,6 +2691,7 @@ mod tests {
     #[tokio::test]
     async fn sources_endpoint_reports_live_and_persisted_catalogs() {
         let (st, _d) = state().await;
+        let registry = st.runtime.federation_registry.clone();
         let app = router(st);
 
         let get = |app: Router, uri: &'static str| async move {
@@ -2726,6 +2735,28 @@ mod tests {
             .unwrap();
         assert_eq!(local["capabilities"]["lexical_search"], true);
         assert_eq!(local["billable"], false);
+        // RFC-080: live reliability is visible to operators.
+        assert!(local["reliability"]["success_rate"].as_f64().unwrap() > 0.0);
+        assert_eq!(local["reliability"]["circuit_open"], false);
+        assert_eq!(local["reliability"]["consecutive_failures"], 0);
+
+        // A tripped circuit must be observable through the same endpoint,
+        // not hidden inside the planner.
+        for _ in 0..3 {
+            registry.record_outcome(
+                &searchos_domain::ids::SourceId::new("local_knowledge"),
+                false,
+            );
+        }
+        let (_, tripped) = get(app.clone(), "/sources").await;
+        let tripped_local = tripped["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["source_id"] == "local_knowledge")
+            .unwrap();
+        assert_eq!(tripped_local["reliability"]["circuit_open"], true);
+        assert_eq!(tripped_local["reliability"]["consecutive_failures"], 3);
 
         // The persisted projection recorded the same catalog at startup.
         let (status, persisted) = get(app.clone(), "/sources?persisted=true").await;

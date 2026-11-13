@@ -1123,3 +1123,150 @@ fn unverified_agent_scoped_source_cannot_reach_a_restricted_resource() {
         .with_permission(permission);
     assert!(!resource.context_eligible(Some("agent-owner")));
 }
+
+// ---------------------------------------------------------------------------
+// RFC-080 — outcome feedback opens the per-source circuit
+// ---------------------------------------------------------------------------
+
+fn web_filter() -> SourceFilter {
+    SourceFilter {
+        enabled_only: true,
+        categories: vec![SourceCategory::WebSearch],
+        ..Default::default()
+    }
+}
+
+#[test]
+fn consecutive_failures_open_the_source_circuit_and_the_planner_rejects_it() {
+    let registry = InMemorySourceRegistry::new();
+    registry
+        .register(stub(
+            "flaky",
+            SourceCategory::WebSearch,
+            SourceScope::Global,
+            Vec::new(),
+        ))
+        .unwrap();
+    let id = SourceId::new("flaky");
+    let ctx = context(SearchMode::ExternalOnly, FederationStrategy::Auto, &["gap"]);
+
+    // A fresh source is selectable: the circuit starts closed.
+    let before = registry.list(&web_filter(), &workspace());
+    assert!(FederatedPlanner::plan(&ctx, &before)
+        .selected_source_ids()
+        .contains(&"flaky".to_string()));
+
+    // Two failures are tolerated; the third OPENS (transition returned once).
+    assert_eq!(registry.record_outcome(&id, false), Some(false));
+    assert_eq!(registry.record_outcome(&id, false), Some(false));
+    assert_eq!(registry.record_outcome(&id, false), Some(true));
+    assert_eq!(
+        registry.record_outcome(&id, false),
+        Some(false),
+        "the counter reports transitions, not every failure while open"
+    );
+
+    let after = registry.list(&web_filter(), &workspace());
+    let reliability = &after[0].reliability;
+    assert!(reliability.circuit_open);
+    assert_eq!(reliability.consecutive_failures, 4);
+    assert!(reliability.success_rate < 1.0, "failures lower the rate");
+
+    // The SAME registry now plans differently: a tripped source is rejected
+    // with the reliability reason, not silently executed anyway.
+    let plan = FederatedPlanner::plan(&ctx, &after);
+    assert!(plan.selected_source_ids().is_empty());
+    assert_eq!(
+        plan.rejections
+            .iter()
+            .find(|r| r.source_id == "flaky")
+            .map(|r| r.reason),
+        Some(RejectionReason::Reliability)
+    );
+}
+
+#[test]
+fn one_success_closes_the_circuit_and_resets_the_failure_streak() {
+    let registry = InMemorySourceRegistry::new();
+    registry
+        .register(stub(
+            "recovering",
+            SourceCategory::WebSearch,
+            SourceScope::Global,
+            Vec::new(),
+        ))
+        .unwrap();
+    let id = SourceId::new("recovering");
+    for _ in 0..3 {
+        registry.record_outcome(&id, false);
+    }
+    assert!(
+        registry.list(&web_filter(), &workspace())[0]
+            .reliability
+            .circuit_open
+    );
+
+    assert_eq!(registry.record_outcome(&id, true), Some(false));
+    let reliability = &registry.list(&web_filter(), &workspace())[0].reliability;
+    assert!(!reliability.circuit_open);
+    assert_eq!(reliability.consecutive_failures, 0);
+    let ctx = context(SearchMode::ExternalOnly, FederationStrategy::Auto, &["gap"]);
+    assert!(
+        FederatedPlanner::plan(&ctx, &registry.list(&web_filter(), &workspace()))
+            .selected_source_ids()
+            .contains(&"recovering".to_string())
+    );
+}
+
+#[test]
+fn outcome_updates_every_scope_copy_of_a_source() {
+    // A workspace override must not keep a tripped global source alive.
+    let registry = InMemorySourceRegistry::new();
+    registry
+        .register(stub(
+            "shared",
+            SourceCategory::WebSearch,
+            SourceScope::Global,
+            Vec::new(),
+        ))
+        .unwrap();
+    let mut overridden = descriptor(
+        "shared",
+        SourceCategory::WebSearch,
+        SourceScope::Workspace(WS.into()),
+        99,
+        0,
+        false,
+        &[],
+    );
+    overridden.reliability.circuit_open = false;
+    registry
+        .register(Arc::new(StubSource {
+            descriptor: overridden,
+            outcome: Ok(SourceSearchResponse::success("shared", Vec::new(), 1)),
+            calls: Arc::new(AtomicUsize::new(0)),
+        }) as Arc<dyn SearchSource>)
+        .unwrap();
+
+    let id = SourceId::new("shared");
+    for _ in 0..3 {
+        registry.record_outcome(&id, false);
+    }
+    let references = registry.all_references();
+    assert_eq!(references.len(), 2);
+    assert!(
+        references
+            .iter()
+            .all(|r| r.descriptor.reliability.circuit_open),
+        "all scope registrations of one id trip together"
+    );
+    assert_eq!(
+        registry
+            .descriptor_for(&id, &workspace())
+            .unwrap()
+            .reliability
+            .success_rate,
+        references[0].descriptor.reliability.success_rate,
+        "the resolved descriptor agrees with every copy"
+    );
+}

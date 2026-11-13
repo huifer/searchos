@@ -2955,11 +2955,21 @@ impl SearchServiceImplStub {
         let strategy =
             searchos_federated::FederationStrategy::parse(&self.deps.federation_strategy)
                 .unwrap_or(searchos_federated::FederationStrategy::Auto);
-        let requirements: Vec<String> = planned
+        let mut requirements: Vec<String> = planned
             .iter()
             .map(|q| q.requirement_id.clone().unwrap_or_default())
             .filter(|r| !r.is_empty())
             .collect();
+        if requirements.is_empty() {
+            // ExternalOnly / ExternalFirst carry no gap-derived needs: the
+            // legacy loop still buys ONE fallback query, attributed after
+            // acquisition. Without an open requirement the planner would
+            // reject every billable source as "fills nothing" (INV-30-04)
+            // and `execute` mode would acquire nothing at all. The synthetic
+            // id is namespaced so it can never collide with an executed
+            // query string in `covered_requirements`.
+            requirements.push(format!("fallback:{}", req.query.to_lowercase()));
+        }
         let context = searchos_federated::PlanningContext {
             query: req.query.clone(),
             mode: req.mode,
@@ -3023,6 +3033,24 @@ impl SearchServiceImplStub {
         );
         let report = executor.execute(&plan, &request).await;
         record_federation_execution(&report);
+
+        // RFC-080 slice: feed the outcome back into the LIVE reliability
+        // profile. A source that fails three times in a row is opened by the
+        // registry and the next plan rejects it as `Reliability`, instead of
+        // paying for it forever. A success resets the counter. This never
+        // touches billing (settlement happens below) and never affects the
+        // results of THIS request — only the next plan.
+        for result in &report.results {
+            let success = !result.status.is_failure() && !result.timed_out;
+            let source_key = searchos_domain::ids::SourceId::new(&result.source_id);
+            if registry
+                .record_outcome(&source_key, success)
+                .unwrap_or(false)
+            {
+                searchos_observability::MetricsRegistry::global()
+                    .inc_counter("federation.source.circuit_opened_total");
+            }
+        }
 
         // RFC-062 §16: per-source execution summary for the decision trace.
         // The pipeline attaches this to the trace and re-records it once

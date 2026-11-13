@@ -104,6 +104,33 @@ The SearchOS implementation (`~/git_repo/searchos`) is verified by these command
   - OpenAPI documents `DecisionTrace.federation_execution` +
     `FederationExecutionTrace`; gates `openapi_spec_matches_the_route_table`
     / `every_registered_route_resolves` stay green.
+- **RFC-080 slice / defect fix (2026-11-13, later in the same session):**
+  `InMemorySourceRegistry::record_outcome` feeds every federated execution
+  back into the source's LIVE `ReliabilityProfile`: 3 consecutive failures
+  open the circuit (planner rejects with `RejectionReason::Reliability`), a
+  30s cooldown allows ONE half-open probe by reusing the tested provider
+  `CircuitBreaker`, and a verified success calls the new additive
+  `CircuitBreaker::reset()` (record_success alone cannot close a FULLY OPEN
+  breaker — this was found by a failing test). All scope copies of an id
+  trip together; `list`/`descriptor_for`/`all_references` derive
+  `circuit_open` from the breaker so a tripped source is never permanently
+  dead. Counters are now 13 zero-seeded `federation.*` invariants
+  (memory/session/circuit-opened included). Full suite **678 passed / 0
+  failed**; clippy/fmt/route scan green.
+  - **Real defect found by the live gate:** under `execute`, `ExternalOnly`
+    / `ExternalFirst` have no gap-derived requirement ids → the federated
+    planner rejected every billable source as "fills nothing" and acquired
+    NOTHING (legacy buys one fallback query). Fix: the fallback purchase
+    gets one namespaced synthetic open requirement `fallback:<query>` so it
+    cannot collide with executed-query strings in `covered_requirements`.
+    Keep this invariant: a billable source that fills no OPEN requirement
+    must still be refused (INV-30-04), so never weaken the planner check —
+    synthesize the requirement at the wiring boundary instead.
+  - Gates: `consecutive_failures_open_the_source_circuit_and_the_planner_rejects_it`,
+    `one_success_closes_the_circuit_and_resets_the_failure_streak`,
+    `outcome_updates_every_scope_copy_of_a_source`,
+    `explicit_reset_closes_a_fully_open_breaker`,
+    `federated_failures_trip_the_source_circuit_in_the_live_pipeline`.
 
 **Known environment notes:**
 - LanceDB requires `protoc` at build time (`brew install protobuf`).

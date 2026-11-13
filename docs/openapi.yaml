@@ -1610,6 +1610,15 @@ components:
               priority: { type: integer }
               estimated_cost_micros: { type: integer, format: int64 }
               timeout_ms: { type: integer, format: int64 }
+              reliability:
+                type: object
+                description: >
+                  Live reliability feedback (RFC-080 slice). Present on the live
+                  projection; absent from the persisted catalog projection.
+                properties:
+                  success_rate: { type: number, format: float }
+                  circuit_open: { type: boolean }
+                  consecutive_failures: { type: integer }
               capabilities:
                 type: object
                 additionalProperties: { type: boolean }

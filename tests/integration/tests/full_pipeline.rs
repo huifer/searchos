@@ -1187,3 +1187,181 @@ async fn federated_execute_mode_bills_once_and_matches_legacy_results() {
         "legacy path leaves traces unchanged"
     );
 }
+
+/// RFC-080 slice: execution outcomes feed a LIVE per-source circuit breaker.
+/// Three consecutive provider failures trip it; the next request must not pay
+/// for that source; an explicit healthy outcome closes it again.
+#[tokio::test]
+async fn federated_failures_trip_the_source_circuit_in_the_live_pipeline() {
+    use async_trait::async_trait;
+    use searchos_provider::error::ProviderError;
+    use searchos_provider::traits::{ProviderResult, SearchParams, SearchProvider};
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct FlakyProvider {
+        calls: Arc<AtomicUsize>,
+        fail: Arc<AtomicBool>,
+    }
+    #[async_trait]
+    impl SearchProvider for FlakyProvider {
+        fn id(&self) -> &str {
+            "flaky_web"
+        }
+        fn capabilities(&self) -> searchos_domain::provider::ProviderCapabilities {
+            searchos_domain::provider::ProviderCapabilities {
+                search: true,
+                ..Default::default()
+            }
+        }
+        async fn search(&self, _params: &SearchParams) -> Result<ProviderResult, ProviderError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if self.fail.load(Ordering::SeqCst) {
+                return Err(ProviderError::from_status("flaky_web", 503, "offline"));
+            }
+            Ok(ProviderResult {
+                entries: vec![searchos_provider::traits::SearchResultEntry {
+                    title: Some("recovered".into()),
+                    url: "https://flaky.dev/recovered".into(),
+                    content: "provider is healthy again".into(),
+                    score: 0.8,
+                    published_at: None,
+                    raw_content: None,
+                }],
+                duration_ms: 1,
+                bytes_transferred: 128,
+            })
+        }
+        async fn health_check(&self) -> Result<bool, ProviderError> {
+            Ok(!self.fail.load(Ordering::SeqCst))
+        }
+    }
+
+    let mut cfg = SearchOsConfig::default();
+    let dir = tempfile::tempdir().unwrap();
+    cfg.app.data_dir = dir.path().to_path_buf();
+    cfg.federation.strategy = "execute".into();
+    let runtime = searchos_core::SearchOsRuntime::init(cfg).await.unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let fail = Arc::new(AtomicBool::new(true));
+    let provider: Arc<dyn SearchProvider> = Arc::new(FlakyProvider {
+        calls: Arc::clone(&calls),
+        fail: Arc::clone(&fail),
+    });
+    runtime
+        .provider_registry
+        .register(searchos_provider::RegisteredProvider::from_search(
+            provider.clone(),
+            5_000,
+            "USD",
+        ));
+    let registry = Arc::new(searchos_federated::InMemorySourceRegistry::new());
+    registry
+        .register(Arc::new(searchos_federated::WebSearchProviderSource::new(
+            provider.clone(),
+            searchos_federated::SourceScope::Global,
+            50,
+            5_000,
+            searchos_federated::SourceLatencyProfile::default(),
+        )) as Arc<dyn searchos_federated::SearchSource>)
+        .unwrap();
+
+    let deps = SearchDependencies {
+        profiles: searchos_policy::ProfileRegistry::builtin(),
+        quality: searchos_policy::QualityPolicy::default(),
+        freshness: searchos_policy::FreshnessPolicy::default_policy(),
+        source: searchos_policy::SourcePolicy::default_policy(),
+        cost_config: searchos_cost::CostModelConfig::default_config(),
+        bm25: runtime.fulltext.clone(),
+        vector: Some(runtime.vector.clone()),
+        hybrid: Some(runtime.hybrid.clone()),
+        embedder: runtime.embedder.clone(),
+        canonical_cache: runtime.canonical_cache.clone(),
+        semantic_cache: runtime.semantic_cache.clone(),
+        retrieval_cache: runtime.retrieval_cache.clone(),
+        embedding_cache: runtime.embedding_cache.clone(),
+        rerank_cache: runtime.rerank_cache.clone(),
+        router: runtime.provider_registry.clone(),
+        search_providers: vec![provider],
+        local_port: runtime.local_port(),
+        traces: runtime.traces(),
+        cost_sink: runtime.cost_sink(),
+        task_recorder: runtime.task_recorder(),
+        singleflight: Arc::new(SingleflightCoordinator::new()),
+        cache: runtime.exact_cache.clone(),
+        negative_cache: runtime.negative_cache.clone(),
+        semantic_dedup: true,
+        incremental: true,
+        query_expansion: true,
+        reranking: true,
+        allow_external: true,
+        promotion: None,
+        session_store: Some(runtime.session_store.clone()),
+        federation_registry: Some(Arc::clone(&registry)),
+        federation_strategy: "execute".into(),
+        federation_limits: searchos_domain::FederationLimits::default(),
+    };
+    let svc = SearchServiceImpl::new(Arc::new(deps));
+
+    // ExternalOnly bypasses the exact cache, so each distinct query really
+    // executes (Part 30 decision red line).
+    for i in 0..3 {
+        let mut req = request(&format!("circuit probe {i}"), SearchMode::ExternalOnly);
+        req.budget.max_external_queries = 1;
+        let _ = svc.search(req).await.unwrap();
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 3, "three failures executed");
+
+    let source_id = searchos_domain::ids::SourceId::new("flaky_web");
+    let reliability = registry
+        .descriptor_for(&source_id, &WorkspaceId::new("ws_default"))
+        .unwrap()
+        .reliability;
+    assert!(reliability.circuit_open, "three failures trip the circuit");
+    assert_eq!(reliability.consecutive_failures, 3);
+    assert!(reliability.success_rate < 1.0);
+
+    // Fourth request: the planner rejects the tripped source, so the provider
+    // is never called again (no more wasted spend on a dead source).
+    let mut req = request("circuit probe blocked", SearchMode::ExternalOnly);
+    req.budget.max_external_queries = 1;
+    let blocked = svc.search(req).await.unwrap();
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        3,
+        "an open circuit stops the purchase"
+    );
+    assert!(
+        blocked
+            .warnings
+            .iter()
+            .any(|w| w.contains("external_execution_failed"))
+            || blocked.status != searchos_domain::response::SearchStatus::Completed,
+        "a blocked acquisition is reported honestly, never as a success"
+    );
+
+    // A verified healthy outcome (health check / operator recovery) closes it.
+    fail.store(false, Ordering::SeqCst);
+    assert_eq!(registry.record_outcome(&source_id, true), Some(false));
+    assert!(
+        !registry
+            .descriptor_for(&source_id, &WorkspaceId::new("ws_default"))
+            .unwrap()
+            .reliability
+            .circuit_open
+    );
+    let mut req = request("circuit probe recovered", SearchMode::ExternalOnly);
+    req.budget.max_external_queries = 1;
+    let recovered = svc.search(req).await.unwrap();
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        4,
+        "recovery re-enables the source"
+    );
+    assert!(
+        recovered
+            .results
+            .iter()
+            .any(|r| r.url == "https://flaky.dev/recovered"),
+        "the recovered source serves real content again"
+    );
+}
