@@ -18,6 +18,7 @@ async-trait = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 chrono = { workspace = true }
+regex = { workspace = true }
 searchos-domain = { workspace = true }
 searchos-policy = { workspace = true }
 searchos-query = { workspace = true }

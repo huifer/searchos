@@ -210,6 +210,20 @@ The SearchOS implementation (`~/git_repo/searchos`) is verified by these command
   `fuse_ranks` version is authoritative and build-restoring. If another
   session works in this repo, coordinate first.
 
+- **RFC-087 ingest redaction / concurrent-session incident (2026-11-14):**
+  `redact_secrets` rule set in `searchos-application/src/redaction.rs`,
+  wired at `IngestServiceImpl::ingest_bytes` (before storage/hash/index),
+  config `ingest.redact_secrets` (default true), OpenAPI `RedactionReport`.
+  Gates: 7 rule unit tests + 2 ingest-service tests +
+  `ingest_time_secret_redaction_is_wired_through_config`. Full suite **722
+  passed / 0 failed** (81 suites); clippy/fmt/route scan green.
+  **Concurrent-session incident #2:** a foreign process rewrote
+  `session_source.rs` and inserted a duplicate runtime deps block (broke the
+  build). Its full diff was saved to `/tmp/foreign_session_changes.patch`
+  (NOT discarded); `runtime.rs` / `session_source.rs` were restored to HEAD
+  and only the `.with_redaction(...)` line replayed. Coordinate with any
+  other session active in this repo.
+
 **Known environment notes:**
 - LanceDB requires `protoc` at build time (`brew install protobuf`).
 - Live network tests (fetch of https://example.com) tolerate sandbox timeouts by design.

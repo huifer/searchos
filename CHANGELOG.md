@@ -101,6 +101,20 @@ multi-arch images, and attaches the matching section of this file.
   `federation_execution_summary_survives_trace_re_record` and the extended
   `federated_execute_mode_bills_once_and_matches_legacy_results` verify both
   paths.
+- **Ingest-time secret redaction (RFC-087 slice).** A versioned rule set
+  (`redact_secrets`) now runs on every ingest path (text / file / upload /
+  batch) via the single `ingest_bytes` seam, BEFORE object storage, hashing
+  and indexing. It replaces private-key blocks, `sk-`-style provider keys,
+  AWS/GitHub/Slack tokens, `Bearer` values and digit-bearing credential
+  assignments with stable `[REDACTED:<rule>]` markers, and returns a per-rule
+  `RedactionReport` on `IngestedDocument` (OpenAPI documents it). Markers are
+  idempotent (re-ingesting the original text hashes identically), ordinary
+  prose is never touched (a credential value must contain a digit), and
+  `ingest.redact_secrets` (default **true**, explicit opt-out) is consumed per
+  INV-30-20. Gates: seven rule tests plus
+  `ingest_redacts_secrets_before_object_write`,
+  `redaction_can_be_disabled_explicitly` and the runtime-level
+  `ingest_time_secret_redaction_is_wired_through_config`.
 - **Source-aware adaptive decisions (RFC-076 slice).** `DecisionInput` gains
   `external_sources_healthy` and the decision engine acts on it: when no
   healthy web source exists right now (every circuit open, or none

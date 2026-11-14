@@ -456,6 +456,13 @@ impl Default for SearchConfig {
 pub struct IngestConfig {
     pub max_bytes_per_document: usize,
     pub max_bytes_per_batch: usize,
+    /// RFC-087: redact secrets at INGEST time (secure by default).
+    #[serde(default = "default_redact_secrets")]
+    pub redact_secrets: bool,
+}
+
+fn default_redact_secrets() -> bool {
+    true
 }
 
 impl Default for IngestConfig {
@@ -463,6 +470,7 @@ impl Default for IngestConfig {
         Self {
             max_bytes_per_document: 20 * 1024 * 1024,
             max_bytes_per_batch: 200 * 1024 * 1024,
+            redact_secrets: true,
         }
     }
 }
@@ -734,6 +742,7 @@ pub const ALL_CONFIG_FIELDS: &[&str] = &[
     "search.negative_cache_ttl_seconds",
     "ingest.max_bytes_per_document",
     "ingest.max_bytes_per_batch",
+    "ingest.redact_secrets",
     "memory.enabled",
     "memory.embedding.provider",
     "memory.embedding.model",
@@ -841,6 +850,7 @@ pub const CONSUMED_CONFIG_FIELDS: &[&str] = &[
     "search.negative_cache_ttl_seconds",
     "ingest.max_bytes_per_document",
     "ingest.max_bytes_per_batch",
+    "ingest.redact_secrets",
     "memory.enabled",
     "memory.embedding.provider",
     "memory.embedding.model",

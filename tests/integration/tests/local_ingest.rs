@@ -451,3 +451,76 @@ async fn runtime_write_path_populates_and_clears_vectors() {
     let after_delete = h.runtime.lancedb.count().await.unwrap();
     assert_eq!(after_delete, 0, "vector rows must be removed on delete");
 }
+
+/// RFC-087: ingest-time secret redaction is wired from config to the real
+/// runtime — secrets never reach object storage or the index, and an
+/// explicit config opt-out keeps the original bytes.
+#[tokio::test]
+async fn ingest_time_secret_redaction_is_wired_through_config() {
+    // Programmatic secret shape: no credential-looking literal in the tree.
+    let secret_value = format!("sk-{}{}", "Ab3Cd5Ef7Gh9Jk2", "Lm4Np6Qr8St0Uv2");
+    let text = format!(
+        "Ledger entry: OPENAI_API_KEY = {secret_value} and the quarterly totals are public."
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = SearchOsConfig::default();
+    cfg.app.data_dir = dir.path().to_path_buf();
+    let runtime = searchos_core::SearchOsRuntime::init(cfg).await.unwrap();
+    let mut req = text_request("default");
+    req.source_key = Some("notes/secret".into());
+    let doc = runtime
+        .application
+        .ingest_service
+        .ingest_text(req, &text)
+        .await
+        .unwrap();
+    let report = doc
+        .redaction
+        .as_ref()
+        .expect("redaction report is returned");
+    assert!(report.redacted);
+    assert!(!report.hits.is_empty());
+
+    runtime.process_outbox(256).await.unwrap();
+    let response = runtime
+        .application
+        .search_service
+        .search(request("quarterly totals", "default"))
+        .await
+        .unwrap();
+    let snippets: String = response
+        .results
+        .iter()
+        .map(|r| r.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !snippets.contains(&secret_value),
+        "the secret is not searchable: {snippets}"
+    );
+    assert!(
+        snippets.contains("[REDACTED:"),
+        "the redacted form is what got indexed: {snippets}"
+    );
+
+    // Explicit operator opt-out: config field is consumed (INV-30-20) and
+    // the original bytes are preserved.
+    let dir2 = tempfile::tempdir().unwrap();
+    let mut cfg2 = SearchOsConfig::default();
+    cfg2.app.data_dir = dir2.path().to_path_buf();
+    cfg2.ingest.redact_secrets = false;
+    let runtime2 = searchos_core::SearchOsRuntime::init(cfg2).await.unwrap();
+    let mut req2 = text_request("default");
+    req2.source_key = Some("notes/secret".into());
+    let doc2 = runtime2
+        .application
+        .ingest_service
+        .ingest_text(req2, &text)
+        .await
+        .unwrap();
+    assert!(
+        doc2.redaction.is_none(),
+        "with_redaction(false) disables the whole pass"
+    );
+}

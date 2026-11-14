@@ -387,7 +387,7 @@ Delivered so far for this baseline:
 
 * `crates/searchos-federated/` — **RFC-062 kernel** (`SearchSource` trait +
   planner + executor + Phase 2 adapters), **RFC-063** (scoped registry),
-  **RFC-064** (resource model); 56 tests including the named gates.
+  **RFC-064** (resource model); 56+ tests including the named gates.
 * `crates/searchos-retrieval/` — **RFC-066 slice**: `rrf_fuse_weighted`.
 * `crates/searchos-context/` + pipeline wiring — **RFC-067/068** end to end
   (`context_budget` on the request, `context` on the response, all transports
@@ -741,7 +741,7 @@ Dashboard 与 Analytics 纳入整体架构。总计：**87 份规划 RFC、8 个
 
 * `crates/searchos-federated/` —— **RFC-062 内核**（`SearchSource` trait +
   planner + executor + Phase 2 适配器）、**RFC-063**（作用域注册表）、
-  **RFC-064**（资源模型）；56 个测试，含具名门禁。
+  **RFC-064**（资源模型）；56+ 个测试，含具名门禁。
 * `crates/searchos-retrieval/` —— **RFC-066 切片**：`rrf_fuse_weighted`。
 * `crates/searchos-context/` + 管线接入 —— **RFC-067/068** 端到端
   （请求带 `context_budget`、响应带 `context`，三传输层 + OpenAPI）。

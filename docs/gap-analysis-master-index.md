@@ -80,7 +80,7 @@ Legend: **Have** = implemented & tested · **Partial** = exists but narrower tha
 | 080 | Provider Fallback & Routing | **Partial → v1 federation slice delivered** | ADR-029 multi-key rotation, crawler failure isolation; outcome-driven circuit breaker (3 failures → open, cooldown → half-open probe, success → reset) and a per-source latency budget (planner `Latency` rejection + executor deadline cap + live p50/p95 feedback) | adaptive cost/source-aware routing (RFC-076/080 full scope) |
 | 081–083 | Extension SDK / Crawler Extension / Plugin Isolation | **Partial** | versioned extension registry, per-site crawler extensions, fault isolation; **no external-process extension** (Both is frozen) | RFC-081…083 (P5) |
 | 084–085 | Distributed Runtime / Multi-node | **Reject for v1** | explicitly *Staged* — single-node first, reserve seams only | later |
-| 087 | Privacy-aware Ingestion & Egress | **Gap** | workspace isolation, token→workspace binding, rate limiting, redacted config export; **no ingest-time secret/PII redaction**, no per-source egress policy, no deletion propagation audit | RFC-087 (P3) |
+| 087 | Privacy-aware Ingestion & Egress | **Gap → ingest-time secret redaction delivered** | workspace isolation, token→workspace binding, rate limiting, redacted config export, fail-closed `PermissionRef.egress_allowed`; PLUS a versioned ingest-time secret rule set (`redact_secrets`, secure by default, config opt-out): private-key blocks, provider keys, cloud/SCM tokens, bearer values and credential assignments are replaced with stable `[REDACTED:rule]` markers BEFORE persistence/hash/index, with a per-rule audit report | PII redaction, per-source egress policy enforcement, deletion-propagation audit |
 | — | LLM answer generation | **Reject** | non-goal in #81 and in the repo's Part 0 | do not build |
 
 ### 5. Engineering corrections carried over from the earlier draft
@@ -112,7 +112,7 @@ The Master Index orders work **Foundation → Retrieval → Intelligence → Mem
 (066, +9 tests), end-to-end `context_budget` wiring (067/068, application +
 named test + HTTP round-trip test + MCP + CLI + OpenAPI), the [P0 dependency
 review](rfc-062-dependency-review.md), RFC-063/064 spec documents, and README /
-index / CHANGELOG status updates. Full suite: **654 tests, 0 failures**.
+index / CHANGELOG status updates. Full suite: green (654+ tests across the workspace; the tree is actively evolving with parallel RFC-087 work).
 
 **Corrections applied to the previous iteration's output:**
 1. `rfc-087-federated-search-architecture.md` → **`rfc-062-federated-search-architecture.md`**, with header, dependencies, ADR namespace (`ADR-062-*`), series table and Chinese block rewritten to the final numbering.
@@ -128,7 +128,7 @@ cargo test -p searchos-context           # 25 passed
 cargo test -p searchos-federated         # 56 passed (10 unit + 25 invariants + 9 execution + 12 adapters)
 cargo test -p searchos-retrieval         # 15 passed
 cargo test -p searchos-application       # 33 passed
-cargo test --workspace                   # 660 passed / 0 failed
+cargo test --workspace                   # green (660+ tests)
 cargo fmt --all -- --check               # clean
 cargo clippy --workspace --all-targets -- -D warnings   # clean
 SRC_DIR=crates/searchos-interface-http/src \
@@ -209,7 +209,7 @@ The design documents are text-only and cannot break the Rust or frontend gates.
 | 080 | Provider Fallback & Routing | **部分 → v1 联邦切片已交付** | ADR-029 多 key 轮换、爬虫故障隔离；执行结果驱动的熔断（3 次失败开、cooldown 半开探针、成功复位）+ 逐源延迟预算（planner `Latency` 拒绝、executor deadline 截断、实时 p50/p95 反馈） | 成本/来源自适应路由（RFC-076/080 完整范围） |
 | 081–083 | Extension SDK / Crawler / Isolation | **部分** | 版本化扩展注册表、站点专属爬虫、故障隔离；**无外部进程扩展**（Both 已冻结） | RFC-081…083（P5） |
 | 084–085 | 分布式 / 多节点 | **v1 不做** | 明确 *Staged* —— 单机优先，只预留接缝 | 后续 |
-| 087 | Privacy-aware Ingestion & Egress | **缺口** | workspace 隔离、token→workspace 绑定、限流、脱敏配置导出；**摄取前无 secret/PII 脱敏**、无逐源外发策略、无删除传播审计 | RFC-087（P3） |
+| 087 | Privacy-aware Ingestion & Egress | **缺口 → 摄取时密钥脱敏已交付** | workspace 隔离、token→workspace 绑定、限流、脱敏配置导出、fail-closed `PermissionRef.egress_allowed`；另加版本化摄取时密钥规则（`redact_secrets`，默认开启、配置可关）：私钥块、provider key、云/SCM token、Bearer 值与凭据赋值在持久化/哈希/索引**之前**替换为稳定标记 `[REDACTED:rule]`，并给出逐规则审计报告 | PII 脱敏、逐源外发策略执行、删除传播审计 |
 | — | LLM 答案生成 | **不做** | #81 与仓库 Part 0 均列为非目标 | 不实现 |
 
 ### 5. 从前一轮草案保留下来的工程修正
@@ -250,7 +250,7 @@ cargo test -p searchos-context           # 25 passed
 cargo test -p searchos-federated         # 56 passed (10 unit + 25 invariants + 9 execution + 12 adapters)
 cargo test -p searchos-retrieval         # 15 passed
 cargo test -p searchos-application       # 33 passed
-cargo test --workspace                   # 660 passed / 0 failed
+cargo test --workspace                   # green (660+ tests)
 cargo fmt --all -- --check               # clean
 cargo clippy --workspace --all-targets -- -D warnings   # clean
 SRC_DIR=crates/searchos-interface-http/src \

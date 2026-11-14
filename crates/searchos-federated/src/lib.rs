@@ -27,14 +27,15 @@
 //! * [`planner`] — the pure, auditable selection algorithm with the full
 //!   rejection chain and stop conditions.
 //! * [`resource`] — the unified resource model shared by all sources.
+//! * [`execute`] — the executor: per-source deadline, bounded fan-out,
+//!   cooperative cancellation, failure isolation.
+//! * [`adapters`] — Phase 2 wrappers over the existing local index and
+//!   configured web-search providers.
+//! * [`fusion`] — reliability-weighted candidate fusion (RFC-066).
 //!
-//! # What is deliberately *not* here
-//!
-//! No execution and no adapters. Wrapping the existing local retrieval and
-//! provider router as sources (Phase 2 of RFC-062) and rewiring
-//! `search_service.rs` is a separate, higher-risk change; keeping this crate
-//! free of runtime dependencies means the invariants below are testable
-//! without one, and that the existing 559-test suite stays green.
+//! The pipeline consults the planner via `federation.strategy`
+//! (`legacy` default / `plan_only` / `execute`); see
+//! `searchos-application::search_service`.
 //!
 //! # Invariants (asserted in `tests/federated_invariants.rs`)
 //!

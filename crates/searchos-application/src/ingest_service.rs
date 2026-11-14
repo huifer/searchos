@@ -97,6 +97,10 @@ pub struct IngestedDocument {
     pub title: Option<String>,
     pub chunk_count: usize,
     pub status: String,
+    /// RFC-087: what was redacted from this ingest (None when redaction is
+    /// disabled). Additive so older clients ignore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redaction: Option<crate::redaction::RedactionReport>,
 }
 
 /// One failed batch item.
@@ -189,6 +193,8 @@ pub struct IngestServiceImpl {
     jobs: Option<Arc<dyn IngestJobPort>>,
     max_bytes_per_document: usize,
     max_bytes_per_batch: usize,
+    /// RFC-087: ingest-time secret redaction (secure by default).
+    redact_secrets: bool,
 }
 
 impl IngestServiceImpl {
@@ -199,7 +205,15 @@ impl IngestServiceImpl {
             jobs: None,
             max_bytes_per_document: DEFAULT_MAX_BYTES_PER_DOCUMENT,
             max_bytes_per_batch: DEFAULT_MAX_BYTES_PER_BATCH,
+            redact_secrets: true,
         }
+    }
+
+    /// Configures RFC-087 ingest-time redaction. Disabling it is an explicit
+    /// operator decision; the default keeps secrets out of stored knowledge.
+    pub fn with_redaction(mut self, enabled: bool) -> Self {
+        self.redact_secrets = enabled;
+        self
     }
 
     /// Attaches batch job tracking.
@@ -266,7 +280,16 @@ impl IngestServiceImpl {
         }
 
         let normalized = normalize_content(bytes, req.content_type.as_deref(), file_name)?;
-        let text = normalized.text;
+        // RFC-087: redact BEFORE hashing / persistence / indexing, on both
+        // the raw text and the markdown form. Stable markers keep re-ingest
+        // idempotent; the report is returned to the caller for auditing.
+        let (text, markdown, redaction) = if self.redact_secrets {
+            let (text, report) = crate::redaction::redact_secrets(&normalized.text);
+            let (markdown, _) = crate::redaction::redact_secrets(&normalized.markdown);
+            (text, markdown, Some(report))
+        } else {
+            (normalized.text, normalized.markdown, None)
+        };
         if text.trim().is_empty() {
             return Err(SearchOsError::Validation(validation(
                 "content",
@@ -282,7 +305,7 @@ impl IngestServiceImpl {
             .map_err(|e| SearchOsError::Storage(e.to_string()))?;
         let md_ref = self
             .objects
-            .put(normalized.markdown.as_bytes())
+            .put(markdown.as_bytes())
             .await
             .map_err(|e| SearchOsError::Storage(e.to_string()))?;
         let hash_hex = content_hash(text.as_bytes());
@@ -394,6 +417,7 @@ impl IngestServiceImpl {
             title,
             chunk_count: domain_chunks.len(),
             status: if changed { "indexed" } else { "unchanged" }.to_string(),
+            redaction,
         })
     }
 }
@@ -936,6 +960,88 @@ mod tests {
             Arc::new(MemObjects::default()),
             Arc::new(MemDocPort::default()),
         )
+    }
+
+    // ---- RFC-087: ingest-time secret redaction -------------------------
+
+    #[tokio::test]
+    async fn ingest_redacts_secrets_before_object_write() {
+        let objects = Arc::new(MemObjects::default());
+        let port = Arc::new(MemDocPort::default());
+        let svc = IngestServiceImpl::new(objects.clone(), port);
+        // Build a secret-shaped value at runtime: no credential-looking
+        // literal lives in the source tree, and the assertion reuses it.
+        let secret_value = format!("sk-{}{}", "Ab3Cd5Ef7Gh9Jk2", "Lm4Np6Qs8Rt1Vw0");
+        let secret = format!("OPENAI_API_KEY = {secret_value}\nThe rest of the note is public.");
+        let doc = svc
+            .ingest_text(
+                IngestRequest::new(searchos_domain::ids::WorkspaceId::new("default")),
+                &secret,
+            )
+            .await
+            .unwrap();
+        let report = doc.redaction.as_ref().expect("redaction report returned");
+        assert!(report.redacted);
+        assert_eq!(
+            report.rules_version,
+            crate::redaction::REDACTION_RULES_VERSION
+        );
+        let stored: String = objects
+            .files
+            .lock()
+            .unwrap()
+            .values()
+            .map(|v| String::from_utf8_lossy(v).to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !stored.contains(&secret_value),
+            "the secret must never reach object storage"
+        );
+        assert!(stored.contains("[REDACTED:"), "a stable marker is stored");
+        assert!(stored.contains("The rest of the note is public"));
+
+        // Stable markers keep re-ingest idempotent: the same original text
+        // yields the same redacted form -> unchanged version.
+        let again = svc
+            .ingest_text(
+                IngestRequest::new(searchos_domain::ids::WorkspaceId::new("default")),
+                &secret,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            again.content_hash, doc.content_hash,
+            "the redacted form hashes identically across re-ingest"
+        );
+    }
+
+    #[tokio::test]
+    async fn redaction_can_be_disabled_explicitly() {
+        let objects = Arc::new(MemObjects::default());
+        let port = Arc::new(MemDocPort::default());
+        let svc = IngestServiceImpl::new(objects.clone(), port).with_redaction(false);
+        let secret_value = format!("sk-{}{}", "Zx8Cv2Bn5Ma7Qw1", "Er4Ty6Ui9Op3As5");
+        let doc = svc
+            .ingest_text(
+                IngestRequest::new(searchos_domain::ids::WorkspaceId::new("default")),
+                &format!("OPENAI_API_KEY = {secret_value}"),
+            )
+            .await
+            .unwrap();
+        assert!(doc.redaction.is_none(), "disabled -> no report");
+        let stored: String = objects
+            .files
+            .lock()
+            .unwrap()
+            .values()
+            .map(|v| String::from_utf8_lossy(v).to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            stored.contains(&secret_value),
+            "an explicit operator opt-out keeps the original bytes"
+        );
     }
 
     #[tokio::test]

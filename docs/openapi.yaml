@@ -1395,6 +1395,26 @@ components:
         title: { type: string, nullable: true }
         chunk_count: { type: integer }
         status: { type: string }
+        # RFC-087: absent when ingest-time redaction is disabled.
+        redaction:
+          allOf:
+            - $ref: '#/components/schemas/RedactionReport'
+          nullable: true
+    RedactionReport:
+      type: object
+      description: >
+        Secrets redacted at INGEST time (RFC-087). Rule counts are audit data;
+        the marker [REDACTED:<rule>] replaces each match before storage.
+      properties:
+        redacted: { type: boolean }
+        hits:
+          type: array
+          items:
+            type: object
+            properties:
+              rule: { type: string }
+              count: { type: integer }
+        rules_version: { type: string }
     IngestBatchResult:
       type: object
       properties:
