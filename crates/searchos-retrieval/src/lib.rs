@@ -10,6 +10,7 @@ pub mod fusion;
 pub mod rerank;
 pub mod reranker_adapters;
 pub mod traits;
+pub mod vertical;
 
 pub use fusion::{rrf_fuse, rrf_fuse_weighted, RankedSource, RrfConfig};
 pub use rerank::{NeverReranker, Reranker, RerankerPolicy};
@@ -17,6 +18,9 @@ pub use reranker_adapters::{
     build_reranker, default_policy, FeatureReranker, RemoteReranker, RemoteRerankerConfig,
 };
 pub use traits::{SearchIndex, VectorIndex};
+pub use vertical::{
+    LexicalVertical, RetrievalVertical, SemanticVertical, VerticalRecall, VerticalRouter,
+};
 
 use searchos_domain::retrieval::{RetrievalCandidate, RetrievalQuery};
 
@@ -27,6 +31,9 @@ pub struct HybridRetriever {
     config: RrfConfig,
     reranker: Option<std::sync::Arc<dyn Reranker>>,
     policy: RerankerPolicy,
+    /// RFC-065: specialized verticals fused after the two primary lists.
+    /// Empty by default, which keeps the two-list behaviour byte-identical.
+    verticals: Vec<std::sync::Arc<dyn vertical::RetrievalVertical>>,
 }
 
 impl HybridRetriever {
@@ -43,7 +50,26 @@ impl HybridRetriever {
             config,
             reranker: None,
             policy: RerankerPolicy::default(),
+            verticals: Vec::new(),
         }
+    }
+
+    /// Registers an additional retrieval vertical (RFC-065). Extra verticals
+    /// are routed per query (`accepts`), recalled fail-open, and fused AFTER
+    /// the primary lists with their declared weight (RFC-066). With no
+    /// verticals registered the retriever is byte-identical to the two-list
+    /// form.
+    pub fn with_vertical(
+        mut self,
+        vertical: std::sync::Arc<dyn vertical::RetrievalVertical>,
+    ) -> Self {
+        self.verticals.push(vertical);
+        self
+    }
+
+    /// Number of registered extra verticals (diagnostics).
+    pub fn vertical_count(&self) -> usize {
+        self.verticals.len()
     }
 
     /// Whether a reranker is attached (runtime wiring diagnostics).
@@ -67,8 +93,8 @@ impl HybridRetriever {
         self
     }
 
-    /// Runs BM25 (+vector), applies metadata filtering, fuses with RRF, and
-    /// optionally reranks (RFC-007 7.1).
+    /// Runs BM25 (+vector +registered verticals), applies metadata filtering,
+    /// fuses with weighted RRF, and optionally reranks (RFC-007 7.1).
     pub async fn retrieve(
         &self,
         query: &RetrievalQuery,
@@ -78,7 +104,51 @@ impl HybridRetriever {
             Some(v) => v.search(query).await?,
             None => Vec::new(),
         };
-        let mut fused = rrf_fuse(&bm25_hits, &vector_hits, &self.config);
+        // RFC-065: route the query across the registered verticals. Extra
+        // verticals are fail-open — a failing vertical is reported through
+        // `VerticalRecall.error` and the route continues without its list;
+        // the primary lists keep their existing failure semantics (`?`).
+        let mut extras = Vec::new();
+        for registered in &self.verticals {
+            if !registered.accepts(query) {
+                continue;
+            }
+            let recall = match registered.recall(query).await {
+                Ok(candidates) => vertical::VerticalRecall {
+                    vertical_id: registered.id().to_string(),
+                    weight: registered.weight(),
+                    candidates,
+                    error: None,
+                },
+                Err(error) => {
+                    tracing::warn!(
+                        vertical = %registered.id(),
+                        %error,
+                        "vertical recall failed; continuing without it"
+                    );
+                    vertical::VerticalRecall {
+                        vertical_id: registered.id().to_string(),
+                        weight: registered.weight(),
+                        candidates: Vec::new(),
+                        error: Some(error.to_string()),
+                    }
+                }
+            };
+            extras.push(recall);
+        }
+        // RFC-066: one weighted fusion over every routed list. With no extra
+        // verticals this is exactly the two-list `rrf_fuse` form.
+        let mut sources = Vec::with_capacity(2 + extras.len());
+        sources.push(fusion::RankedSource::new("bm25", 1.0, &bm25_hits));
+        sources.push(fusion::RankedSource::new("vector", 1.0, &vector_hits));
+        for recall in &extras {
+            sources.push(fusion::RankedSource::new(
+                &recall.vertical_id,
+                recall.weight,
+                &recall.candidates,
+            ));
+        }
+        let mut fused = rrf_fuse_weighted(&sources, &self.config);
 
         // Metadata filtering (domain constraints, RFC-007 7.5).
         fused.retain(|c| candidate_allowed(query, c));

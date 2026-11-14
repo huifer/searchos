@@ -176,5 +176,12 @@ the same Resource Model / Source Registry.
   the new field (30s default) — a new context field must be wired at EVERY
   construction site, not just the service. Full suite **682 passed / 0
   failed**; clippy/fmt/route scan green.
+- **RFC-065 slice (2026-11-14):** vertical retrieval routing in
+  `searchos-retrieval` — `RetrievalVertical` (id / accepts / weight /
+  recall), `VerticalRouter`, lexical+semantic adapters, and
+  `HybridRetriever::with_vertical` fusing all routed lists with declared
+  weights through `rrf_fuse_weighted` (byte-identical two-list default;
+  extra verticals fail-open). Ownership boundary respected: 065 recalls and
+  routes, 066 fuses. Full suite **700 passed / 0 failed** (80 suites).
 
 **Related:** [[searchos-project]], [[searchos-verification]], [[searchos-decision-red-lines]], docs/rfc/rfc-master-index.md

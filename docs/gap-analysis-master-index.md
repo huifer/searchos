@@ -63,8 +63,8 @@ Legend: **Have** = implemented & tested · **Partial** = exists but narrower tha
 | 062 | `SearchSource` abstraction + federated planner | **Phases 1–3 + pipeline wiring delivered (incl. task 4b execution); P0 residual list closed** | `crates/searchos-federated` kernel/executor/adapters; planner consulted by `search_service.rs` behind `federation.strategy`; `execute` mode runs providers through `FederatedExecutor` with service-side billing (double-billing gate passes); `/search/plan` reports sources; `/system/status` and `GET /sources` expose the catalog | none for P0 (session-transcript source, per-source trace fields and reliability-weighted fusion all wired) |
 | 063 | scoped Source Registry (capability, health, enable/disable) | **Kernel delivered** | `InMemorySourceRegistry`: precedence resolution, filters, disable-across-scopes, one-descriptor-per-id; adapters register cleanly into it (see `registry_drives_a_full_federated_execution`) | SQLite projection with the Gateway surface |
 | 064 | Unified Resource Model beyond `Document` | **Kernel delivered** | `SearchResource` + 11 `ResourceType`s, stable identity, hash-first dedup, fail-closed `PermissionRef`, egress default off | adapters map document/session rows |
-| 065 | Hybrid Retrieval (FTS + BM25 + KNN) | **Partial** | `HybridRetriever` + `rrf_fuse` + Tantivy (CJK bigrams, literal-term, title boost, fuzzy) + LanceDB actually written by the outbox; **no vertical search / query router beyond two lists** | extend |
-| 066 | Trust-aware Fusion (weighted RRF, dedup, independence) | **Partial → weighted RRF delivered and wired** | `rrf_fuse_weighted` + kernel-generic `fuse_ranks`; the `execute` path orders cross-source outcomes by `ReliabilityProfile.success_rate` (`order_federated_outcomes`, ordering only); dedup with `occurrences[]` + original-publisher detection still pending | original-publisher detection (RFC-074, P4) |
+| 065 | Hybrid Retrieval (FTS + BM25 + KNN) | **Partial → vertical routing delivered** | `HybridRetriever` + weighted RRF + Tantivy (CJK bigrams, literal-term, title boost, fuzzy) + LanceDB actually written by the outbox; `RetrievalVertical` / `VerticalRouter` route N recall lists per query (routing predicate + declared weight, fail-open extras) and the retriever fuses all routed lists — byte-identical to the two-list form when none are registered | specialized vertical indexes (knowledge graph / code) to register |
+| 066 | Trust-aware Fusion (weighted RRF, dedup, independence) | **Delivered and wired** | `rrf_fuse_weighted` + kernel-generic `fuse_ranks`; federated `execute` orders cross-source outcomes by `ReliabilityProfile.success_rate`; the retriever fuses all routed verticals with declared weights (RFC-065); original-publisher detection + `occurrences[]` dedup delivered (RFC-074 slice) | none for the v1 slice |
 | 067 | Context Assembly | **Delivered + wired** | `crates/searchos-context/` engine; `SearchRequest.context_budget` → application assembly → `SearchResponse.context` | none for v1 |
 | 068 | Token Budget Management | **Delivered + wired** | `ContextBudget` validated at every transport edge; invalid budgets are client errors; OpenAPI documents both schemas | none for v1 |
 | 069 | Agent Session Memory | **Partial → memory AND session transcripts are Sources** | `session.rs` + `agent_sessions` (migration v7, commit `ff8b2be`) persists follow-ups across restart; `AgentMemorySource` + `SessionTranscriptSource` both registered as federated sources in the runtime | memory lifecycle (RFC-070, P3) |
@@ -101,7 +101,7 @@ The Master Index orders work **Foundation → Retrieval → Intelligence → Mem
 | Phase | RFCs | This iteration |
 |---|---|---|
 | P0 | 001–025 verification, 046, 054, 055, **063, 064, 062**, 061 | **Delivered**: final Master Index, bilingual RFC-062/063/064, [P0 dependency review](rfc-062-dependency-review.md), `searchos-federated` kernel (trait + registry + resource model + planner + executor + Phase 2 adapters, 56 tests) |
-| P1 | 065, 047, **066**, 050, 039, 080, 032, 079 | weighted RRF delivered (`rrf_fuse_weighted`) + wired into `execute`; outcome-driven per-source circuit breaker and per-source latency budget (080 slice) delivered; rest planned |
+| P1 | 065, 047, **066**, 050, 039, 080, 032, 079 | weighted RRF delivered and wired (federated execute + retrieval verticals); 065 vertical routing, outcome-driven per-source circuit breaker and per-source latency budget (080 slice) delivered; rest planned (047, 050, 039, 032, 079) |
 | P2 | 034, 076, 077, 078, 075, 086, 040 | **Context wiring delivered**: `context_budget` on `SearchRequest` → `SearchResponse.context`, HTTP/MCP/CLI + OpenAPI |
 | P3 | 030, 036, 057, 058, **069, 070, 087** | planned (sessions already persist, `ff8b2be`) |
 | P4 | 038, 071, 072, 073, 074, 059, **067, 068** | **Delivered**: `searchos-context` engine + assembly, ahead of its slot (pure/additive/independently testable) |
@@ -192,8 +192,8 @@ The design documents are text-only and cannot break the Rust or frontend gates.
 | 062 | `SearchSource` 抽象 + 联邦 Planner | **Phase 1–3 + 管线接线已交付（含 4b 执行迁移）；P0 残留清单已关闭** | `crates/searchos-federated` 内核/执行器/适配器；`search_service.rs` 在 `federation.strategy` 背后咨询 planner；`execute` 模式经 `FederatedExecutor` 执行 provider 且计费留在服务侧（防双计费门禁通过）；`/search/plan` 报告来源；`/system/status` 与 `GET /sources` 暴露目录 | 无 P0 残留（会话逐字稿 Source、逐源 trace 字段、可靠性权重融合均已接线） |
 | 063 | 带作用域的 Source Registry | **内核已交付** | `InMemorySourceRegistry`：优先级解析、过滤器、跨作用域禁用、一 id 一描述符 | Gateway 交付面时做 SQLite 投影 |
 | 064 | 超越 `Document` 的统一资源模型 | **内核已交付** | `SearchResource` + 11 种 `ResourceType`、稳定身份、哈希优先去重、fail-closed `PermissionRef`、egress 默认禁止 | 适配器映射文档/会话行 |
-| 065 | 混合检索（FTS + BM25 + KNN） | **部分** | `HybridRetriever` + `rrf_fuse` + Tantivy（CJK 二元分词、字面词查询、标题加权、模糊）+ outbox 真实写入 LanceDB；但只有双列表，无垂直检索路由 | 扩展 |
-| 066 | 信任融合（带权 RRF、去重、独立性） | **部分 → 带权 RRF 已交付并接线** | `rrf_fuse_weighted` + 内核 `fuse_ranks`；`execute` 路径跨源排序按 `ReliabilityProfile.success_rate` 加权（`order_federated_outcomes`，只排序）；带 `occurrences[]` 的去重与原始发布方识别待接线 | RFC-074 原始发布方识别（P4） |
+| 065 | 混合检索（FTS + BM25 + KNN） | **部分 → 垂直路由已交付** | `HybridRetriever` + 带权 RRF + Tantivy（CJK 二元分词、字面词查询、标题加权、模糊）+ outbox 真实写入 LanceDB；`RetrievalVertical` / `VerticalRouter` 按查询路由 N 条召回列表（路由谓词 + 声明权重，额外垂直 fail-open），检索器融合全部路由列表 —— 未注册垂直时与双列表形式逐字节一致 | 待注册专用垂直索引（知识图谱 / 代码） |
+| 066 | 信任融合（带权 RRF、去重、独立性） | **已交付并接线** | `rrf_fuse_weighted` + 内核 `fuse_ranks`；联邦 `execute` 跨源排序按 `ReliabilityProfile.success_rate` 加权；检索器按声明权重融合全部路由垂直列表（RFC-065）；原始发布方识别 + `occurrences[]` 去重已交付（RFC-074 切片） | v1 切片无剩余 |
 | 067 | Context Assembly | **已交付并接入** | `crates/searchos-context/` 引擎；`SearchRequest.context_budget` → application 装配 → `SearchResponse.context` | v1 无剩余 |
 | 068 | Token Budget Management | **已交付并接入** | `ContextBudget` 在每个传输边缘校验；非法预算是客户端错误；OpenAPI 已登记两个 schema | v1 无剩余 |
 | 069 | Agent Session Memory | **部分 → 记忆与会话逐字稿均为 Source** | `session.rs` + `agent_sessions`（migration v7，提交 `ff8b2be`）已支持重启后 follow-up；`AgentMemorySource` + `SessionTranscriptSource` 均已在 runtime 注册为联邦 Source | 记忆生命周期（RFC-070，P3） |
@@ -230,7 +230,7 @@ Master Index 的推进顺序是 **Foundation → Retrieval → Intelligence → 
 | 阶段 | RFC | 本轮 |
 |---|---|---|
 | P0 | 001–025 核对、046、054、055、**063、064、062**、061 | **已交付**：最终 Master Index、双语 RFC-062/063/064、[P0 依赖审查](rfc-062-dependency-review.md)、`searchos-federated` 内核（trait + registry + 资源模型 + planner + 执行器 + Phase 2 适配器，56 测试） |
-| P1 | 065、047、**066**、050、039、080、032、079 | 带权 RRF 已交付（`rrf_fuse_weighted`）并接入 `execute`；逐源熔断 + 逐源延迟预算（080 切片）已交付；其余计划中 |
+| P1 | 065、047、**066**、050、039、080、032、079 | 带权 RRF 已交付并接线（联邦 execute + 检索垂直列表）；065 垂直路由、逐源熔断 + 逐源延迟预算（080 切片）已交付；其余计划中（047、050、039、032、079） |
 | P2 | 034、076、077、078、075、086、040 | **上下文接入已交付**：`context_budget` → `SearchResponse.context`，HTTP/MCP/CLI + OpenAPI |
 | P3 | 030、036、057、058、**069、070、087** | 计划中（会话已持久化，`ff8b2be`） |
 | P4 | 038、071、072、073、074、059、**067、068** | **已交付**：`searchos-context` 引擎与装配，先于其位置落地（纯函数、加法式、可独立验证） |

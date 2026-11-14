@@ -164,6 +164,18 @@ The SearchOS implementation (`~/git_repo/searchos`) is verified by these command
   `short_or_distinct_content_is_not_grouped`,
   `context_assembly_collapses_cross_host_syndicated_content`. Full suite
   **691 passed / 0 failed**; clippy/fmt/route scan green.
+- **RFC-065 vertical routing slice (2026-11-14):** `RetrievalVertical` /
+  `VerticalRouter` / lexical+semantic adapters in `searchos-retrieval`;
+  `HybridRetriever::with_vertical` routes extras per query (fail-open) and
+  fuses ALL routed lists with declared weights via `rrf_fuse_weighted` —
+  byte-identical to the two-list form when none registered (the fusion
+  itself is the first production use of the weighted path). Gates:
+  `two_list_output_is_byte_identical_with_and_without_verticals`,
+  `extra_vertical_candidates_join_the_fused_ranking`,
+  `extra_vertical_weight_orders_equal_rank_contributions`,
+  `routing_skips_verticals_that_decline_the_query`,
+  `extra_vertical_failure_is_isolated`. Full suite **700 passed / 0 failed**
+  (80 suites); clippy/fmt/route scan green.
 
 **Known environment notes:**
 - LanceDB requires `protoc` at build time (`brew install protobuf`).

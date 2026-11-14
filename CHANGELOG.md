@@ -101,6 +101,23 @@ multi-arch images, and attaches the matching section of this file.
   `federation_execution_summary_survives_trace_re_record` and the extended
   `federated_execute_mode_bills_once_and_matches_legacy_results` verify both
   paths.
+- **Vertical retrieval routing (RFC-065 slice).** The retrieval layer now
+  has the RFC-065 ownership boundary the Master Index demands: 065 recalls
+  and routes, 066 fuses. `RetrievalVertical` (id + `accepts` routing
+  predicate + declared fusion weight + `recall`), `VerticalRouter`, and
+  `LexicalVertical` / `SemanticVertical` adapters join the crate;
+  `HybridRetriever::with_vertical` registers extras that are routed per
+  query, recalled fail-open (a failing vertical is reported and skipped,
+  primary-list failure semantics unchanged) and fused AFTER the primary
+  lists via `rrf_fuse_weighted` with their declared weight. With no extra
+  vertical registered the retriever is byte-identical to the two-list form
+  (gate `two_list_output_is_byte_identical_with_and_without_verticals`);
+  further gates: `extra_vertical_candidates_join_the_fused_ranking`,
+  `extra_vertical_weight_orders_equal_rank_contributions`,
+  `routing_skips_verticals_that_decline_the_query`,
+  `extra_vertical_failure_is_isolated`, and the router-level
+  `router_returns_only_accepting_verticals` /
+  `vertical_failure_is_reported_and_never_fails_the_route`.
 - **Syndication detection & original-publisher identification (RFC-074
   slice).** The quality gate's source-diversity check now counts content
   communities, not hosts: `content_community_count` unions host and content-
