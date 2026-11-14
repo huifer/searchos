@@ -15,6 +15,7 @@ pub struct SearchOsConfig {
     pub storage: StorageConfig,
     pub search: SearchConfig,
     pub ingest: IngestConfig,
+    pub privacy: PrivacyConfig,
     pub memory: MemoryConfig,
     pub intelligence: IntelligenceConfig,
     pub indexes: IndexesConfig,
@@ -268,6 +269,7 @@ impl Default for SearchOsConfig {
             storage: StorageConfig::default(),
             search: SearchConfig::default(),
             ingest: IngestConfig::default(),
+            privacy: PrivacyConfig::default(),
             memory: MemoryConfig::default(),
             intelligence: IntelligenceConfig::default(),
             indexes: IndexesConfig::default(),
@@ -478,6 +480,14 @@ impl Default for IngestConfig {
             redact_pii: false,
         }
     }
+}
+
+/// Privacy section (RFC-087).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PrivacyConfig {
+    /// Whether workspace-owned content may be sent to the remote reranker.
+    pub egress_remote_rerank: bool,
 }
 
 /// Memory section.
@@ -749,6 +759,7 @@ pub const ALL_CONFIG_FIELDS: &[&str] = &[
     "ingest.max_bytes_per_batch",
     "ingest.redact_secrets",
     "ingest.redact_pii",
+    "privacy.egress_remote_rerank",
     "memory.enabled",
     "memory.embedding.provider",
     "memory.embedding.model",
@@ -858,6 +869,7 @@ pub const CONSUMED_CONFIG_FIELDS: &[&str] = &[
     "ingest.max_bytes_per_batch",
     "ingest.redact_secrets",
     "ingest.redact_pii",
+    "privacy.egress_remote_rerank",
     "memory.enabled",
     "memory.embedding.provider",
     "memory.embedding.model",

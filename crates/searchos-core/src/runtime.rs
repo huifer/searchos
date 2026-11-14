@@ -587,6 +587,9 @@ impl SearchOsRuntime {
                     api_key_env: config.intelligence.reranker_api_key_env.clone(),
                     timeout_seconds: config.intelligence.reranker_timeout_seconds,
                     top_n: config.intelligence.reranker_top_n,
+                    // RFC-087: workspace-owned content stays local unless the
+                    // operator explicitly allows remote reranking of it.
+                    allow_workspace_content: config.privacy.egress_remote_rerank,
                 },
             );
             tracing::info!(model = %reranker.model_id(), "reranker attached");

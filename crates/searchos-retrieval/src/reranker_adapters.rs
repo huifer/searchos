@@ -121,6 +121,13 @@ pub struct RemoteRerankerConfig {
     pub timeout_seconds: u64,
     /// Maximum candidates sent per request.
     pub top_n: usize,
+    /// RFC-087 per-source egress policy: whether WORKSPACE-OWNED content
+    /// (the `searchos-*://` schemes: ingested documents, memory, session
+    /// transcripts) may be sent to the remote endpoint. Fail-closed: the
+    /// default never sends stored knowledge to an external service; public
+    /// web content is unaffected. An operator opt-in re-enables remote
+    /// reranking for workspace content.
+    pub allow_workspace_content: bool,
 }
 
 impl Default for RemoteRerankerConfig {
@@ -131,6 +138,7 @@ impl Default for RemoteRerankerConfig {
             api_key_env: "SEARCHOS_RERANKER_API_KEY".into(),
             timeout_seconds: 15,
             top_n: 30,
+            allow_workspace_content: false,
         }
     }
 }
@@ -139,6 +147,16 @@ impl Default for RemoteRerankerConfig {
 /// `{model, query, documents[], top_n}` → `{results[{index, relevance_score}]}`.
 /// Any failure is returned as an error so the caller can keep the fused order
 /// (never silently degrade to an unranked list).
+/// Whether a candidate URL carries WORKSPACE-OWNED content (RFC-087).
+///
+/// All local canonical schemes share the `searchos-` prefix: ingested
+/// documents (`searchos-local://`), memory entries (`searchos-memory://`)
+/// and session transcripts (`searchos-session://`). Web/provider content is
+/// public by origin and unaffected.
+pub fn is_workspace_owned(url: &str) -> bool {
+    url.starts_with("searchos-")
+}
+
 pub struct RemoteReranker {
     client: reqwest::Client,
     config: RemoteRerankerConfig,
@@ -173,6 +191,22 @@ impl Reranker for RemoteReranker {
         candidates: Vec<RetrievalCandidate>,
     ) -> Result<Vec<RetrievalCandidate>, SearchOsError> {
         if candidates.is_empty() {
+            return Ok(candidates);
+        }
+        // RFC-087 per-source egress policy (fail-closed): workspace-owned
+        // content never reaches the remote endpoint unless the operator
+        // opted in. Reranking is an optimisation — skipping it preserves the
+        // fused order and the privacy guarantee together.
+        if !self.config.allow_workspace_content
+            && candidates[..candidates.len().min(self.config.top_n)]
+                .iter()
+                .any(|c| is_workspace_owned(&c.url))
+        {
+            searchos_observability::MetricsRegistry::global()
+                .inc_counter("privacy.egress_blocked_total");
+            tracing::debug!(
+                "remote rerank skipped: workspace-owned content may not leave (RFC-087)"
+            );
             return Ok(candidates);
         }
         let take = candidates.len().min(self.config.top_n);
@@ -341,5 +375,173 @@ mod tests {
             build_reranker("remote", &RemoteRerankerConfig::default()).model_id(),
             "feature-reranker-v1"
         );
+    }
+}
+
+#[cfg(test)]
+mod egress_tests {
+    use super::*;
+    use searchos_domain::ids::{ChunkId, DocumentId, DocumentVersionId};
+    use searchos_domain::retrieval::RetrievalSource;
+    use std::sync::Arc;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    fn candidate(url: &str) -> RetrievalCandidate {
+        RetrievalCandidate {
+            chunk_id: ChunkId::new(url),
+            document_id: DocumentId::new("doc"),
+            version_id: DocumentVersionId::new("docv"),
+            title: Some("title".into()),
+            snippet: "snippet body".into(),
+            url: url.into(),
+            score: 1.0,
+            source: RetrievalSource::Hybrid,
+            fetched_at: chrono::Utc::now(),
+            vector_score: None,
+            bm25_score: None,
+            workspace_id: None,
+            language: None,
+            highlight: None,
+        }
+    }
+
+    fn config(endpoint: String, allow_workspace_content: bool) -> RemoteRerankerConfig {
+        RemoteRerankerConfig {
+            endpoint,
+            model: "test-cross-encoder".into(),
+            api_key_env: String::new(),
+            timeout_seconds: 2,
+            top_n: 8,
+            allow_workspace_content,
+        }
+    }
+
+    /// Minimal HTTP/1.1 rerank endpoint that records every received
+    /// document body and returns a pass-through ranking.
+    async fn mock_rerank_endpoint(
+        listener: tokio::net::TcpListener,
+        hits: Arc<std::sync::Mutex<Vec<String>>>,
+    ) {
+        loop {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                return;
+            };
+            let hits = Arc::clone(&hits);
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 32768];
+                let n = socket.read(&mut buf).await.unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                let body = req.split("\r\n\r\n").nth(1).unwrap_or_default();
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(body) {
+                    if let Some(docs) = v.get("documents").and_then(|d| d.as_array()) {
+                        for d in docs {
+                            if let Some(text) = d.as_str() {
+                                hits.lock().unwrap().push(text.to_string());
+                            }
+                        }
+                    }
+                }
+                let payload = serde_json::json!({
+                    "results": [{ "index": 0, "relevance_score": 0.9 }]
+                });
+                let http = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    payload.to_string().len(),
+                    payload
+                );
+                let _ = socket.write_all(http.as_bytes()).await;
+            });
+        }
+    }
+
+    fn endpoint_of(listener: &tokio::net::TcpListener) -> String {
+        format!("http://{}/rerank", listener.local_addr().unwrap())
+    }
+
+    #[tokio::test]
+    async fn workspace_content_never_reaches_the_remote_endpoint_by_default() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = endpoint_of(&listener);
+        let hits = Arc::new(std::sync::Mutex::new(Vec::new()));
+        tokio::spawn(mock_rerank_endpoint(listener, Arc::clone(&hits)));
+
+        let reranker = RemoteReranker::new(config(endpoint, false)).unwrap();
+        let query = RetrievalQuery::new("q", 5);
+        let out = reranker
+            .rerank(
+                &query,
+                vec![candidate("searchos-local://default/notes/private")],
+            )
+            .await
+            .unwrap();
+        // Candidates are returned UNCHANGED (no rerank, no reorder).
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].url, "searchos-local://default/notes/private");
+        // Give the mock a beat, then assert NOTHING was sent.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(
+            hits.lock().unwrap().is_empty(),
+            "workspace content must not egress by default"
+        );
+        assert!(
+            searchos_observability::MetricsRegistry::global()
+                .counter("privacy.egress_blocked_total")
+                > 0,
+            "the block is observable"
+        );
+    }
+
+    #[tokio::test]
+    async fn operator_opt_in_allows_workspace_content_to_egress() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = endpoint_of(&listener);
+        let hits = Arc::new(std::sync::Mutex::new(Vec::new()));
+        tokio::spawn(mock_rerank_endpoint(listener, Arc::clone(&hits)));
+
+        let reranker = RemoteReranker::new(config(endpoint, true)).unwrap();
+        let query = RetrievalQuery::new("q", 5);
+        let out = reranker
+            .rerank(
+                &query,
+                vec![candidate("searchos-local://default/notes/private")],
+            )
+            .await
+            .unwrap();
+        // Pass-through ranking: index 0 → the first candidate is kept.
+        assert_eq!(out.len(), 1);
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(
+            !hits.lock().unwrap().is_empty(),
+            "an explicit opt-in sends the content"
+        );
+    }
+
+    #[tokio::test]
+    async fn public_web_content_egresses_without_opt_in() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = endpoint_of(&listener);
+        let hits = Arc::new(std::sync::Mutex::new(Vec::new()));
+        tokio::spawn(mock_rerank_endpoint(listener, Arc::clone(&hits)));
+
+        let reranker = RemoteReranker::new(config(endpoint, false)).unwrap();
+        let query = RetrievalQuery::new("q", 5);
+        let out = reranker
+            .rerank(&query, vec![candidate("https://public.dev/article")])
+            .await
+            .unwrap();
+        assert_eq!(out.len(), 1);
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(
+            !hits.lock().unwrap().is_empty(),
+            "public web content is not gated"
+        );
+    }
+
+    #[test]
+    fn workspace_owned_detection_covers_every_local_scheme() {
+        assert!(is_workspace_owned("searchos-local://default/notes/a"));
+        assert!(is_workspace_owned("searchos-memory://mem_1"));
+        assert!(is_workspace_owned("searchos-session://s1/0"));
+        assert!(!is_workspace_owned("https://public.dev/article"));
     }
 }

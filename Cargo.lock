@@ -5975,6 +5975,7 @@ dependencies = [
  "chrono",
  "reqwest 0.12.28",
  "searchos-domain",
+ "searchos-observability",
  "serde",
  "serde_json",
  "tokio",

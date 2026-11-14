@@ -253,6 +253,16 @@ The SearchOS implementation (`~/git_repo/searchos`) is verified by these command
   serving pre-deletion leader payloads to same-fingerprint followers — no
   invalidation can reach it, and the deletion audit gate catches it.
 
+- **RFC-087 egress slice (2026-11-14, same day):** `RemoteRerankerConfig`
+  gains `allow_workspace_content` (default FALSE, fail-closed);
+  `RemoteReranker::rerank` skips (returns candidates unchanged, counter
+  `privacy.egress_blocked_total`) when any top-N candidate is
+  workspace-owned (`is_workspace_owned`: the `searchos-*://` scheme
+  prefix). Config `privacy.egress_remote_rerank` (new section, consumed per
+  INV-30-20). The `remote_provider_live` test now opts in explicitly.
+  Gates: 4 egress tests with a real TCP mock endpoint in the retrieval
+  crate. Full suite **736 passed / 0 failed**; clippy/fmt/route scan green.
+
 **Known environment notes:**
 - LanceDB requires `protoc` at build time (`brew install protobuf`).
 - Live network tests (fetch of https://example.com) tolerate sandbox timeouts by design.

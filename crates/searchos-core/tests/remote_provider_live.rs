@@ -123,6 +123,10 @@ async fn remote_embedding_and_rerank_are_reached_by_the_runtime() {
     cfg.intelligence.reranker_provider = "remote".into();
     cfg.intelligence.reranker_url = format!("{base}/v1/rerank");
     cfg.intelligence.reranker_api_key_env = "SEARCHOS_UNSET_KEY".into();
+    // RFC-087: the reranked documents here are workspace-owned, so testing
+    // the remote integration requires the explicit operator opt-in. The
+    // DEFAULT (no opt-in) is covered by the retrieval crate's egress gates.
+    cfg.privacy.egress_remote_rerank = true;
 
     let rt = searchos_core::SearchOsRuntime::init(cfg).await.unwrap();
     assert_eq!(rt.embedder.model_id(), "mock-embed");

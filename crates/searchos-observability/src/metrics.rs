@@ -22,6 +22,7 @@ pub const INVARIANT_METRICS: &[&str] = &[
     "cache.validity_reject_total",
     "document.deletions_total",
     "deletion.audit_failed_total",
+    "privacy.egress_blocked_total",
     "cache.hit_without_claim_total",
     "cache.evicted_total",
     "singleflight.follower_timeout_total",

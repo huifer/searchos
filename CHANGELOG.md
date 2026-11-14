@@ -125,6 +125,20 @@ multi-arch images, and attaches the matching section of this file.
   `ingest_redacts_secrets_before_object_write`,
   `redaction_can_be_disabled_explicitly` and
   `ingest_time_secret_redaction_is_wired_through_config`.
+- **Per-source egress enforcement (RFC-087 slice).** The remote reranker is
+  now an egress boundary: workspace-owned content (`searchos-*://` schemes —
+  ingested documents, memory, session transcripts) NEVER reaches the remote
+  cross-encoder endpoint unless the operator explicitly opts in via
+  `privacy.egress_remote_rerank` (default **false**, fail-closed). A blocked
+  rerank preserves the fused order (reranking is an optimisation, skipping
+  it loses nothing but latency) and increments `privacy.egress_blocked_total`;
+  public web content is unaffected. Gates (real TCP mock endpoint):
+  `workspace_content_never_reaches_the_remote_endpoint_by_default`,
+  `operator_opt_in_allows_workspace_content_to_egress`,
+  `public_web_content_egresses_without_opt_in`,
+  `workspace_owned_detection_covers_every_local_scheme`; the live
+  remote-provider integration test now opts in explicitly and documents the
+  default.
 - **Deletion-propagation audit (RFC-087 slice).** Every delete now writes an
   append-only audit row (migration **v10** `deletion_audit`) recording the
   proof-relevant facts: owning workspace, the deleted version's content
