@@ -200,6 +200,16 @@ The SearchOS implementation (`~/git_repo/searchos`) is verified by these command
   Full suite **712 passed / 0 failed** (81 suites); clippy/fmt/route scan
   green.
 
+- **Foreign working-tree overwrite (2026-11-14, watch for concurrent sessions):**
+  after commit `dbe3c72` the working tree's
+  `crates/searchos-federated/src/fusion.rs` was REPLACED by a different
+  implementation (`fuse_candidates_weighted` over `SourceCandidate` +
+  duplicate `pub mod fusion;` in lib.rs) by something outside this session —
+  it broke the committed `fuse_ranks` callers. Preserved in
+  `git stash` ("foreign fusion.rs variant..."), NOT discarded; the committed
+  `fuse_ranks` version is authoritative and build-restoring. If another
+  session works in this repo, coordinate first.
+
 **Known environment notes:**
 - LanceDB requires `protoc` at build time (`brew install protobuf`).
 - Live network tests (fetch of https://example.com) tolerate sandbox timeouts by design.
