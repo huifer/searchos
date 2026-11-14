@@ -125,6 +125,22 @@ multi-arch images, and attaches the matching section of this file.
   `ingest_redacts_secrets_before_object_write`,
   `redaction_can_be_disabled_explicitly` and
   `ingest_time_secret_redaction_is_wired_through_config`.
+- **Deletion-propagation audit (RFC-087 slice).** Every delete now writes an
+  append-only audit row (migration **v10** `deletion_audit`) recording the
+  proof-relevant facts: owning workspace, the deleted version's content
+  hash, chunk count, enqueued index-delete events, whether the drain left
+  the index VERIFIABLY clean (`index_verified` re-checks the outbox after
+  the drain — a pending event means the chunks are not provably gone), and
+  cache invalidation. Rows are never purged by the deletion path; they are
+  queryable at the new `GET /deletions` endpoint (workspace + document
+  filters, route table + OpenAPI in the same change) and via the CLI
+  `searchos document deletions`. Phantom re-deletes write nothing. Gates:
+  `deletion_propagation_is_audited` (runtime) and
+  `deletions_endpoint_serves_the_propagation_audit` (HTTP). Debugging this
+  gate also exposed a harness wiring rule worth remembering: assembled
+  `SearchDependencies` MUST share the runtime's `SingleflightCoordinator`,
+  or singleflight followers keep serving pre-deletion payloads that no
+  invalidation can reach.
 - **Source-aware adaptive decisions (RFC-076 slice).** `DecisionInput` gains
   `external_sources_healthy` and the decision engine acts on it: when no
   healthy web source exists right now (every circuit open, or none

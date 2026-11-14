@@ -232,6 +232,27 @@ The SearchOS implementation (`~/git_repo/searchos`) is verified by these command
   and only the `.with_redaction(...)` line replayed. Coordinate with any
   other session active in this repo.
 
+- **RFC-087 deletion audit (2026-11-14):** migration **v10** `deletion_audit`
+  + `DeletionAuditRepo` (record / list with workspace+document filters);
+  `DocumentRepo::delete` returns `Option<DeletedDocument>` (None for phantom
+  re-deletes — no audit row for them); runtime records chunk count, outbox
+  events, `index_verified` (post-drain `pending_for_document` re-check —
+  json_extract on the payload's document_id) and cache invalidation;
+  `GET /deletions` + CLI `searchos document deletions`.
+  Gates: `deletion_propagation_is_audited` (runtime),
+  `deletions_endpoint_serves_the_propagation_audit` (HTTP). The CLI
+  `document delete` previously called `repo.delete` DIRECTLY — bypassing
+  drain/cache-invalidation/audit (and leaving the index stale, surfacing as
+  the startup drift WARN) — now routed through `runtime.delete_document`.
+  Live-verified: CLI delete → audit row (chunk_count 1, outbox 1,
+  index_verified true). Full suite **732 passed / 0 failed**; clippy/fmt/
+  route scan green.
+  **Harness wiring rule (learned the hard way):** assembled
+  `SearchDependencies` MUST share the runtime's `SingleflightCoordinator`
+  (`runtime.singleflight.clone()`). A harness-owned coordinator keeps
+  serving pre-deletion leader payloads to same-fingerprint followers — no
+  invalidation can reach it, and the deletion audit gate catches it.
+
 **Known environment notes:**
 - LanceDB requires `protoc` at build time (`brew install protobuf`).
 - Live network tests (fetch of https://example.com) tolerate sandbox timeouts by design.

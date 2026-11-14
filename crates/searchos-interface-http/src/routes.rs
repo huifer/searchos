@@ -397,6 +397,8 @@ pub fn api_route_table() -> Vec<RouteSpec> {
         RouteSpec::new("GET", "/documents", get(list_documents)),
         RouteSpec::new("GET", "/documents/{id}", get(get_document)),
         RouteSpec::new("DELETE", "/documents/{id}", delete(delete_document)),
+        // RFC-087: append-only deletion-propagation audit.
+        RouteSpec::new("GET", "/deletions", get(list_deletions)),
         RouteSpec::new(
             "GET",
             "/documents/{id}/versions",
@@ -2075,6 +2077,34 @@ async fn list_sources(
     })))
 }
 
+/// `GET /deletions` — append-only deletion-propagation audit (RFC-087).
+///
+/// Each row proves what a delete actually propagated: chunk count, enqueued
+/// index events, whether the drain left the index verifiably clean, and
+/// whether caches were invalidated. Rows are never deleted by the deletion
+/// path — they ARE the audit trail.
+async fn list_deletions(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    state.authorize(&headers)?;
+    let workspace = params.get("workspace_id").map(|s| s.as_str());
+    if let Some(workspace) = workspace {
+        state.authorize_workspace(&headers, workspace)?;
+    }
+    let document_id = params.get("document_id").map(|s| s.as_str());
+    let limit = params
+        .get("limit")
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(50)
+        .clamp(1, 200);
+    let rows = searchos_storage_sqlite::repos::DeletionAuditRepo::new(&state.runtime.sqlite)
+        .list(limit, workspace, document_id)
+        .map_err(|e| ApiError::from_domain(&e))?;
+    Ok(Json(serde_json::json!({ "deletions": rows })))
+}
+
 /// `GET /profiles` — versioned built-in search profiles (RFC-019 19.5).
 async fn list_profiles(
     State(state): State<AppState>,
@@ -2788,6 +2818,74 @@ mod tests {
             .unwrap()
             .iter()
             .all(|s| s["enabled"] == true));
+    }
+
+    #[tokio::test]
+    async fn deletions_endpoint_serves_the_propagation_audit() {
+        let (st, _d) = state().await;
+        let repo = searchos_storage_sqlite::repos::DeletionAuditRepo::new(&st.runtime.sqlite);
+        repo.record(&searchos_storage_sqlite::repos::DeletionAuditEntry {
+            id: "del_test".into(),
+            document_id: "doc_gone".into(),
+            workspace_id: Some("default".into()),
+            content_hash: Some("hash_abc".into()),
+            chunk_count: 3,
+            outbox_events: 3,
+            index_verified: true,
+            cache_invalidated: true,
+            deleted_at: "2026-11-14T00:00:00Z".into(),
+        })
+        .unwrap();
+        repo.record(&searchos_storage_sqlite::repos::DeletionAuditEntry {
+            id: "del_other".into(),
+            document_id: "doc_other".into(),
+            workspace_id: Some("ws_other".into()),
+            content_hash: None,
+            chunk_count: 0,
+            outbox_events: 0,
+            index_verified: true,
+            cache_invalidated: false,
+            deleted_at: "2026-11-13T00:00:00Z".into(),
+        })
+        .unwrap();
+        let app = router(st);
+
+        use tower::ServiceExt;
+        let app = std::sync::Arc::new(app);
+        let request = |uri: &'static str| {
+            let app = app.clone();
+            async move {
+                let resp = (*app)
+                    .clone()
+                    .oneshot(
+                        axum::http::Request::builder()
+                            .method("GET")
+                            .uri(uri)
+                            .body(axum::body::Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                let status = resp.status().as_u16();
+                let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+                    .await
+                    .unwrap();
+                let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                (status, body)
+            }
+        };
+
+        let (status, body) = request("/deletions").await;
+        assert_eq!(status, 200, "{body}");
+        let rows = body["deletions"].as_array().unwrap();
+        assert!(rows.iter().any(|r| r["document_id"] == "doc_gone"));
+
+        let (status, filtered) = request("/deletions?document_id=doc_gone").await;
+        assert_eq!(status, 200);
+        let rows = filtered["deletions"].as_array().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["index_verified"], true);
+        assert_eq!(rows[0]["chunk_count"], 3);
     }
 
     #[tokio::test]

@@ -267,6 +267,18 @@ enum DocumentCmd {
         /// Document ID to delete
         id: String,
     },
+    /// List the deletion-propagation audit trail (RFC-087)
+    Deletions {
+        /// Filter by document ID
+        #[arg(long)]
+        document_id: Option<String>,
+        /// Filter by owning workspace
+        #[arg(long)]
+        workspace: Option<String>,
+        /// Maximum audit rows to return
+        #[arg(long, default_value_t = 50)]
+        limit: u32,
+    },
 }
 
 #[derive(Subcommand)]
@@ -887,8 +899,25 @@ async fn run(cli: Cli) -> Result<(), SearchOsError> {
                     );
                 }
                 DocumentCmd::Delete { id } => {
-                    repo.delete(&searchos_domain::ids::DocumentId::new(id.clone()))?;
+                    // RFC-087: route through the runtime so the deletion is
+                    // drained, cache-invalidated and AUDITED — a bare
+                    // repo.delete would leave the index stale with no audit
+                    // trail.
+                    rt.delete_document(&searchos_domain::ids::DocumentId::new(id.clone()))
+                        .await?;
                     print(&serde_json::json!({ "deleted": id }), format);
+                }
+                DocumentCmd::Deletions {
+                    document_id,
+                    workspace,
+                    limit,
+                } => {
+                    let audit = repos::DeletionAuditRepo::new(&rt.sqlite).list(
+                        *limit,
+                        workspace.as_deref(),
+                        document_id.as_deref(),
+                    )?;
+                    print(&serde_json::to_value(&audit).unwrap_or_default(), format);
                 }
             }
             Ok(())

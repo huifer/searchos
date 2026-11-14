@@ -20,6 +20,8 @@ pub const INVARIANT_METRICS: &[&str] = &[
     "budget.reservation.reserved_age_seconds",
     "cache.cross_mode_hit_total",
     "cache.validity_reject_total",
+    "document.deletions_total",
+    "deletion.audit_failed_total",
     "cache.hit_without_claim_total",
     "cache.evicted_total",
     "singleflight.follower_timeout_total",

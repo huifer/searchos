@@ -737,6 +737,32 @@ CREATE INDEX IF NOT EXISTS idx_search_sources_workspace
 ALTER TABLE decision_traces ADD COLUMN federation_json TEXT;
 "#,
     },
+    // v10 - deletion propagation audit (RFC-087).
+    // Released migrations above remain immutable.
+    Migration {
+        version: 10,
+        name: "deletion_audit",
+        sql: r#"
+-- Append-only proof of what a deletion propagated: metadata soft-delete,
+-- chunk removal, index delete events and cache invalidation. Rows are never
+-- purged by the deletion path - they ARE the audit trail.
+CREATE TABLE IF NOT EXISTS deletion_audit (
+    id TEXT PRIMARY KEY,
+    document_id TEXT NOT NULL,
+    workspace_id TEXT,
+    content_hash TEXT,
+    chunk_count INTEGER NOT NULL,
+    outbox_events INTEGER NOT NULL,
+    index_verified INTEGER NOT NULL,
+    cache_invalidated INTEGER NOT NULL,
+    deleted_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_deletion_audit_doc
+    ON deletion_audit(document_id, deleted_at DESC);
+CREATE INDEX IF NOT EXISTS idx_deletion_audit_workspace
+    ON deletion_audit(workspace_id, deleted_at DESC);
+"#,
+    },
 ];
 
 /// Applies pending migrations to a connection. Each version is atomic: SQL

@@ -1291,9 +1291,41 @@ impl SearchOsRuntime {
         document_id: &searchos_domain::ids::DocumentId,
     ) -> Result<(), SearchOsError> {
         let repo = repos::DocumentRepo::new(&self.sqlite);
-        repo.delete(document_id)?;
+        let Some(deleted) = repo.delete(document_id)? else {
+            // Nothing existed: no propagation happened, so nothing to audit.
+            return Ok(());
+        };
         self.process_outbox(256).await?;
         self.invalidate_caches().await;
+
+        // RFC-087 deletion-propagation audit: an append-only proof of what
+        // this deletion actually propagated. `index_verified` is re-checked
+        // AFTER the drain — a pending index-delete event means the chunks
+        // are not verifiably gone, and the audit says so instead of claiming
+        // success. Recording is best-effort (the deletion already happened);
+        // a failure is logged and counted, never returned as a delete error.
+        let pending =
+            repos::OutboxRepo::new(&self.sqlite).pending_for_document(document_id.as_str())?;
+        let entry = repos::DeletionAuditEntry {
+            id: searchos_domain::new_id("del"),
+            document_id: deleted.document_id.clone(),
+            workspace_id: deleted.workspace_id.clone(),
+            content_hash: deleted.content_hash.clone(),
+            chunk_count: deleted.chunk_ids.len() as i64,
+            outbox_events: deleted.chunk_ids.len() as i64,
+            index_verified: pending == 0,
+            cache_invalidated: true,
+            deleted_at: chrono::Utc::now().to_rfc3339(),
+        };
+        match repos::DeletionAuditRepo::new(&self.sqlite).record(&entry) {
+            Ok(()) => searchos_observability::MetricsRegistry::global()
+                .inc_counter("document.deletions_total"),
+            Err(e) => {
+                tracing::warn!(code = %e, "deletion audit record failed");
+                searchos_observability::MetricsRegistry::global()
+                    .inc_counter("deletion.audit_failed_total");
+            }
+        }
         Ok(())
     }
 

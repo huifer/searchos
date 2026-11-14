@@ -401,6 +401,37 @@ paths:
                   document_id: { type: string }
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /deletions:
+    get:
+      tags: [Knowledge]
+      summary: Deletion-propagation audit (RFC-087)
+      description: |
+        Append-only proof of what each deletion propagated: metadata soft
+        delete, chunk removal, enqueued index-delete events, whether the
+        drain left the index verifiably clean (`index_verified`), and cache
+        invalidation. Rows are never removed by the deletion path.
+      parameters:
+        - name: document_id
+          in: query
+          schema: { type: string }
+        - name: workspace_id
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        '200':
+          description: Audit rows, newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deletions:
+                    type: array
+                    items: { $ref: '#/components/schemas/DeletionAuditEntry' }
+
   /documents/{id}/versions:
     get:
       tags: [Knowledge]
@@ -1415,7 +1446,20 @@ components:
               rule: { type: string }
               count: { type: integer }
         rules_version: { type: string }
-    IngestBatchResult:
+    DeletionAuditEntry:
+      type: object
+      description: One append-only deletion-propagation audit row (RFC-087).
+      properties:
+        id: { type: string }
+        document_id: { type: string }
+        workspace_id: { type: string, nullable: true }
+        content_hash: { type: string, nullable: true }
+        chunk_count: { type: integer }
+        outbox_events: { type: integer }
+        index_verified: { type: boolean }
+        cache_invalidated: { type: boolean }
+        deleted_at: { type: string }
+        IngestBatchResult:
       type: object
       properties:
         job_id: { type: string }

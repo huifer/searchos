@@ -339,6 +339,127 @@ impl<'a> DecisionRepo<'a> {
     }
 }
 
+/// Proof-relevant facts captured by a document delete (RFC-087 audit).
+#[derive(Debug, Clone)]
+pub struct DeletedDocument {
+    pub document_id: String,
+    pub workspace_id: Option<String>,
+    pub content_hash: Option<String>,
+    /// Chunk ids whose index entries were enqueued for deletion.
+    pub chunk_ids: Vec<String>,
+}
+
+/// One append-only deletion-propagation audit row (RFC-087).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DeletionAuditEntry {
+    pub id: String,
+    pub document_id: String,
+    pub workspace_id: Option<String>,
+    pub content_hash: Option<String>,
+    pub chunk_count: i64,
+    pub outbox_events: i64,
+    /// True when no pending index-delete event for this document remains
+    /// after the drain — i.e. the chunks are verifiably gone from the index.
+    pub index_verified: bool,
+    pub cache_invalidated: bool,
+    pub deleted_at: String,
+}
+
+impl<'a> OutboxRepo<'a> {
+    /// Pending index-delete rows for one document (RFC-087 verification).
+    ///
+    /// The delete payload carries `document_id`, so a drained outbox proves
+    /// the chunk deletions actually left the queue.
+    pub fn pending_for_document(&self, document_id: &str) -> Result<usize, SearchOsError> {
+        self.store.with_conn(|c| {
+            let n: i64 = c
+                .query_row(
+                    "SELECT count(*) FROM index_outbox
+                     WHERE status = 'pending'
+                       AND entity_type = 'document_chunk'
+                       AND json_extract(payload, '$.document_id') = ?1",
+                    params![document_id],
+                    |r| r.get(0),
+                )
+                .map_err(e)?;
+            Ok(n.max(0) as usize)
+        })
+    }
+}
+
+/// Append-only deletion-propagation audit (RFC-087).
+pub struct DeletionAuditRepo<'a> {
+    store: &'a SqliteStore,
+}
+
+impl<'a> DeletionAuditRepo<'a> {
+    pub fn new(store: &'a SqliteStore) -> Self {
+        Self { store }
+    }
+
+    pub fn record(&self, entry: &DeletionAuditEntry) -> Result<(), SearchOsError> {
+        self.store.with_conn(|c| {
+            c.execute(
+                "INSERT INTO deletion_audit (id, document_id, workspace_id, content_hash, chunk_count, outbox_events, index_verified, cache_invalidated, deleted_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+                params![
+                    entry.id,
+                    entry.document_id,
+                    entry.workspace_id,
+                    entry.content_hash,
+                    entry.chunk_count,
+                    entry.outbox_events,
+                    entry.index_verified as i64,
+                    entry.cache_invalidated as i64,
+                    entry.deleted_at,
+                ],
+            )
+            .map(|_| ())
+            .map_err(e)
+        })
+    }
+
+    /// Newest-first audit rows, optionally scoped to a workspace / document.
+    pub fn list(
+        &self,
+        limit: u32,
+        workspace: Option<&str>,
+        document_id: Option<&str>,
+    ) -> Result<Vec<DeletionAuditEntry>, SearchOsError> {
+        self.store.with_conn(|c| {
+            let mut stmt = c
+                .prepare(
+                    "SELECT id, document_id, workspace_id, content_hash, chunk_count, outbox_events, index_verified, cache_invalidated, deleted_at
+                     FROM deletion_audit
+                     WHERE (?1 IS NULL OR workspace_id = ?1)
+                       AND (?2 IS NULL OR document_id = ?2)
+                     ORDER BY deleted_at DESC
+                     LIMIT ?3",
+                )
+                .map_err(e)?;
+            let rows = stmt
+                .query_map(
+                    params![workspace, document_id, limit.clamp(1, 200)],
+                    |r| {
+                        Ok(DeletionAuditEntry {
+                            id: r.get(0)?,
+                            document_id: r.get(1)?,
+                            workspace_id: r.get(2)?,
+                            content_hash: r.get(3)?,
+                            chunk_count: r.get(4)?,
+                            outbox_events: r.get(5)?,
+                            index_verified: r.get::<_, i64>(6)? != 0,
+                            cache_invalidated: r.get::<_, i64>(7)? != 0,
+                            deleted_at: r.get(8)?,
+                        })
+                    },
+                )
+                .map_err(e)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(e)
+        })
+    }
+}
+
 /// Source + document + version + chunk persistence with the transactional
 /// outbox (RFC-006 6.7, ADR-011).
 pub struct DocumentRepo<'a> {
@@ -800,13 +921,55 @@ impl<'a> DocumentRepo<'a> {
 
     /// Soft-deletes a document + removes chunks + enqueues index deletes
     /// (RFC-006 6.7 deletion flow).
-    pub fn delete(&self, id: &DocumentId) -> Result<(), SearchOsError> {
+    pub fn delete(&self, id: &DocumentId) -> Result<Option<DeletedDocument>, SearchOsError> {
         self.store.with_conn(|c| {
             let tx = c.unchecked_transaction().map_err(e)?;
+            // Capture proof-relevant facts BEFORE the soft delete (RFC-087
+            // audit): the owning workspace and the last version's hash.
+            let document = tx
+                .query_row(
+                    "SELECT workspace_id, current_version_id, status FROM documents WHERE id = ?1",
+                    params![id.as_str()],
+                    |r| {
+                        Ok((
+                            r.get::<_, Option<String>>(0)?,
+                            r.get::<_, Option<String>>(1)?,
+                            r.get::<_, String>(2)?,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(e)?;
+            let Some((workspace_id, version_id, status)) = document else {
+                // Nothing to delete: no audit row for a phantom deletion.
+                tx.commit().map_err(e)?;
+                return Ok(None);
+            };
+            if status == "deleted" {
+                // Re-deleting an already-deleted document propagates nothing:
+                // no second audit row for the same fact.
+                tx.commit().map_err(e)?;
+                return Ok(None);
+            };
+            let content_hash: Option<String> = match &version_id {
+                Some(vid) => tx
+                    .query_row(
+                        "SELECT content_hash FROM document_versions WHERE id = ?1",
+                        params![vid],
+                        |r| r.get::<_, String>(0),
+                    )
+                    .optional()
+                    .map_err(e)?,
+                None => None,
+            };
             // Collect chunk ids for index deletion events.
             let chunk_ids: Vec<String> = {
-                let mut stmt = tx.prepare("SELECT id FROM document_chunks WHERE document_id = ?1").map_err(e)?;
-                let rows = stmt.query_map(params![id.as_str()], |r| r.get::<_, String>(0)).map_err(e)?;
+                let mut stmt = tx
+                    .prepare("SELECT id FROM document_chunks WHERE document_id = ?1")
+                    .map_err(e)?;
+                let rows = stmt
+                    .query_map(params![id.as_str()], |r| r.get::<_, String>(0))
+                    .map_err(e)?;
                 rows.collect::<Result<Vec<_>, _>>().map_err(e)?
             };
             let document_id = id.as_str().to_string();
@@ -827,7 +990,13 @@ impl<'a> DocumentRepo<'a> {
             }
             tx.execute("DELETE FROM document_chunks WHERE document_id = ?1", params![id.as_str()]).map_err(e)?;
             tx.execute("UPDATE documents SET status = 'deleted', current_version_id = NULL, updated_at = ?2 WHERE id = ?1", params![id.as_str(), now()]).map_err(e)?;
-            tx.commit().map_err(e)
+            tx.commit().map_err(e)?;
+            Ok(Some(DeletedDocument {
+                document_id,
+                workspace_id,
+                content_hash,
+                chunk_ids,
+            }))
         })
     }
 

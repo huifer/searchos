@@ -10,7 +10,6 @@ use searchos_application::ingest_service::{IngestBatchItem, IngestPayload, Inges
 use searchos_application::search_service::{
     SearchDependencies, SearchService as _, SearchServiceImpl,
 };
-use searchos_application::singleflight::SingleflightCoordinator;
 use searchos_core::SearchOsConfig;
 use searchos_domain::ids::{ProfileId, WorkspaceId};
 use searchos_domain::request::{SearchMode, SearchRequest};
@@ -63,7 +62,9 @@ fn rebuild_deps(runtime: &Arc<searchos_core::SearchOsRuntime>) -> Arc<SearchDepe
         traces: runtime.traces(),
         cost_sink: runtime.cost_sink(),
         task_recorder: runtime.task_recorder(),
-        singleflight: Arc::new(SingleflightCoordinator::new()),
+        // The RUNTIME's coordinator: `invalidate_caches` clears THIS
+        // instance, so a harness must share it, never build its own.
+        singleflight: runtime.singleflight.clone(),
         cache: runtime.exact_cache.clone(),
         validity: None,
         negative_cache: runtime.negative_cache.clone(),
@@ -579,4 +580,79 @@ async fn pii_redaction_follows_the_config_flag() {
         .join("\n");
     assert!(!snippets.contains(email), "{snippets}");
     assert!(snippets.contains("[REDACTED:email]"), "{snippets}");
+}
+
+/// RFC-087: every delete writes an append-only propagation audit row whose
+/// `index_verified` re-checks the drained outbox; a phantom delete writes
+/// nothing, and the deleted knowledge is verifiably unsearchable.
+#[tokio::test]
+async fn deletion_propagation_is_audited() {
+    let h = Harness::new().await;
+    let mut req = text_request("default");
+    req.source_key = Some("notes/audit".into());
+    let doc = h
+        .runtime
+        .application
+        .ingest_service
+        .ingest_text(
+            req,
+            "The audit trail records what a deletion propagated across stores.",
+        )
+        .await
+        .unwrap();
+    h.drain().await;
+    // Warm the caches so `cache_invalidated` refers to something real.
+    eprintln!("DEBUG === warm search begin");
+    let _ = h
+        .service
+        .search(request("audit trail propagated", "default"))
+        .await
+        .unwrap();
+    eprintln!("DEBUG === warm search done");
+
+    h.runtime.delete_document(&doc.document_id).await.unwrap();
+
+    let repo = searchos_storage_sqlite::repos::DeletionAuditRepo::new(&h.runtime.sqlite);
+    let rows = repo
+        .list(10, Some("default"), Some(doc.document_id.as_str()))
+        .unwrap();
+    assert_eq!(rows.len(), 1, "exactly one audit row per real delete");
+    let row = &rows[0];
+    assert!(row.chunk_count > 0, "chunks were removed: {row:?}");
+    assert_eq!(row.outbox_events, row.chunk_count);
+    assert!(
+        row.index_verified,
+        "the drain left no pending index-delete event"
+    );
+    assert!(row.cache_invalidated);
+    assert_eq!(row.workspace_id.as_deref(), Some("default"));
+    assert!(
+        row.content_hash.is_some(),
+        "the deleted version is identified"
+    );
+
+    // A phantom delete is a no-op and writes NO audit row.
+    h.runtime.delete_document(&doc.document_id).await.unwrap();
+    assert_eq!(
+        repo.list(10, Some("default"), Some(doc.document_id.as_str()))
+            .unwrap()
+            .len(),
+        1,
+        "no audit row for a document that did not exist"
+    );
+
+    // The deleted knowledge is verifiably unsearchable.
+    eprintln!("DEBUG === final search begin");
+    let resp = h
+        .service
+        .search(request("audit trail propagated", "default"))
+        .await
+        .unwrap();
+    eprintln!("DEBUG === final search done");
+    let mut q = searchos_domain::retrieval::RetrievalQuery::new("audit trail propagated", 10);
+    q.workspace_id = Some("default".into());
+    assert!(
+        !resp.results.iter().any(|r| r.url == doc.canonical_url),
+        "deleted knowledge is not served"
+    );
 }
