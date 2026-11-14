@@ -127,11 +127,12 @@ impl QualityGate {
         };
 
         // Source diversity (RFC-005 5.3 Diversity — task dependent).
-        let distinct_sources: std::collections::HashSet<&str> = accepted_indices
-            .iter()
-            .map(|&i| host_of(&evidence[i].url).unwrap_or_else(|| evidence[i].url.as_str()))
-            .collect();
-        let diversity_failed = distinct_sources.len() < self.policy.minimum_distinct_sources;
+        // RFC-074: two hosts republishing the same normalized text are ONE
+        // source of evidence, not corroboration. Accepted items are grouped
+        // into content communities (same host OR same content fingerprint),
+        // and the COMMUNITY count — not the host count — decides diversity.
+        let distinct_sources = content_community_count(&accepted_indices, evidence);
+        let diversity_failed = distinct_sources < self.policy.minimum_distinct_sources;
         if diversity_failed
             && !accepted_indices.is_empty()
             && self.policy.minimum_distinct_sources > 1
@@ -341,6 +342,61 @@ fn host_of(url: &str) -> Option<&str> {
         .or_else(|| url.strip_prefix("http://"))
         .unwrap_or(url);
     rest.split(['/', '?', '#']).next()
+}
+
+/// Number of independent content communities among accepted evidence
+/// (RFC-074).
+///
+/// Two items belong to the same community when they share a host OR carry the
+/// same normalized content fingerprint — so a syndicated copy on another host
+/// cannot masquerade as independent corroboration, while two genuinely
+/// different articles on one host still count once (host is a community).
+/// Union-find over host and fingerprint nodes; every node was created by an
+/// accepted item, so the number of roots is the community count.
+fn content_community_count(indices: &[usize], evidence: &[Evidence]) -> usize {
+    use std::collections::HashMap;
+
+    fn find(parent: &mut [usize], mut x: usize) -> usize {
+        while parent[x] != x {
+            parent[x] = parent[parent[x]];
+            x = parent[x];
+        }
+        x
+    }
+    fn union(parent: &mut [usize], a: usize, b: usize) {
+        let (ra, rb) = (find(parent, a), find(parent, b));
+        if ra != rb {
+            parent[ra] = rb;
+        }
+    }
+
+    let mut parent: Vec<usize> = Vec::new();
+    let mut hosts: HashMap<String, usize> = HashMap::new();
+    let mut fingerprints: HashMap<String, usize> = HashMap::new();
+    for &i in indices {
+        let ev = &evidence[i];
+        let host = host_of(&ev.url).unwrap_or(ev.url.as_str()).to_string();
+        let host_node = *hosts.entry(host).or_insert_with(|| {
+            parent.push(parent.len());
+            parent.len() - 1
+        });
+        if let Some(fingerprint) = ev
+            .snippet
+            .as_deref()
+            .and_then(searchos_domain::evidence::normalized_content_fingerprint)
+        {
+            let fingerprint_node = *fingerprints.entry(fingerprint).or_insert_with(|| {
+                parent.push(parent.len());
+                parent.len() - 1
+            });
+            union(&mut parent, host_node, fingerprint_node);
+        }
+    }
+    let mut roots = std::collections::HashSet::new();
+    for node in 0..parent.len() {
+        roots.insert(find(&mut parent, node));
+    }
+    roots.len()
 }
 
 /// Detects unresolved contradictions: the same subject/claim covered by
@@ -599,6 +655,70 @@ mod tests {
             .failed_constraints
             .iter()
             .any(|f| f == "provenance_missing"));
+    }
+
+    /// RFC-074: two hosts republishing the same text are ONE source, not
+    /// corroboration — they must not satisfy `minimum_distinct_sources`.
+    #[test]
+    fn syndicated_copies_do_not_satisfy_source_diversity() {
+        let article = "Tokio 1.39 shipped the redesigned work-stealing scheduler with a new \n            task budget model, which measurably improves tail latency for high-fanout workloads.";
+        let policy = searchos_policy::QualityPolicy {
+            minimum_distinct_sources: 2,
+            ..Default::default()
+        };
+        let g = QualityGate::new(
+            policy,
+            FreshnessPolicy::default_policy(),
+            SourcePolicy::default_policy(),
+        );
+
+        let mut a = evidence(
+            "https://tokio.rs/blog/scheduler",
+            "Scheduler release",
+            100,
+            ReliabilityLevel::Official,
+            None,
+        );
+        a.snippet = Some(article.to_string());
+        let mut copy = evidence(
+            "https://news.example.com/repost",
+            "Repost of the scheduler release",
+            100,
+            ReliabilityLevel::Professional,
+            None,
+        );
+        copy.snippet = Some(article.to_string());
+
+        let syndicated = g.evaluate_set(&[a.clone(), copy], &[0.9, 0.9], &[]);
+        assert!(
+            syndicated
+                .failed_constraints
+                .iter()
+                .any(|f| f == "diversity_below_minimum"),
+            "same text on two hosts is one source, not two: {:?}",
+            syndicated.failed_constraints
+        );
+
+        // Genuine corroboration: different text on the same two hosts.
+        let mut independent = evidence(
+            "https://news.example.com/analysis",
+            "Independent analysis",
+            100,
+            ReliabilityLevel::Professional,
+            None,
+        );
+        independent.snippet = Some(
+            "An independent analysis of the scheduler change measured p99 latency \n                across production workloads and confirmed the improvement.".to_string(),
+        );
+        let genuine = g.evaluate_set(&[a, independent], &[0.9, 0.9], &[]);
+        assert!(
+            !genuine
+                .failed_constraints
+                .iter()
+                .any(|f| f == "diversity_below_minimum"),
+            "different texts on two hosts are two sources: {:?}",
+            genuine.failed_constraints
+        );
     }
 
     #[test]

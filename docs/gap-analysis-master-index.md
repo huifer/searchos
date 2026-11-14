@@ -72,7 +72,7 @@ Legend: **Have** = implemented & tested · **Partial** = exists but narrower tha
 | 071 | Deep Search Engine | **Partial** | bounded iterative acquisition (`max_acquisition_rounds`), `coverage_gaps`, `POST /search/plan`, `POST /search/follow-up`; no task-level research workspace | RFC-071 (P4) |
 | 072 | Query Expansion | **Partial** | decomposition for comparison-with-≥2-entities + reformulated follow-up queries; no synonym/sub-question expansion | RFC-072 (P4) |
 | 073 | Evidence Coverage | **Have** | `RequirementStatus`, `GapAnalyzer`, `coverage_gaps`, `focus_requirements`, graded qrels / nDCG / MRR / Recall@5 | reuse |
-| 074 | Source Independence | **Partial** | host-based independent-source counting, `host_of` handles `searchos-local://`, conflicts force `QualityStatus::Conflict`; no citation-relationship or original-publisher detection | RFC-074 (P4) |
+| 074 | Source Independence | **Partial → syndication detection delivered** | host-based counting upgraded to content communities: the same normalized text on N hosts is ONE source for the quality gate's diversity check (`content_community_count` union-find); `merge_evidence` reports syndication sets with the identified original publisher (local → earliest publication → first-seen); context assembly dedups cross-URL same content with `occurrences` | full citation graph / reference-chain analysis |
 | 076 | Adaptive Search Planner | **Partial** | `SearchDecision` state machine + stage trace; not yet source-aware / cost-adaptive | RFC-076 (P2) |
 | 077 | Search Cache Intelligence | **Partial** | exact/canonical/semantic caches with mode+freshness keys and a 0.92 similarity gate; no "is the evidence still valid / source changed" judgement | RFC-077 (P2) |
 | 078 | Cost Attribution | **Have** | full cost ledger, reserve→settle, reconciliation, savings views | reuse |
@@ -201,7 +201,7 @@ The design documents are text-only and cannot break the Rust or frontend gates.
 | 071 | Deep Search Engine | **部分** | 有界迭代采集（`max_acquisition_rounds`）、`coverage_gaps`、`POST /search/plan`、`POST /search/follow-up`；无任务级 Research Workspace | RFC-071（P4） |
 | 072 | Query Expansion | **部分** | 比较类 ≥2 实体拆解 + 追问改写；无同义词/子问题扩展 | RFC-072（P4） |
 | 073 | Evidence Coverage | **已有** | `RequirementStatus`、`GapAnalyzer`、`coverage_gaps`、`focus_requirements`、分级 qrels / nDCG / MRR / Recall@5 | 复用 |
-| 074 | Source Independence | **部分** | 按 host 统计独立来源，`host_of` 处理 `searchos-local://`，冲突强制 `QualityStatus::Conflict`；无引用关系 / 原始发布方识别 | RFC-074（P4） |
+| 074 | Source Independence | **部分 → 同文识别已交付** | 按 host 计数升级为「内容社区」：同一规范化文本出现在 N 个 host 上，质量门禁的多样性检查只算一个来源（`content_community_count` 并查集）；`merge_evidence` 报告同文集合与识别出的原始发布方（本地 → 最早发布 → 首见）；context 装配对跨 URL 同文去重并记录 `occurrences` | 完整引用图 / 引用链分析 |
 | 076 | Adaptive Search Planner | **部分** | `SearchDecision` 状态机 + stage trace；尚未来源感知 / 成本自适应 | RFC-076（P2） |
 | 077 | Search Cache Intelligence | **部分** | exact/canonical/semantic 缓存、mode+freshness 键、0.92 相似度门；无「证据是否仍有效 / 来源是否变化」判断 | RFC-077（P2） |
 | 078 | Cost Attribution | **已有** | 完整成本账本、reserve→settle、对账、节省视图 | 复用 |

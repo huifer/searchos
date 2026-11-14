@@ -452,16 +452,9 @@ impl SearchServiceImpl {
         }
         // `plan_only` is a WIRING mode (plan, don't execute); the planner's
         // strategy vocabulary is auto/parallel/sequential/selective, and the
-        // legacy-compatible default is Auto. `execute` currently plans the
-        // same way — see `normalized_federation_strategy` for why execution
-        // stays with the legacy pipeline until the billing-aware migration.
-        if strategy_name == FEDERATION_EXECUTE {
-            tracing::warn!(
-                "federation.strategy=execute currently plans only; provider execution still \
-                 runs through the legacy reserve/settle pipeline (RFC-062 billing migration \
-                 pending)"
-            );
-        }
+        // legacy-compatible default is Auto. `execute` plans the same way:
+        // its real execution happens in `execute_external_federated`, with
+        // billing settled by the service's reserve → execute → settle loop.
         let strategy = match strategy_name {
             FEDERATION_PLAN_ONLY | FEDERATION_EXECUTE => {
                 searchos_federated::FederationStrategy::Auto
@@ -2471,7 +2464,7 @@ fn assemble_context_block(
             canonical_ref: item.url.clone(),
             title: item.title.clone(),
             content: item.content.clone(),
-            content_hash: None,
+            content_hash: searchos_domain::evidence::normalized_content_fingerprint(&item.content),
             score: item.score,
             conflicting: false,
             permission_ok: true,

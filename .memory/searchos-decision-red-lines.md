@@ -23,6 +23,7 @@ and partial results could look successful.
 - Budget lifecycle is reserve → execute → settle; estimated costs are never rewritten by billing reconciliation (`is_estimate` stays honest).
 - `request_id` is an idempotency key: replaying it must not create a second task, external call, bill, or document version.
 - Evidence merge canonicalizes URLs, retains conflicts, and counts independent sources by host; unresolved conflicts force `QualityStatus::Conflict`.
+- **Syndication semantics (2026-11, RFC-074):** the same normalized text on N hosts is ONE source for the quality gate's diversity check (`content_community_count`). `normalized_content_fingerprint` is a normalized-text equality digest — never a trust, integrity, or authenticity proof; below the 40-char floor it returns None ("not comparable"), never "matches". Original-publisher identification order is LOCAL → earliest publication → first-seen, never URL spelling.
 - Final quality gate uses measured relevance scores, never a constant placeholder.
 - **Semantic cache reuse needs a real similarity gate (2026-11 fix).** The cache key
   is a coarse bucket (`vector_bucket`: first 8 embedding components rounded to

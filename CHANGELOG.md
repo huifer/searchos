@@ -101,6 +101,25 @@ multi-arch images, and attaches the matching section of this file.
   `federation_execution_summary_survives_trace_re_record` and the extended
   `federated_execute_mode_bills_once_and_matches_legacy_results` verify both
   paths.
+- **Syndication detection & original-publisher identification (RFC-074
+  slice).** The quality gate's source-diversity check now counts content
+  communities, not hosts: `content_community_count` unions host and content-
+  fingerprint nodes (`searchos_domain::evidence::normalized_content_fingerprint`,
+  whitespace-collapsed/lowercased text with a 40-char comparability floor),
+  so the same article republished on N hosts is ONE source and can no longer
+  masquerade as independent corroboration. `merge_evidence` reports the
+  syndication sets (`MergeReport.syndicated_copies`, `content_groups`,
+  `independent_content_sources`) with the identified ORIGINAL publisher
+  (local knowledge → earliest publication → first-seen) without mutating the
+  merged evidence list, and context assembly now dedups cross-URL identical
+  content with `occurrences` recorded. Gates:
+  `syndicated_copies_do_not_satisfy_source_diversity`,
+  `same_content_on_different_hosts_is_one_source_with_copies`,
+  `original_publisher_prefers_local_then_earliest_publication`,
+  `short_or_distinct_content_is_not_grouped`, and the end-to-end
+  `context_assembly_collapses_cross_host_syndicated_content`.
+  Also removed the stale `execute currently plans only` warning left over
+  from the billing migration.
 - **Agent memory as a federated source (RFC-069).** `AgentMemorySource`
   (application layer, so the kernel keeps no storage dependency) exposes
   distilled agent knowledge through the same `SearchSource` contract, reading

@@ -5,7 +5,7 @@
 //! Conflicting evidence is never silently dropped or overwritten by "latest".
 
 use searchos_document::canonical::{canonical_url as canonical_document_url, source_host};
-use searchos_domain::evidence::Evidence;
+use searchos_domain::evidence::{normalized_content_fingerprint, Evidence, ProvenanceOrigin};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
@@ -19,6 +19,30 @@ pub struct MergeReport {
     /// Distinct hosts among merged evidence (independent-source count).
     pub independent_sources: usize,
     pub merged_count: usize,
+    /// Evidence items that carried the SAME normalized content as an item on
+    /// another canonical URL (a syndicated / re-published copy). RFC-074:
+    /// these are occurrences, not independent corroboration.
+    #[serde(default)]
+    pub syndicated_copies: usize,
+    /// Distinct content communities: `merged_count - syndicated_copies`.
+    #[serde(default)]
+    pub independent_content_sources: usize,
+    /// One entry per detected syndication set (≥ 2 URLs, same content), with
+    /// the identified original publisher.
+    #[serde(default)]
+    pub content_groups: Vec<ContentGroup>,
+}
+
+/// One set of evidence items carrying the same normalized content on
+/// different canonical URLs (RFC-074).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContentGroup {
+    /// Canonical URL of the identified original publisher.
+    pub original_url: String,
+    /// Canonical URLs of the copies, first-seen order.
+    pub copies: Vec<String>,
+    /// Total occurrences (original + copies).
+    pub occurrences: usize,
 }
 
 /// Canonical URL form used for deduplication (Part 30 INV-30-15).
@@ -96,7 +120,72 @@ pub fn merge_evidence(
     let hosts: HashSet<String> = merged.iter().map(|e| source_host(&e.url)).collect();
     report.independent_sources = hosts.len();
     report.merged_count = merged.len();
+
+    // RFC-074: cross-URL same-content detection. Items are grouped by their
+    // normalized content fingerprint; a group with more than one URL is a
+    // syndication set with an identifiable original publisher. The merged
+    // list itself is never mutated or reordered — this is corroboration
+    // accounting, not content replacement.
+    let mut by_fingerprint: HashMap<String, Vec<&Evidence>> = HashMap::new();
+    let mut fingerprint_order: Vec<String> = Vec::new();
+    for ev in &merged {
+        let Some(fingerprint) = ev
+            .snippet
+            .as_deref()
+            .and_then(normalized_content_fingerprint)
+        else {
+            continue;
+        };
+        if !by_fingerprint.contains_key(&fingerprint) {
+            fingerprint_order.push(fingerprint.clone());
+        }
+        by_fingerprint.entry(fingerprint).or_default().push(ev);
+    }
+    for fingerprint in fingerprint_order {
+        let items = &by_fingerprint[&fingerprint];
+        if items.len() < 2 {
+            continue;
+        }
+        let original = items
+            .iter()
+            .enumerate()
+            .min_by_key(|(first_seen, ev)| originality_key(ev, *first_seen))
+            .map(|(_, ev)| *ev)
+            .expect("a content group has at least one item");
+        let copies: Vec<String> = items
+            .iter()
+            .filter(|ev| ev.id != original.id)
+            .map(|ev| canonical_url(&ev.url))
+            .collect();
+        report.syndicated_copies += copies.len();
+        report.content_groups.push(ContentGroup {
+            original_url: canonical_url(&original.url),
+            copies,
+            occurrences: items.len(),
+        });
+    }
+    report.independent_content_sources = merged.len().saturating_sub(report.syndicated_copies);
     (merged, report)
+}
+
+/// Primacy ordering used to pick the ORIGINAL publisher inside a content
+/// group (RFC-074):
+/// 1. Local (workspace-owned) knowledge is authoritative (RFC-029).
+/// 2. Then the earliest publication date; a dated item beats an undated one.
+/// 3. Then first-seen order (procurement order), so the pick is deterministic
+///    and never decided by URL spelling.
+fn originality_key(ev: &Evidence, first_seen: usize) -> (u8, bool, i64, usize) {
+    let origin_rank = match ev.provenance.origin {
+        ProvenanceOrigin::Local => 0u8,
+        ProvenanceOrigin::External => 1,
+    };
+    let published = ev.published_at.map(|t| t.timestamp());
+    (
+        origin_rank,
+        published.is_none(),
+        published.unwrap_or(0),
+        first_seen,
+    )
 }
 
 #[cfg(test)]
@@ -167,5 +256,68 @@ mod tests {
         );
         assert_eq!(report.independent_sources, 2);
         assert_eq!(report.duplicates_removed, 0);
+    }
+
+    #[test]
+    fn same_content_on_different_hosts_is_one_source_with_copies() {
+        let article = "Tokio 1.39 shipped the new work-stealing scheduler with a redesigned \n        task budget, improving tail latency for high-fanout workloads.";
+        let (merged, report) = merge_evidence(
+            vec![ev("https://tokio.rs/blog/scheduler", article, 10)],
+            vec![ev("https://news.example.com/repost", article, 1)],
+        );
+        // The evidence list itself is untouched (accounting, not removal).
+        assert_eq!(merged.len(), 2);
+        assert_eq!(report.independent_sources, 2, "host count stays compatible");
+        assert_eq!(report.syndicated_copies, 1);
+        assert_eq!(report.independent_content_sources, 1);
+        assert_eq!(report.content_groups.len(), 1);
+        let group = &report.content_groups[0];
+        assert_eq!(group.occurrences, 2);
+        assert_eq!(group.original_url, "https://tokio.rs/blog/scheduler");
+        assert_eq!(
+            group.copies,
+            vec!["https://news.example.com/repost".to_string()]
+        );
+    }
+
+    #[test]
+    fn original_publisher_prefers_local_then_earliest_publication() {
+        let article = "The tokio scheduler redesign reduces tail latency under \n        high fanout by redesigning the task budget accounting model.";
+        // Local (workspace-owned) wins even though it is undated and the
+        // external repost carries an earlier date.
+        let mut local = ev("https://docs.local/notes/scheduler", article, 30);
+        local.provenance.origin = ProvenanceOrigin::Local;
+        let mut earlier = ev("https://a.example.com/x", article, 20);
+        earlier.published_at = Some(Utc::now() - chrono::Duration::days(30));
+        let (_, report) = merge_evidence(vec![local], vec![earlier]);
+        assert_eq!(report.content_groups.len(), 1);
+        assert_eq!(
+            report.content_groups[0].original_url, "https://docs.local/notes/scheduler",
+            "local knowledge is authoritative over external reposts"
+        );
+
+        // Without local knowledge, the earliest publication date wins.
+        let mut later = ev("https://late.example.com/y", article, 5);
+        later.published_at = Some(Utc::now() - chrono::Duration::days(1));
+        let mut earlier = ev("https://early.example.com/z", article, 6);
+        earlier.published_at = Some(Utc::now() - chrono::Duration::days(2));
+        let (_, report) = merge_evidence(vec![later], vec![earlier]);
+        assert_eq!(
+            report.content_groups[0].original_url, "https://early.example.com/z",
+            "earlier publication identifies the original"
+        );
+    }
+
+    #[test]
+    fn short_or_distinct_content_is_not_grouped() {
+        // A boilerplate label is below the fingerprint threshold: two hosts
+        // carrying it are still independent sources.
+        let (_, report) = merge_evidence(
+            vec![ev("https://a.com/x", "read more", 1)],
+            vec![ev("https://b.com/y", "read more", 1)],
+        );
+        assert_eq!(report.syndicated_copies, 0);
+        assert_eq!(report.independent_content_sources, 2);
+        assert!(report.content_groups.is_empty());
     }
 }

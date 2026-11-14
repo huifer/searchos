@@ -148,6 +148,22 @@ The SearchOS implementation (`~/git_repo/searchos`) is verified by these command
   `per_source_timeout_is_capped_by_the_request_deadline`,
   `federated_execute_respects_a_tiny_wall_clock_budget`. Full suite **682
   passed / 0 failed**; clippy `-D warnings`, fmt, route scan green.
+- **RFC-074 syndication slice (2026-11-14):** quality-gate diversity counts
+  CONTENT COMMUNITIES (`content_community_count`, union-find over host +
+  fingerprint nodes from
+  `searchos_domain::evidence::normalized_content_fingerprint` — normalized
+  text ≥ 40 chars, FNV-1a, NOT a trust/integrity proof); `merge_evidence`
+  reports `syndicated_copies` / `content_groups` / `independent_content_sources`
+  with the original picked by local → earliest publication → first-seen
+  (never URL spelling); context assembly feeds the fingerprint as
+  `EvidenceChunk.content_hash` so cross-URL identical content collapses with
+  `occurrences` recorded. Stale `execute plans only` warn removed.
+  Gates: `syndicated_copies_do_not_satisfy_source_diversity`,
+  `same_content_on_different_hosts_is_one_source_with_copies`,
+  `original_publisher_prefers_local_then_earliest_publication`,
+  `short_or_distinct_content_is_not_grouped`,
+  `context_assembly_collapses_cross_host_syndicated_content`. Full suite
+  **691 passed / 0 failed**; clippy/fmt/route scan green.
 
 **Known environment notes:**
 - LanceDB requires `protoc` at build time (`brew install protobuf`).

@@ -197,7 +197,7 @@ in §6 — a behaviour-preserving change because `legacy` remains the default.
   `latency_feedback_updates_the_live_profile_on_every_scope_copy`,
   `per_source_timeout_is_capped_by_the_request_deadline`,
   `federated_execute_respects_a_tiny_wall_clock_budget`.
-* Full suite: **682 tests, 0 failures**; `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, route-conflict scan all clean.
+* Full suite: **691 tests, 0 failures**; `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, route-conflict scan all clean.
 * Route table unchanged by THIS residue pass; the earlier iteration added
   `GET /sources` with the route table + OpenAPI in the same change.
 

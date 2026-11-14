@@ -1508,3 +1508,146 @@ async fn federated_execute_respects_a_tiny_wall_clock_budget() {
         plan.federated_sources
     );
 }
+
+/// RFC-074 end-to-end: the same article republished on a second host is ONE
+/// occurrence set in the assembled context — provenance shows it, diversity
+/// does not count it twice. No content is deleted from `results`.
+#[tokio::test]
+async fn context_assembly_collapses_cross_host_syndicated_content() {
+    use async_trait::async_trait;
+    use searchos_provider::error::ProviderError;
+    use searchos_provider::traits::{ProviderResult, SearchParams, SearchProvider};
+
+    struct SyndicatedProvider;
+    #[async_trait]
+    impl SearchProvider for SyndicatedProvider {
+        fn id(&self) -> &str {
+            "syndicator"
+        }
+        fn capabilities(&self) -> searchos_domain::provider::ProviderCapabilities {
+            searchos_domain::provider::ProviderCapabilities {
+                search: true,
+                ..Default::default()
+            }
+        }
+        async fn search(&self, _params: &SearchParams) -> Result<ProviderResult, ProviderError> {
+            let article = "The federated planner selects sources with an auditable rejection \\n                    chain: permission, scope, capability, reliability, latency and cost are \\n                    all recorded per source before any bill is produced.";
+            Ok(ProviderResult {
+                entries: vec![
+                    searchos_provider::traits::SearchResultEntry {
+                        title: Some("original article".into()),
+                        url: "https://origin.dev/federated-planner".into(),
+                        content: article.into(),
+                        score: 0.9,
+                        published_at: None,
+                        raw_content: None,
+                    },
+                    searchos_provider::traits::SearchResultEntry {
+                        title: Some("repost".into()),
+                        url: "https://mirror.example.net/federated-planner".into(),
+                        content: article.into(),
+                        score: 0.85,
+                        published_at: None,
+                        raw_content: None,
+                    },
+                ],
+                duration_ms: 2,
+                bytes_transferred: 512,
+            })
+        }
+        async fn health_check(&self) -> Result<bool, ProviderError> {
+            Ok(true)
+        }
+    }
+
+    let mut cfg = SearchOsConfig::default();
+    let dir = tempfile::tempdir().unwrap();
+    cfg.app.data_dir = dir.path().to_path_buf();
+    cfg.federation.strategy = "execute".into();
+    let runtime = searchos_core::SearchOsRuntime::init(cfg).await.unwrap();
+    let provider: Arc<dyn SearchProvider> = Arc::new(SyndicatedProvider);
+    runtime
+        .provider_registry
+        .register(searchos_provider::RegisteredProvider::from_search(
+            provider.clone(),
+            5_000,
+            "USD",
+        ));
+    let registry = Arc::new(searchos_federated::InMemorySourceRegistry::new());
+    registry
+        .register(Arc::new(searchos_federated::WebSearchProviderSource::new(
+            provider.clone(),
+            searchos_federated::SourceScope::Global,
+            50,
+            5_000,
+            searchos_federated::SourceLatencyProfile::default(),
+        )) as Arc<dyn searchos_federated::SearchSource>)
+        .unwrap();
+
+    let deps = SearchDependencies {
+        profiles: searchos_policy::ProfileRegistry::builtin(),
+        quality: searchos_policy::QualityPolicy::default(),
+        freshness: searchos_policy::FreshnessPolicy::default_policy(),
+        source: searchos_policy::SourcePolicy::default_policy(),
+        cost_config: searchos_cost::CostModelConfig::default_config(),
+        bm25: runtime.fulltext.clone(),
+        vector: Some(runtime.vector.clone()),
+        hybrid: Some(runtime.hybrid.clone()),
+        embedder: runtime.embedder.clone(),
+        canonical_cache: runtime.canonical_cache.clone(),
+        semantic_cache: runtime.semantic_cache.clone(),
+        retrieval_cache: runtime.retrieval_cache.clone(),
+        embedding_cache: runtime.embedding_cache.clone(),
+        rerank_cache: runtime.rerank_cache.clone(),
+        router: runtime.provider_registry.clone(),
+        search_providers: vec![provider],
+        local_port: runtime.local_port(),
+        traces: runtime.traces(),
+        cost_sink: runtime.cost_sink(),
+        task_recorder: runtime.task_recorder(),
+        singleflight: Arc::new(SingleflightCoordinator::new()),
+        cache: runtime.exact_cache.clone(),
+        negative_cache: runtime.negative_cache.clone(),
+        semantic_dedup: true,
+        incremental: true,
+        query_expansion: true,
+        reranking: true,
+        allow_external: true,
+        promotion: None,
+        session_store: None,
+        federation_registry: Some(Arc::clone(&registry)),
+        federation_strategy: "execute".into(),
+        federation_limits: searchos_domain::FederationLimits::default(),
+    };
+    let svc = SearchServiceImpl::new(Arc::new(deps));
+
+    let mut req = request("auditable rejection chain", SearchMode::ExternalOnly);
+    req.budget.max_external_queries = 1;
+    req.context_budget = Some(searchos_domain::context::ContextBudget {
+        max_tokens: 4096,
+        reserved_tokens: 0,
+        max_sources: 8,
+        max_chunks_per_source: 4,
+        deduplicate: true,
+        preserve_citations: true,
+        include_conflicts: false,
+    });
+    let response = svc.search(req).await.unwrap();
+
+    assert_eq!(response.results.len(), 2, "results are never rewritten");
+    let block = response
+        .context
+        .as_ref()
+        .expect("a context block is assembled");
+    let snippets = &block.evidence;
+    assert_eq!(
+        snippets.len(),
+        1,
+        "the syndicated copy collapses into one context entry: {:?}",
+        snippets.iter().map(|s| &s.citation).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        snippets[0].occurrences, 2,
+        "the occurrence is recorded, not lost"
+    );
+}
