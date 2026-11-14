@@ -19,6 +19,7 @@ pub mod search_service;
 pub mod session;
 pub mod session_source;
 pub mod singleflight;
+pub mod validity;
 
 pub use analytics::{AnalyticsQuery, AnalyticsQueryService};
 pub use fetch_service::{FetchService, FetchServiceImpl};

@@ -101,6 +101,20 @@ multi-arch images, and attaches the matching section of this file.
   `federation_execution_summary_survives_trace_re_record` and the extended
   `federated_execute_mode_bills_once_and_matches_legacy_results` verify both
   paths.
+- **Cache-reuse validity gate (RFC-077 slice).** Every cache layer (exact /
+  canonical / semantic / retrieval) now validates a HIT against the durable
+  store before reuse: an `EvidenceValidityPort` reports each cited
+  document's CURRENT version (`None` = deleted), and a hit citing a deleted
+  or re-versioned document is rejected and recomputed — even when the
+  invalidating write came from ANOTHER process (CLI + gateway sharing one
+  data directory), which in-process invalidation cannot see. Fail-open on
+  port errors, lookups bounded at 64 documents per hit, rejections counted
+  by `cache.validity_reject_total`. Idempotency replays (INV-30-02) are
+  deliberately NEVER validity-checked — the contract returns the recorded
+  payload verbatim. Gates: six validity unit tests plus the cross-process
+  integration gates
+  `deletion_in_another_process_invalidates_cached_responses` and
+  `version_change_in_another_process_rejects_the_cached_hit`.
 - **Vertical retrieval routing (RFC-065 slice).** The retrieval layer now
   has the RFC-065 ownership boundary the Master Index demands: 065 recalls
   and routes, 066 fuses. `RetrievalVertical` (id + `accepts` routing

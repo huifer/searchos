@@ -38,6 +38,31 @@ struct SqliteSessionPersistence {
     store: Arc<SqliteStore>,
 }
 
+/// SQLite-backed RFC-077 evidence validity port: the durable store is the
+/// cross-process source of truth, so a hit-time check against it catches
+/// deletions and re-indexes made by ANOTHER process (CLI + gateway sharing
+/// one data directory) that in-process cache invalidation cannot see.
+struct SqliteEvidenceValidity {
+    store: Arc<SqliteStore>,
+}
+
+#[async_trait::async_trait]
+impl searchos_application::validity::EvidenceValidityPort for SqliteEvidenceValidity {
+    async fn current_versions(
+        &self,
+        document_ids: &[searchos_domain::ids::DocumentId],
+    ) -> Result<
+        std::collections::HashMap<
+            searchos_domain::ids::DocumentId,
+            Option<searchos_domain::ids::DocumentVersionId>,
+        >,
+        SearchOsError,
+    > {
+        let out = repos::DocumentRepo::new(&self.store).current_versions(document_ids);
+        out
+    }
+}
+
 impl searchos_application::session::SessionPersistence for SqliteSessionPersistence {
     fn load_all(&self) -> Result<Vec<searchos_application::session::SearchSession>, SearchOsError> {
         let mut out = Vec::new();
@@ -720,6 +745,9 @@ impl SearchOsRuntime {
             }),
             singleflight: Arc::clone(&singleflight),
             cache: exact_cache.clone(),
+            validity: Some(Arc::new(SqliteEvidenceValidity {
+                store: Arc::clone(&sqlite),
+            })),
             negative_cache: Arc::clone(&negative_cache),
             semantic_dedup: config.search.semantic_dedup,
             incremental: config.search.incremental,

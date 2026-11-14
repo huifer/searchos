@@ -10,7 +10,7 @@ use searchos_domain::ids::{DocumentId, DocumentVersionId, SourceId, WorkspaceId}
 use searchos_domain::promotion::{EvidenceItem, ExternalAcquisition, PromotionState};
 use searchos_domain::retrieval::{IndexedDocument, RetrievalCandidate, SearchCacheKey};
 use searchos_domain::SearchOsError;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::store::SqliteStore;
 
@@ -533,6 +533,46 @@ impl<'a> DocumentRepo<'a> {
             Some(id) => self.get(&DocumentId::new(id)),
             None => Ok(None),
         }
+    }
+
+    /// RFC-077: batch current-version lookup for the cache validity gate.
+    /// A soft-deleted (or missing) document maps to `None`; a live document
+    /// maps to its CURRENT version id, so callers can detect re-indexing by
+    /// version change.
+    pub fn current_versions(
+        &self,
+        ids: &[DocumentId],
+    ) -> Result<HashMap<DocumentId, Option<DocumentVersionId>>, SearchOsError> {
+        if ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "SELECT id, current_version_id, status FROM documents WHERE id IN ({placeholders})"
+        );
+        self.store.with_conn(|c| {
+            let mut stmt = c.prepare(&sql).map_err(e)?;
+            let params: Vec<String> = ids.iter().map(|id| id.as_str().to_string()).collect();
+            let param_refs: Vec<&dyn rusqlite::ToSql> =
+                params.iter().map(|p| p as &dyn rusqlite::ToSql).collect();
+            let rows = stmt
+                .query_map(param_refs.as_slice(), |r| {
+                    let id: String = r.get(0)?;
+                    let version: Option<String> = r.get(1)?;
+                    let status: String = r.get(2)?;
+                    Ok((
+                        DocumentId::new(id),
+                        if status == "deleted" {
+                            None
+                        } else {
+                            version.map(DocumentVersionId::new)
+                        },
+                    ))
+                })
+                .map_err(e)?;
+            rows.collect::<Result<HashMap<_, _>, _>>()
+                .map_err(|er| SearchOsError::Internal(er.to_string()))
+        })
     }
 
     /// Current version of a document.

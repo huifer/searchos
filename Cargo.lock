@@ -5773,6 +5773,7 @@ dependencies = [
  "async-trait",
  "axum",
  "chrono",
+ "rusqlite",
  "searchos-application",
  "searchos-cache",
  "searchos-core",

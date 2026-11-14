@@ -177,6 +177,19 @@ The SearchOS implementation (`~/git_repo/searchos`) is verified by these command
   `extra_vertical_failure_is_isolated`. Full suite **700 passed / 0 failed**
   (80 suites); clippy/fmt/route scan green.
 
+- **RFC-077 cache-validity slice (2026-11-14):** `EvidenceValidityPort`
+  (application) + `SqliteEvidenceValidity` (runtime) — hit-time checks on
+  exact/canonical/semantic/retrieval caches; deleted or re-versioned cited
+  documents reject the hit (recompute), even cross-process (the runtime
+  clears only ITS caches; a CLI/second-replica write is invisible locally).
+  Fail-open on port errors; 64-doc lookup cap; `cache.validity_reject_total`.
+  **Idempotency replays are never validity-checked (INV-30-02 contract).**
+  Gotcha: `data_db_path()` is `<data_dir>/data/searchos.db` — a test
+  simulating another process must open the SAME file. Gates: 6 validity
+  unit tests + `deletion_in_another_process_invalidates_cached_responses` +
+  `version_change_in_another_process_rejects_the_cached_hit`. Full suite
+  **708 passed / 0 failed** (81 suites); clippy/fmt/route scan green.
+
 **Known environment notes:**
 - LanceDB requires `protoc` at build time (`brew install protobuf`).
 - Live network tests (fetch of https://example.com) tolerate sandbox timeouts by design.

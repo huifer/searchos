@@ -211,6 +211,9 @@ pub struct SearchDependencies {
     pub task_recorder: Arc<dyn TaskRecorder>,
     pub singleflight: Arc<SingleflightCoordinator>,
     pub cache: Arc<ExactQueryCache>,
+    /// RFC-077: hit-time evidence validity. `None` skips the checks (tests
+    /// and harnesses that never mutate documents behind the caches).
+    pub validity: Option<std::sync::Arc<dyn crate::validity::EvidenceValidityPort>>,
     /// RFC-031 D10: negative-result cache for terminal external failures.
     /// A zero-TTL cache effectively disables the feature.
     pub negative_cache: Arc<ExactQueryCache>,
@@ -1102,8 +1105,11 @@ async fn retrieve_local_candidates(
             &policy_version,
             &query_vector,
         ) {
-            metrics.inc_semantic_reuse();
-            return Ok(cached);
+            if validity_gate_allows(deps, &cached).await {
+                metrics.inc_semantic_reuse();
+                return Ok(cached);
+            }
+            metrics.inc_counter("cache.validity_reject_total");
         }
     }
     if let Some(cached) = deps.canonical_cache.get(
@@ -1112,11 +1118,17 @@ async fn retrieve_local_candidates(
         req.workspace_id.as_str(),
         &policy_version,
     ) {
-        return Ok(cached);
+        if validity_gate_allows(deps, &cached).await {
+            return Ok(cached);
+        }
+        metrics.inc_counter("cache.validity_reject_total");
     }
     if deps.incremental {
         if let Some(cached) = deps.retrieval_cache.get(fp, pool_k, &policy_version) {
-            return Ok(cached);
+            if validity_gate_allows(deps, &cached).await {
+                return Ok(cached);
+            }
+            metrics.inc_counter("cache.validity_reject_total");
         }
     }
 
@@ -1208,6 +1220,30 @@ async fn retrieve_local_candidates(
             .put(fp, top_k, &policy_version, candidates.clone());
     }
     Ok(candidates)
+}
+
+/// RFC-077 hit-time validity for a candidate list: `true` when there is no
+/// port wired (all existing behaviour) or every cited document still exists
+/// at the SAME version; a port error is fail-open.
+async fn validity_gate_allows(
+    deps: &Arc<SearchDependencies>,
+    candidates: &[RetrievalCandidate],
+) -> bool {
+    match deps.validity.as_ref() {
+        None => true,
+        Some(port) => crate::validity::candidates_still_valid(port.as_ref(), candidates).await,
+    }
+}
+
+/// RFC-077 hit-time validity for a cached exact-response payload.
+async fn validity_gate_allows_payload(
+    deps: &SearchDependencies,
+    payload: &serde_json::Value,
+) -> bool {
+    match deps.validity.as_ref() {
+        None => true,
+        Some(port) => crate::validity::payload_still_valid(port.as_ref(), payload).await,
+    }
 }
 
 /// Best-effort analytics event; never fails the search request.
@@ -1520,6 +1556,12 @@ impl SearchService for SearchServiceImpl {
                     && !matches!(path, "local" | "local_with_refresh" | "reject");
                 if cross_mode {
                     metrics.inc_counter("cache.cross_mode_hit_total");
+                } else if !validity_gate_allows_payload(self.deps.as_ref(), &hit.value.payload)
+                    .await
+                {
+                    // RFC-077: a cached response citing deleted or changed
+                    // documents is recomputed, never served.
+                    metrics.inc_counter("cache.validity_reject_total");
                 } else if let Ok(mut resp) =
                     serde_json::from_value::<SearchResponse>(hit.value.payload.clone())
                 {

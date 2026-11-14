@@ -74,7 +74,7 @@ Legend: **Have** = implemented & tested · **Partial** = exists but narrower tha
 | 073 | Evidence Coverage | **Have** | `RequirementStatus`, `GapAnalyzer`, `coverage_gaps`, `focus_requirements`, graded qrels / nDCG / MRR / Recall@5 | reuse |
 | 074 | Source Independence | **Partial → syndication detection delivered** | host-based counting upgraded to content communities: the same normalized text on N hosts is ONE source for the quality gate's diversity check (`content_community_count` union-find); `merge_evidence` reports syndication sets with the identified original publisher (local → earliest publication → first-seen); context assembly dedups cross-URL same content with `occurrences` | full citation graph / reference-chain analysis |
 | 076 | Adaptive Search Planner | **Partial** | `SearchDecision` state machine + stage trace; not yet source-aware / cost-adaptive | RFC-076 (P2) |
-| 077 | Search Cache Intelligence | **Partial** | exact/canonical/semantic caches with mode+freshness keys and a 0.92 similarity gate; no "is the evidence still valid / source changed" judgement | RFC-077 (P2) |
+| 077 | Search Cache Intelligence | **Delivered (v1 slice)** | exact/canonical/semantic caches with mode+freshness keys and a 0.92 similarity gate; PLUS hit-time evidence validity (`EvidenceValidityPort`): a cache hit whose cited documents were deleted or moved to a newer version is rejected and recomputed — even when the invalidating write came from ANOTHER process; fail-open on port errors, bounded lookups, `cache.validity_reject_total` metric | near-duplicate semantic validity heuristics |
 | 078 | Cost Attribution | **Have** | full cost ledger, reserve→settle, reconciliation, savings views | reuse |
 | 079 | Search Benchmark | **Have** | 500-question dataset, CJK corpus, CI eval gate, ranking metrics | reuse |
 | 080 | Provider Fallback & Routing | **Partial → v1 federation slice delivered** | ADR-029 multi-key rotation, crawler failure isolation; outcome-driven circuit breaker (3 failures → open, cooldown → half-open probe, success → reset) and a per-source latency budget (planner `Latency` rejection + executor deadline cap + live p50/p95 feedback) | adaptive cost/source-aware routing (RFC-076/080 full scope) |
@@ -102,7 +102,7 @@ The Master Index orders work **Foundation → Retrieval → Intelligence → Mem
 |---|---|---|
 | P0 | 001–025 verification, 046, 054, 055, **063, 064, 062**, 061 | **Delivered**: final Master Index, bilingual RFC-062/063/064, [P0 dependency review](rfc-062-dependency-review.md), `searchos-federated` kernel (trait + registry + resource model + planner + executor + Phase 2 adapters, 56 tests) |
 | P1 | 065, 047, **066**, 050, 039, 080, 032, 079 | weighted RRF delivered and wired (federated execute + retrieval verticals); 065 vertical routing, outcome-driven per-source circuit breaker and per-source latency budget (080 slice) delivered; rest planned (047, 050, 039, 032, 079) |
-| P2 | 034, 076, 077, 078, 075, 086, 040 | **Context wiring delivered**: `context_budget` on `SearchRequest` → `SearchResponse.context`, HTTP/MCP/CLI + OpenAPI |
+| P2 | 034, 076, 077, 078, 075, 086, 040 | **Context wiring delivered** (`context_budget` end to end) and **077 cache validity delivered**: hit-time evidence-validity gate across exact/canonical/semantic/retrieval caches, cross-process safe |
 | P3 | 030, 036, 057, 058, **069, 070, 087** | planned (sessions already persist, `ff8b2be`) |
 | P4 | 038, 071, 072, 073, 074, 059, **067, 068** | **Delivered**: `searchos-context` engine + assembly, ahead of its slot (pure/additive/independently testable) |
 | P5–P6 | extensions, Gateway/Dashboard, distributed | planned / staged |
@@ -203,7 +203,7 @@ The design documents are text-only and cannot break the Rust or frontend gates.
 | 073 | Evidence Coverage | **已有** | `RequirementStatus`、`GapAnalyzer`、`coverage_gaps`、`focus_requirements`、分级 qrels / nDCG / MRR / Recall@5 | 复用 |
 | 074 | Source Independence | **部分 → 同文识别已交付** | 按 host 计数升级为「内容社区」：同一规范化文本出现在 N 个 host 上，质量门禁的多样性检查只算一个来源（`content_community_count` 并查集）；`merge_evidence` 报告同文集合与识别出的原始发布方（本地 → 最早发布 → 首见）；context 装配对跨 URL 同文去重并记录 `occurrences` | 完整引用图 / 引用链分析 |
 | 076 | Adaptive Search Planner | **部分** | `SearchDecision` 状态机 + stage trace；尚未来源感知 / 成本自适应 | RFC-076（P2） |
-| 077 | Search Cache Intelligence | **部分** | exact/canonical/semantic 缓存、mode+freshness 键、0.92 相似度门；无「证据是否仍有效 / 来源是否变化」判断 | RFC-077（P2） |
+| 077 | Search Cache Intelligence | **已交付（v1 切片）** | exact/canonical/semantic 缓存、mode+freshness 键、0.92 相似度门；另加命中时证据有效性校验（`EvidenceValidityPort`）：命中引用的文档被删除或换版本即拒绝并重算 —— 即使失效写入来自另一个进程；端口故障 fail-open、查询次数有上界、`cache.validity_reject_total` 指标 | 近重复语义有效性启发 |
 | 078 | Cost Attribution | **已有** | 完整成本账本、reserve→settle、对账、节省视图 | 复用 |
 | 079 | Search Benchmark | **已有** | 500 题数据集、中文语料、CI eval gate、排序指标 | 复用 |
 | 080 | Provider Fallback & Routing | **部分 → v1 联邦切片已交付** | ADR-029 多 key 轮换、爬虫故障隔离；执行结果驱动的熔断（3 次失败开、cooldown 半开探针、成功复位）+ 逐源延迟预算（planner `Latency` 拒绝、executor deadline 截断、实时 p50/p95 反馈） | 成本/来源自适应路由（RFC-076/080 完整范围） |
@@ -231,7 +231,7 @@ Master Index 的推进顺序是 **Foundation → Retrieval → Intelligence → 
 |---|---|---|
 | P0 | 001–025 核对、046、054、055、**063、064、062**、061 | **已交付**：最终 Master Index、双语 RFC-062/063/064、[P0 依赖审查](rfc-062-dependency-review.md)、`searchos-federated` 内核（trait + registry + 资源模型 + planner + 执行器 + Phase 2 适配器，56 测试） |
 | P1 | 065、047、**066**、050、039、080、032、079 | 带权 RRF 已交付并接线（联邦 execute + 检索垂直列表）；065 垂直路由、逐源熔断 + 逐源延迟预算（080 切片）已交付；其余计划中（047、050、039、032、079） |
-| P2 | 034、076、077、078、075、086、040 | **上下文接入已交付**：`context_budget` → `SearchResponse.context`，HTTP/MCP/CLI + OpenAPI |
+| P2 | 034、076、077、078、075、086、040 | **上下文接入已交付**（`context_budget` 全链路）；**077 缓存有效性已交付**：exact/canonical/semantic/retrieval 四层缓存的命中时证据校验，跨进程安全 |
 | P3 | 030、036、057、058、**069、070、087** | 计划中（会话已持久化，`ff8b2be`） |
 | P4 | 038、071、072、073、074、059、**067、068** | **已交付**：`searchos-context` 引擎与装配，先于其位置落地（纯函数、加法式、可独立验证） |
 | P5–P6 | 扩展、Gateway/Dashboard、分布式 | 计划中 / 分阶段 |

@@ -19,6 +19,7 @@ pub const INVARIANT_METRICS: &[&str] = &[
     "budget.reservation.leaked_total",
     "budget.reservation.reserved_age_seconds",
     "cache.cross_mode_hit_total",
+    "cache.validity_reject_total",
     "cache.hit_without_claim_total",
     "cache.evicted_total",
     "singleflight.follower_timeout_total",
@@ -494,6 +495,9 @@ fn invariant_help(name: &str) -> &'static str {
         }
         "budget.reservation.leaked_total" => "Budget reservations never settled (INV-30-03)",
         "cache.cross_mode_hit_total" => "Cache hits across incompatible modes (INV-30-05)",
+        "cache.validity_reject_total" => {
+            "Cache hits rejected by the RFC-077 evidence-validity gate"
+        }
         "cache.hit_without_claim_total" => "Cache hits without an idempotency claim (INV-30-06)",
         "singleflight.follower_timeout_total" => {
             "Singleflight followers that timed out (INV-30-07)"
