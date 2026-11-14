@@ -75,6 +75,13 @@ pub struct DecisionInput {
     /// Local documents known to be stale (RFC-004 v1.1 10.1: prefer
     /// RefreshExistingSource instead of deleting or re-buying knowledge).
     pub stale_document_ids: Vec<DocumentId>,
+    /// RFC-076 source-awareness: whether ANY healthy external source exists
+    /// right now (circuit closed, enabled, visible to the workspace).
+    /// `None` means the caller could not observe source state and the engine
+    /// must behave exactly as before; `Some(false)` lets the engine reject
+    /// external-requiring modes immediately with `ProviderUnavailable`
+    /// instead of executing into certain failure.
+    pub external_sources_healthy: Option<bool>,
 }
 
 impl DecisionInput {
@@ -449,6 +456,25 @@ impl DecisionEngine for DefaultDecisionEngine {
         // ExternalOnly: never intercepted by local cache, and no local
         // retrieval by default (RFC-004 v1.1 9.5).
         if input.mode == SearchMode::ExternalOnly {
+            // RFC-076 source-awareness: no healthy external source exists —
+            // executing would buy nothing but failure. Reject immediately
+            // with the honest reason (insufficient evidence, never a fake
+            // success). Hybrid is deliberately NOT blocked: its local
+            // evidence is still worth serving.
+            if input.external_sources_healthy == Some(false) {
+                let decision = SearchDecision::Reject {
+                    reason: DecisionReason::ProviderUnavailable,
+                };
+                let trace = self.build_trace(
+                    &trace_id,
+                    &task_id,
+                    &input,
+                    &decision,
+                    0,
+                    &Money::zero(&input.currency),
+                );
+                return Ok((decision, trace));
+            }
             let decision = SearchDecision::ExternalOnly {
                 reason: DecisionReason::ModeForcesExternal,
             };
@@ -853,6 +879,7 @@ mod tests {
             required_domains: vec![],
             excluded_domains: vec![],
             stale_document_ids: vec![],
+            external_sources_healthy: None,
         }
     }
 
@@ -862,6 +889,66 @@ mod tests {
             FreshnessPolicy::default_policy(),
             SourcePolicy::default_policy(),
         ))
+    }
+
+    // ---- RFC-076: source-aware decisions --------------------------------
+
+    #[tokio::test]
+    async fn external_only_rejects_immediately_when_no_healthy_source() {
+        let mut inp = input(
+            "What is the latest Tokio version?",
+            "general",
+            SearchMode::ExternalOnly,
+            vec![],
+        );
+        inp.external_sources_healthy = Some(false);
+        let (d, t) = engine().decide(inp).await.unwrap();
+        assert_eq!(
+            d,
+            SearchDecision::Reject {
+                reason: DecisionReason::ProviderUnavailable
+            },
+            "executing into certain failure is wasteful; reject early"
+        );
+        assert_eq!(t.selected_path, "reject");
+        assert!(t
+            .rejection_reasons
+            .contains(&"provider_unavailable".to_string()));
+        // Zero estimated cost on the trace: nothing was bought.
+        assert_eq!(t.estimated_cost.amount_micros, 0);
+    }
+
+    #[tokio::test]
+    async fn hybrid_is_not_blocked_by_unhealthy_sources() {
+        // Local evidence stays valuable when the external path is down; the
+        // pipeline degrades to partial with honest warnings instead.
+        let mut inp = input(
+            "What is the latest Tokio version?",
+            "general",
+            SearchMode::Hybrid,
+            vec![candidate("https://tokio.rs", "Tokio", true)],
+        );
+        inp.external_sources_healthy = Some(false);
+        let (d, _t) = engine().decide(inp).await.unwrap();
+        assert!(
+            !matches!(d, SearchDecision::Reject { .. }),
+            "hybrid must keep serving local evidence, got {d:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn unobserved_source_state_preserves_the_legacy_decision() {
+        let inp = input(
+            "What is the latest Tokio version?",
+            "general",
+            SearchMode::ExternalOnly,
+            vec![],
+        );
+        // external_sources_healthy defaults to None: no observation, no new
+        // rule — the decision is exactly the pre-076 one.
+        let (d, _t) = engine().decide(inp).await.unwrap();
+        assert!(d.requires_external(), "expected external, got {d:?}");
+        assert_eq!(d.reason(), &DecisionReason::ModeForcesExternal);
     }
 
     #[tokio::test]

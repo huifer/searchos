@@ -73,7 +73,7 @@ Legend: **Have** = implemented & tested · **Partial** = exists but narrower tha
 | 072 | Query Expansion | **Partial** | decomposition for comparison-with-≥2-entities + reformulated follow-up queries; no synonym/sub-question expansion | RFC-072 (P4) |
 | 073 | Evidence Coverage | **Have** | `RequirementStatus`, `GapAnalyzer`, `coverage_gaps`, `focus_requirements`, graded qrels / nDCG / MRR / Recall@5 | reuse |
 | 074 | Source Independence | **Partial → syndication detection delivered** | host-based counting upgraded to content communities: the same normalized text on N hosts is ONE source for the quality gate's diversity check (`content_community_count` union-find); `merge_evidence` reports syndication sets with the identified original publisher (local → earliest publication → first-seen); context assembly dedups cross-URL same content with `occurrences` | full citation graph / reference-chain analysis |
-| 076 | Adaptive Search Planner | **Partial** | `SearchDecision` state machine + stage trace; not yet source-aware / cost-adaptive | RFC-076 (P2) |
+| 076 | Adaptive Search Planner | **Partial → source-aware delivered** | `SearchDecision` state machine + stage trace; PLUS source-aware decisions (`DecisionInput.external_sources_healthy`): when no healthy web source exists (circuit open / none registered), external-requiring modes reject immediately with `ProviderUnavailable` instead of executing into certain failure; Hybrid keeps serving local evidence; unobserved state preserves the legacy decision | cost-adaptive path selection (quality/coverage-weighted) |
 | 077 | Search Cache Intelligence | **Delivered (v1 slice)** | exact/canonical/semantic caches with mode+freshness keys and a 0.92 similarity gate; PLUS hit-time evidence validity (`EvidenceValidityPort`): a cache hit whose cited documents were deleted or moved to a newer version is rejected and recomputed — even when the invalidating write came from ANOTHER process; fail-open on port errors, bounded lookups, `cache.validity_reject_total` metric | near-duplicate semantic validity heuristics |
 | 078 | Cost Attribution | **Have** | full cost ledger, reserve→settle, reconciliation, savings views | reuse |
 | 079 | Search Benchmark | **Have** | 500-question dataset, CJK corpus, CI eval gate, ranking metrics | reuse |
@@ -102,7 +102,7 @@ The Master Index orders work **Foundation → Retrieval → Intelligence → Mem
 |---|---|---|
 | P0 | 001–025 verification, 046, 054, 055, **063, 064, 062**, 061 | **Delivered**: final Master Index, bilingual RFC-062/063/064, [P0 dependency review](rfc-062-dependency-review.md), `searchos-federated` kernel (trait + registry + resource model + planner + executor + Phase 2 adapters, 56 tests) |
 | P1 | 065, 047, **066**, 050, 039, 080, 032, 079 | weighted RRF delivered and wired (federated execute + retrieval verticals); 065 vertical routing, outcome-driven per-source circuit breaker and per-source latency budget (080 slice) delivered; rest planned (047, 050, 039, 032, 079) |
-| P2 | 034, 076, 077, 078, 075, 086, 040 | **Context wiring delivered** (`context_budget` end to end) and **077 cache validity delivered**: hit-time evidence-validity gate across exact/canonical/semantic/retrieval caches, cross-process safe |
+| P2 | 034, 076, 077, 078, 075, 086, 040 | **Context wiring delivered** (`context_budget` end to end); **077 cache validity delivered** (hit-time evidence-validity gate, cross-process safe); **076 source-aware decisions delivered** (external-requiring modes reject when no healthy source) |
 | P3 | 030, 036, 057, 058, **069, 070, 087** | planned (sessions already persist, `ff8b2be`) |
 | P4 | 038, 071, 072, 073, 074, 059, **067, 068** | **Delivered**: `searchos-context` engine + assembly, ahead of its slot (pure/additive/independently testable) |
 | P5–P6 | extensions, Gateway/Dashboard, distributed | planned / staged |
@@ -202,7 +202,7 @@ The design documents are text-only and cannot break the Rust or frontend gates.
 | 072 | Query Expansion | **部分** | 比较类 ≥2 实体拆解 + 追问改写；无同义词/子问题扩展 | RFC-072（P4） |
 | 073 | Evidence Coverage | **已有** | `RequirementStatus`、`GapAnalyzer`、`coverage_gaps`、`focus_requirements`、分级 qrels / nDCG / MRR / Recall@5 | 复用 |
 | 074 | Source Independence | **部分 → 同文识别已交付** | 按 host 计数升级为「内容社区」：同一规范化文本出现在 N 个 host 上，质量门禁的多样性检查只算一个来源（`content_community_count` 并查集）；`merge_evidence` 报告同文集合与识别出的原始发布方（本地 → 最早发布 → 首见）；context 装配对跨 URL 同文去重并记录 `occurrences` | 完整引用图 / 引用链分析 |
-| 076 | Adaptive Search Planner | **部分** | `SearchDecision` 状态机 + stage trace；尚未来源感知 / 成本自适应 | RFC-076（P2） |
+| 076 | Adaptive Search Planner | **部分 → 来源感知已交付** | `SearchDecision` 状态机 + stage trace；另加来源感知决策（`DecisionInput.external_sources_healthy`）：无健康外部来源（熔断打开 / 未注册）时，强制外部模式立即以 `ProviderUnavailable` 拒绝，而不是执行必败计划；Hybrid 继续提供本地证据；未观察状态保持既有决策 | 成本自适应路径选择（按质量/覆盖加权） |
 | 077 | Search Cache Intelligence | **已交付（v1 切片）** | exact/canonical/semantic 缓存、mode+freshness 键、0.92 相似度门；另加命中时证据有效性校验（`EvidenceValidityPort`）：命中引用的文档被删除或换版本即拒绝并重算 —— 即使失效写入来自另一个进程；端口故障 fail-open、查询次数有上界、`cache.validity_reject_total` 指标 | 近重复语义有效性启发 |
 | 078 | Cost Attribution | **已有** | 完整成本账本、reserve→settle、对账、节省视图 | 复用 |
 | 079 | Search Benchmark | **已有** | 500 题数据集、中文语料、CI eval gate、排序指标 | 复用 |
@@ -231,7 +231,7 @@ Master Index 的推进顺序是 **Foundation → Retrieval → Intelligence → 
 |---|---|---|
 | P0 | 001–025 核对、046、054、055、**063、064、062**、061 | **已交付**：最终 Master Index、双语 RFC-062/063/064、[P0 依赖审查](rfc-062-dependency-review.md)、`searchos-federated` 内核（trait + registry + 资源模型 + planner + 执行器 + Phase 2 适配器，56 测试） |
 | P1 | 065、047、**066**、050、039、080、032、079 | 带权 RRF 已交付并接线（联邦 execute + 检索垂直列表）；065 垂直路由、逐源熔断 + 逐源延迟预算（080 切片）已交付；其余计划中（047、050、039、032、079） |
-| P2 | 034、076、077、078、075、086、040 | **上下文接入已交付**（`context_budget` 全链路）；**077 缓存有效性已交付**：exact/canonical/semantic/retrieval 四层缓存的命中时证据校验，跨进程安全 |
+| P2 | 034、076、077、078、075、086、040 | **上下文接入已交付**（`context_budget` 全链路）；**077 缓存有效性已交付**（四层缓存命中时证据校验，跨进程安全）；**076 来源感知决策已交付**（无健康来源时强制外部模式直接拒绝） |
 | P3 | 030、036、057、058、**069、070、087** | 计划中（会话已持久化，`ff8b2be`） |
 | P4 | 038、071、072、073、074、059、**067、068** | **已交付**：`searchos-context` 引擎与装配，先于其位置落地（纯函数、加法式、可独立验证） |
 | P5–P6 | 扩展、Gateway/Dashboard、分布式 | 计划中 / 分阶段 |

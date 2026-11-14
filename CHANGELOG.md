@@ -101,6 +101,20 @@ multi-arch images, and attaches the matching section of this file.
   `federation_execution_summary_survives_trace_re_record` and the extended
   `federated_execute_mode_bills_once_and_matches_legacy_results` verify both
   paths.
+- **Source-aware adaptive decisions (RFC-076 slice).** `DecisionInput` gains
+  `external_sources_healthy` and the decision engine acts on it: when no
+  healthy web source exists right now (every circuit open, or none
+  registered/visible), external-REQUIRING modes (`ExternalOnly` /
+  `ExternalFirst`) reject immediately with the honest
+  `ProviderUnavailable` reason instead of executing into certain failure and
+  burning the reservation; `Hybrid` deliberately keeps serving local
+  evidence (degradation, never a disguised success), and an unobserved state
+  (`None`) preserves the legacy decision bit-for-bit. The pipeline feeds the
+  flag from the live federated registry. Gates:
+  `external_only_rejects_immediately_when_no_healthy_source`,
+  `hybrid_is_not_blocked_by_unhealthy_sources`,
+  `unobserved_source_state_preserves_the_legacy_decision`, and the
+  live-pipeline gate `decision_rejects_external_only_when_all_sources_are_tripped`.
 - **Cache-reuse validity gate (RFC-077 slice).** Every cache layer (exact /
   canonical / semantic / retrieval) now validates a HIT against the durable
   store before reuse: an `EvidenceValidityPort` reports each cited

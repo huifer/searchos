@@ -1865,6 +1865,28 @@ async fn run_pipeline(
         source_policy.clone(),
     );
     let engine = searchos_decision::DefaultDecisionEngine::new(gate);
+    // RFC-076 source-awareness: observe whether any healthy web source
+    // exists right now (enabled + circuit closed, visible to this
+    // workspace). `allow_external = false` keeps the existing offline path
+    // untouched (its warning contract is asserted by tests); no registry →
+    // `None` (decision behaves exactly as before).
+    let external_sources_healthy = if deps.allow_external {
+        deps.federation_registry.as_ref().map(|registry| {
+            registry
+                .list(
+                    &searchos_federated::SourceFilter {
+                        enabled_only: true,
+                        categories: vec![searchos_federated::SourceCategory::WebSearch],
+                        ..Default::default()
+                    },
+                    &req.workspace_id,
+                )
+                .iter()
+                .any(|descriptor| !descriptor.reliability.circuit_open)
+        })
+    } else {
+        None
+    };
     let estimated_external = estimator
         .estimate_request(
             deps.router
@@ -1888,6 +1910,7 @@ async fn run_pipeline(
         required_domains: req.constraints.required_domains.clone(),
         excluded_domains: req.constraints.excluded_domains.clone(),
         stale_document_ids: stale_document_ids.clone(),
+        external_sources_healthy,
     };
     let (mut decision, mut trace) = engine.decide(decision_input).await?;
     // Offline / provider-unavailable must never be disguised as a local

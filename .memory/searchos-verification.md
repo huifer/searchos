@@ -190,6 +190,16 @@ The SearchOS implementation (`~/git_repo/searchos`) is verified by these command
   `version_change_in_another_process_rejects_the_cached_hit`. Full suite
   **708 passed / 0 failed** (81 suites); clippy/fmt/route scan green.
 
+- **RFC-076 source-aware slice (2026-11-14):** `DecisionInput.external_sources_healthy`
+  (None = unobserved, legacy behaviour; Some(false) = no healthy web source).
+  Engine rule: external-REQUIRING modes reject immediately
+  (`ProviderUnavailable`), Hybrid is NOT blocked. Pipeline computes the flag
+  from the live federated registry (web sources with circuit closed) and
+  keeps `allow_external=false` on the existing offline path. Gates: 3 engine
+  tests + `decision_rejects_external_only_when_all_sources_are_tripped`.
+  Full suite **712 passed / 0 failed** (81 suites); clippy/fmt/route scan
+  green.
+
 **Known environment notes:**
 - LanceDB requires `protoc` at build time (`brew install protobuf`).
 - Live network tests (fetch of https://example.com) tolerate sandbox timeouts by design.

@@ -1656,3 +1656,151 @@ async fn context_assembly_collapses_cross_host_syndicated_content() {
         "the occurrence is recorded, not lost"
     );
 }
+
+/// RFC-076 source-aware decision: when every external source is tripped, an
+/// ExternalOnly search is rejected BEFORE any provider call — the honest
+/// `ProviderUnavailable` reason instead of executing into certain failure.
+#[tokio::test]
+async fn decision_rejects_external_only_when_all_sources_are_tripped() {
+    use async_trait::async_trait;
+    use searchos_provider::error::ProviderError;
+    use searchos_provider::traits::{ProviderResult, SearchParams, SearchProvider};
+    use std::sync::atomic::Ordering;
+
+    struct QuietProvider {
+        calls: Arc<AtomicUsize>,
+    }
+    #[async_trait]
+    impl SearchProvider for QuietProvider {
+        fn id(&self) -> &str {
+            "quiet_web"
+        }
+        fn capabilities(&self) -> searchos_domain::provider::ProviderCapabilities {
+            searchos_domain::provider::ProviderCapabilities {
+                search: true,
+                ..Default::default()
+            }
+        }
+        async fn search(&self, _params: &SearchParams) -> Result<ProviderResult, ProviderError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(ProviderResult {
+                entries: vec![searchos_provider::traits::SearchResultEntry {
+                    title: Some("never bought".into()),
+                    url: "https://quiet.dev/x".into(),
+                    content: "provider should not be called".into(),
+                    score: 0.9,
+                    published_at: None,
+                    raw_content: None,
+                }],
+                duration_ms: 1,
+                bytes_transferred: 32,
+            })
+        }
+        async fn health_check(&self) -> Result<bool, ProviderError> {
+            Ok(true)
+        }
+    }
+
+    let mut cfg = SearchOsConfig::default();
+    let dir = tempfile::tempdir().unwrap();
+    cfg.app.data_dir = dir.path().to_path_buf();
+    cfg.federation.strategy = "execute".into();
+    let runtime = searchos_core::SearchOsRuntime::init(cfg).await.unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let provider: Arc<dyn SearchProvider> = Arc::new(QuietProvider {
+        calls: Arc::clone(&calls),
+    });
+    runtime
+        .provider_registry
+        .register(searchos_provider::RegisteredProvider::from_search(
+            provider.clone(),
+            5_000,
+            "USD",
+        ));
+    let registry = Arc::new(searchos_federated::InMemorySourceRegistry::new());
+    registry
+        .register(Arc::new(searchos_federated::WebSearchProviderSource::new(
+            provider.clone(),
+            searchos_federated::SourceScope::Global,
+            50,
+            5_000,
+            searchos_federated::SourceLatencyProfile::default(),
+        )) as Arc<dyn searchos_federated::SearchSource>)
+        .unwrap();
+    // The service under test must be rebuilt so its deps carry THIS registry
+    // (the runtime built its own with an empty one).
+    let deps = SearchDependencies {
+        profiles: searchos_policy::ProfileRegistry::builtin(),
+        quality: searchos_policy::QualityPolicy::default(),
+        freshness: searchos_policy::FreshnessPolicy::default_policy(),
+        source: searchos_policy::SourcePolicy::default_policy(),
+        cost_config: searchos_cost::CostModelConfig::default_config(),
+        bm25: runtime.fulltext.clone(),
+        vector: Some(runtime.vector.clone()),
+        hybrid: Some(runtime.hybrid.clone()),
+        embedder: runtime.embedder.clone(),
+        canonical_cache: runtime.canonical_cache.clone(),
+        semantic_cache: runtime.semantic_cache.clone(),
+        retrieval_cache: runtime.retrieval_cache.clone(),
+        embedding_cache: runtime.embedding_cache.clone(),
+        rerank_cache: runtime.rerank_cache.clone(),
+        router: runtime.provider_registry.clone(),
+        search_providers: vec![provider],
+        local_port: runtime.local_port(),
+        traces: runtime.traces(),
+        cost_sink: runtime.cost_sink(),
+        task_recorder: runtime.task_recorder(),
+        singleflight: Arc::new(SingleflightCoordinator::new()),
+        cache: runtime.exact_cache.clone(),
+        validity: None,
+        negative_cache: runtime.negative_cache.clone(),
+        semantic_dedup: true,
+        incremental: true,
+        query_expansion: true,
+        reranking: true,
+        allow_external: true,
+        promotion: None,
+        session_store: None,
+        federation_registry: Some(Arc::clone(&registry)),
+        federation_strategy: "execute".into(),
+        federation_limits: searchos_domain::FederationLimits::default(),
+    };
+    let svc = SearchServiceImpl::new(Arc::new(deps));
+
+    // First: a healthy source serves an ExternalOnly search normally.
+    let healthy = svc
+        .search(request("adaptive probe one", SearchMode::ExternalOnly))
+        .await
+        .unwrap();
+    assert!(calls.load(Ordering::SeqCst) >= 1, "healthy source executes");
+    let healthy_calls = calls.load(Ordering::SeqCst);
+    assert_eq!(healthy.decision.path, "external");
+
+    // Trip the only source's circuit (three consecutive failures).
+    let source_id = searchos_domain::ids::SourceId::new("quiet_web");
+    for _ in 0..3 {
+        registry.record_outcome(&source_id, false);
+    }
+
+    // Now the DECISION itself must reject before any execution.
+    let blocked = svc
+        .search(request("adaptive probe two", SearchMode::ExternalOnly))
+        .await
+        .unwrap();
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        healthy_calls,
+        "a tripped source is never called again"
+    );
+    assert_eq!(
+        blocked.decision.path, "reject",
+        "the decision is source-aware: {:?}",
+        blocked.decision
+    );
+    assert_eq!(blocked.decision.reason, "provider_unavailable");
+    assert_eq!(
+        blocked.status,
+        searchos_domain::response::SearchStatus::InsufficientEvidence,
+        "honest insufficiency, never a disguised success"
+    );
+}
