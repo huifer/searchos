@@ -787,6 +787,7 @@ impl SearchOsRuntime {
                 config.ingest.max_bytes_per_batch,
             )
             .with_redaction(config.ingest.redact_secrets)
+            .with_pii_redaction(config.ingest.redact_pii)
             .with_job_port(ingest_jobs),
         );
 

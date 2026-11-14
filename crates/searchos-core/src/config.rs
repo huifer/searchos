@@ -459,6 +459,10 @@ pub struct IngestConfig {
     /// RFC-087: redact secrets at INGEST time (secure by default).
     #[serde(default = "default_redact_secrets")]
     pub redact_secrets: bool,
+    /// RFC-087: redact PII (email / card / E.164 phone) at INGEST time.
+    /// Opt-in: contact details are usually legitimate content.
+    #[serde(default)]
+    pub redact_pii: bool,
 }
 
 fn default_redact_secrets() -> bool {
@@ -471,6 +475,7 @@ impl Default for IngestConfig {
             max_bytes_per_document: 20 * 1024 * 1024,
             max_bytes_per_batch: 200 * 1024 * 1024,
             redact_secrets: true,
+            redact_pii: false,
         }
     }
 }
@@ -743,6 +748,7 @@ pub const ALL_CONFIG_FIELDS: &[&str] = &[
     "ingest.max_bytes_per_document",
     "ingest.max_bytes_per_batch",
     "ingest.redact_secrets",
+    "ingest.redact_pii",
     "memory.enabled",
     "memory.embedding.provider",
     "memory.embedding.model",
@@ -851,6 +857,7 @@ pub const CONSUMED_CONFIG_FIELDS: &[&str] = &[
     "ingest.max_bytes_per_document",
     "ingest.max_bytes_per_batch",
     "ingest.redact_secrets",
+    "ingest.redact_pii",
     "memory.enabled",
     "memory.embedding.provider",
     "memory.embedding.model",

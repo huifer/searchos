@@ -524,3 +524,59 @@ async fn ingest_time_secret_redaction_is_wired_through_config() {
         "with_redaction(false) disables the whole pass"
     );
 }
+
+/// RFC-087: the opt-in PII pass is consumed from config end to end.
+#[tokio::test]
+async fn pii_redaction_follows_the_config_flag() {
+    // OFF (default): contact details stay retrievable knowledge.
+    let dir_off = tempfile::tempdir().unwrap();
+    let mut cfg_off = SearchOsConfig::default();
+    cfg_off.app.data_dir = dir_off.path().to_path_buf();
+    let rt_off = searchos_core::SearchOsRuntime::init(cfg_off).await.unwrap();
+    let email = "ops-team@reserved-example.org";
+    let text = format!("ping {email} about the quarterly review notes");
+    let mut req = text_request("default");
+    req.source_key = Some("notes/oncall".into());
+    let doc_off = rt_off
+        .application
+        .ingest_service
+        .ingest_text(req, &text)
+        .await
+        .unwrap();
+    assert!(
+        doc_off.redaction.as_ref().map(|r| r.redacted) != Some(true),
+        "PII pass is opt-in"
+    );
+
+    // ON: the same text loses its contact detail.
+    let dir_on = tempfile::tempdir().unwrap();
+    let mut cfg_on = SearchOsConfig::default();
+    cfg_on.app.data_dir = dir_on.path().to_path_buf();
+    cfg_on.ingest.redact_pii = true;
+    let rt_on = searchos_core::SearchOsRuntime::init(cfg_on).await.unwrap();
+    let mut req_on = text_request("default");
+    req_on.source_key = Some("notes/oncall".into());
+    let doc_on = rt_on
+        .application
+        .ingest_service
+        .ingest_text(req_on, &text)
+        .await
+        .unwrap();
+    let report = doc_on.redaction.as_ref().expect("PII report returned");
+    assert!(report.hits.iter().any(|h| h.rule == "email"));
+    rt_on.process_outbox(256).await.unwrap();
+    let stored_via_search = rt_on
+        .application
+        .search_service
+        .search(request("quarterly review notes", "default"))
+        .await
+        .unwrap();
+    let snippets: String = stored_via_search
+        .results
+        .iter()
+        .map(|r| r.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(!snippets.contains(email), "{snippets}");
+    assert!(snippets.contains("[REDACTED:email]"), "{snippets}");
+}

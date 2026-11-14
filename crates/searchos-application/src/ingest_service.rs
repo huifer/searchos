@@ -195,6 +195,9 @@ pub struct IngestServiceImpl {
     max_bytes_per_batch: usize,
     /// RFC-087: ingest-time secret redaction (secure by default).
     redact_secrets: bool,
+    /// RFC-087: ingest-time PII redaction (OPT-IN: contact details are
+    /// usually legitimate knowledge content).
+    redact_pii: bool,
 }
 
 impl IngestServiceImpl {
@@ -206,6 +209,7 @@ impl IngestServiceImpl {
             max_bytes_per_document: DEFAULT_MAX_BYTES_PER_DOCUMENT,
             max_bytes_per_batch: DEFAULT_MAX_BYTES_PER_BATCH,
             redact_secrets: true,
+            redact_pii: false,
         }
     }
 
@@ -213,6 +217,13 @@ impl IngestServiceImpl {
     /// operator decision; the default keeps secrets out of stored knowledge.
     pub fn with_redaction(mut self, enabled: bool) -> Self {
         self.redact_secrets = enabled;
+        self
+    }
+
+    /// Configures RFC-087 ingest-time PII redaction (emails, Luhn-valid
+    /// cards, E.164 phones). Opt-in by default-off decision.
+    pub fn with_pii_redaction(mut self, enabled: bool) -> Self {
+        self.redact_pii = enabled;
         self
     }
 
@@ -283,13 +294,23 @@ impl IngestServiceImpl {
         // RFC-087: redact BEFORE hashing / persistence / indexing, on both
         // the raw text and the markdown form. Stable markers keep re-ingest
         // idempotent; the report is returned to the caller for auditing.
-        let (text, markdown, redaction) = if self.redact_secrets {
+        let (mut text, mut markdown, mut redaction) = if self.redact_secrets {
             let (text, report) = crate::redaction::redact_secrets(&normalized.text);
             let (markdown, _) = crate::redaction::redact_secrets(&normalized.markdown);
             (text, markdown, Some(report))
         } else {
             (normalized.text, normalized.markdown, None)
         };
+        if self.redact_pii {
+            let (t, pii_report) = crate::redaction::redact_pii(&text);
+            let (m, _) = crate::redaction::redact_pii(&markdown);
+            text = t;
+            markdown = m;
+            redaction = Some(match redaction {
+                Some(previous) => crate::redaction::merge_reports(previous, pii_report),
+                None => pii_report,
+            });
+        }
         if text.trim().is_empty() {
             return Err(SearchOsError::Validation(validation(
                 "content",
@@ -1013,6 +1034,80 @@ mod tests {
         assert_eq!(
             again.content_hash, doc.content_hash,
             "the redacted form hashes identically across re-ingest"
+        );
+    }
+
+    #[tokio::test]
+    async fn pii_redaction_is_opt_in_and_merges_with_secrets() {
+        let objects = Arc::new(MemObjects::default());
+        let port = Arc::new(MemDocPort::default());
+        let svc = IngestServiceImpl::new(objects.clone(), port)
+            .with_redaction(true)
+            .with_pii_redaction(true);
+        let email = "ops-team@reserved-example.org";
+        let text = format!("secret = Ab3Xy9Zq12LmN8 ping {email} about Key1Abc2Def3 billing");
+        let doc = svc
+            .ingest_text(
+                IngestRequest::new(searchos_domain::ids::WorkspaceId::new("default")),
+                &text,
+            )
+            .await
+            .unwrap();
+        let report = doc.redaction.as_ref().expect("report returned");
+        assert!(
+            report.hits.iter().any(|h| h.rule == "email"),
+            "the PII pass ran: {:?}",
+            report.hits
+        );
+        assert!(
+            report
+                .hits
+                .iter()
+                .any(|h| h.rule == "credential_assignment"),
+            "the secret pass ran: {:?}",
+            report.hits
+        );
+        let stored: String = objects
+            .files
+            .lock()
+            .unwrap()
+            .values()
+            .map(|v| String::from_utf8_lossy(v).to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!stored.contains(email), "the email is gone from storage");
+        assert!(stored.contains("[REDACTED:email]"));
+    }
+
+    #[tokio::test]
+    async fn pii_redaction_is_off_by_default() {
+        let objects = Arc::new(MemObjects::default());
+        let port = Arc::new(MemDocPort::default());
+        let svc = IngestServiceImpl::new(objects.clone(), port).with_redaction(true);
+        let email = "ops-team@reserved-example.org";
+        let text = format!("ping {email} about the quarterly review notes");
+        let doc = svc
+            .ingest_text(
+                IngestRequest::new(searchos_domain::ids::WorkspaceId::new("default")),
+                &text,
+            )
+            .await
+            .unwrap();
+        assert!(
+            doc.redaction.as_ref().map(|r| r.redacted) != Some(true),
+            "no secret shape in the text"
+        );
+        let stored: String = objects
+            .files
+            .lock()
+            .unwrap()
+            .values()
+            .map(|v| String::from_utf8_lossy(v).to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            stored.contains(email),
+            "contact details are legitimate content until PII is opted in"
         );
     }
 

@@ -111,9 +111,19 @@ multi-arch images, and attaches the matching section of this file.
   idempotent (re-ingesting the original text hashes identically), ordinary
   prose is never touched (a credential value must contain a digit), and
   `ingest.redact_secrets` (default **true**, explicit opt-out) is consumed per
-  INV-30-20. Gates: seven rule tests plus
+  INV-30-20. An OPT-IN PII pass (`ingest.redact_pii`, default **false** — contact
+  details are usually legitimate knowledge) extends the same pass with
+  email addresses, Luhn-validated card numbers and E.164 phone numbers,
+  merged into one report; the rules version is now **2**. Gates:
+  `email_addresses_are_redacted_by_the_pii_pass`,
+  `luhn_valid_cards_are_redacted_and_invalid_ones_survive`,
+  `e164_phones_are_redacted`, `the_pii_pass_leaves_ordinary_prose_alone`,
+  `secrets_and_pii_merge_into_one_report`, the ingest-seam tests
+  `pii_redaction_is_opt_in_and_merges_with_secrets` /
+  `pii_redaction_is_off_by_default`, and the runtime-level
+  `pii_redaction_follows_the_config_flag`. Secret-pass gates:
   `ingest_redacts_secrets_before_object_write`,
-  `redaction_can_be_disabled_explicitly` and the runtime-level
+  `redaction_can_be_disabled_explicitly` and
   `ingest_time_secret_redaction_is_wired_through_config`.
 - **Source-aware adaptive decisions (RFC-076 slice).** `DecisionInput` gains
   `external_sources_healthy` and the decision engine acts on it: when no

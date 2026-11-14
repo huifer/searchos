@@ -217,6 +217,14 @@ The SearchOS implementation (`~/git_repo/searchos`) is verified by these command
   Gates: 7 rule unit tests + 2 ingest-service tests +
   `ingest_time_secret_redaction_is_wired_through_config`. Full suite **722
   passed / 0 failed** (81 suites); clippy/fmt/route scan green.
+  **PII extension (same day, rules v2):** opt-in `ingest.redact_pii`
+  (default OFF — contact details are legitimate content) adds email /
+  Luhn-validated card / E.164 phone rules via `redact_pii` +
+  `merge_reports`; regex crate has NO look-around (credit-card boundaries
+  are checked in code). Gates: 5 redaction PII tests +
+  `pii_redaction_is_opt_in_and_merges_with_secrets` /
+  `pii_redaction_is_off_by_default` / `pii_redaction_follows_the_config_flag`.
+  Full suite **730 passed / 0 failed**; clippy/fmt/route scan green.
   **Concurrent-session incident #2:** a foreign process rewrote
   `session_source.rs` and inserted a duplicate runtime deps block (broke the
   build). Its full diff was saved to `/tmp/foreign_session_changes.patch`
