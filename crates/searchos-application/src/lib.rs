@@ -18,6 +18,7 @@ pub mod policy;
 pub mod promotion_service;
 pub mod redaction;
 pub mod replay;
+pub mod research;
 pub mod search_service;
 pub mod session;
 pub mod session_source;

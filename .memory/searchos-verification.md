@@ -337,6 +337,21 @@ The SearchOS implementation (`~/git_repo/searchos`) is verified by these command
   must set `budget.max_acquisition_rounds = 0`. Full suite **770 passed /
   0 failed** (84 suites); clippy/fmt/route scan green.
 
+- **RFC-071 research workspace slice (2026-11-15):** `SearchSession` gained
+  `evidence: Vec<WorkspaceEvidence>` (serde default; persisted with the
+  existing agent_sessions payload — NO new migration);
+  `record_turn_with_evidence` dedupes by URL and bounds at
+  turns×20; `research.rs` runner (`deep_search`) stops on Covered / RoundCap
+  / BudgetExhausted, judged from the LAST ROUND's gaps (a lagging/stub
+  session must not define coverage); `record_session_turn` helper is shared
+  by the pipeline tail AND the exact-cache hit branch (a cache-served turn
+  still advances the workspace — found by the dedupe gate). HTTP
+  `POST /research/run` + `GET /research/{session_id}`; CLI
+  `research run|show` (show takes a POSITIONAL session id). Gates: 5
+  integration (covered, dedupe/across turns, restart, stub round-cap, stub
+  budget) + HTTP round trip. Full suite **776 passed / 0 failed**
+  (85 suites); clippy/fmt/route scan green.
+
 **Known environment notes:**
 - LanceDB requires `protoc` at build time (`brew install protobuf`).
 - Live network tests (fetch of https://example.com) tolerate sandbox timeouts by design.

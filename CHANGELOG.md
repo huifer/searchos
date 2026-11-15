@@ -125,6 +125,22 @@ multi-arch images, and attaches the matching section of this file.
   `ingest_redacts_secrets_before_object_write`,
   `redaction_can_be_disabled_explicitly` and
   `ingest_time_secret_redaction_is_wired_through_config`.
+- **Deep-search research workspace (RFC-071 slice).** A research task is a
+  durable SESSION with an accumulated workspace: each turn's served results
+  become `WorkspaceEvidence` (deduped by URL, bounded), and
+  `ResearchService::deep_search` runs up to N full searches, re-targeting
+  the final gate's open requirements as the next round's
+  `focus_requirements`. The loop stops honestly on coverage, the round cap,
+  or TOTAL budget exhaustion (a round is never started past the budget).
+  Surfaces: `POST /research/run`, `GET /research/{session_id}` (workspace
+  inspection), CLI `searchos research run|show`; cache-served turns also
+  advance the workspace, and the evidence survives a restart with the
+  session. Gates: `deep_search_records_rounds_and_stops_when_covered`,
+  `evidence_accumulates_across_turns_and_dedupes_by_url`,
+  `workspace_survives_a_runtime_restart`,
+  `the_runner_stops_on_the_round_cap`,
+  `the_runner_stops_when_the_total_budget_is_spent`, and the HTTP round trip
+  `research_endpoints_run_and_inspect_the_workspace`.
 - **Query expansion: synonyms + sub-questions (RFC-072 slice).** A shared
   `SYNONYMS` table (also usable for normalization) drives
   `synonym_variants` (one-term replacement, whitespace/punctuation

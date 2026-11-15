@@ -178,6 +178,8 @@ pub struct SearchOsRuntime {
     /// search service (shared Arc state, offline replay by construction).
     pub search_deps: Arc<searchos_application::search_service::SearchDependencies>,
     pub replay: Arc<searchos_application::replay::ReplayService>,
+    /// RFC-071: bounded deep-search runner over the session workspace.
+    pub research: Arc<searchos_application::research::ResearchService>,
     /// RFC-034: live policy state (hot reload / rollback).
     pub policy_state: Arc<searchos_application::policy::PolicyState>,
 }
@@ -849,6 +851,12 @@ impl SearchOsRuntime {
         let search_deps = Arc::clone(&deps);
         let search_service: Arc<dyn searchos_application::search_service::SearchService> =
             Arc::new(searchos_application::search_service::SearchServiceImpl::new(deps));
+        // RFC-071: deep-search research runner over the same service and the
+        // durable session workspace.
+        let research = Arc::new(searchos_application::research::ResearchService::new(
+            Arc::clone(&search_service),
+            Arc::clone(&session_store),
+        ));
         // RFC-040/075/086: replay, policy simulation and evaluation.
         let replay = Arc::new(searchos_application::replay::ReplayService::new(
             Arc::clone(&search_deps),
@@ -1008,6 +1016,7 @@ impl SearchOsRuntime {
             incremental: config.search.incremental,
             search_deps,
             replay,
+            research,
             policy_state,
         });
 

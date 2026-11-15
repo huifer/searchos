@@ -175,6 +175,11 @@ enum Command {
         #[command(subcommand)]
         cmd: PolicyCmd,
     },
+    /// Deep-search research workspace (RFC-071)
+    Research {
+        #[command(subcommand)]
+        cmd: ResearchCmd,
+    },
     /// Operational statistics (RFC-015 15.3)
     Stats {
         #[command(subcommand)]
@@ -338,6 +343,33 @@ enum ProviderCmd {
     },
     /// Per-provider circuit state and rate-limit status
     Health,
+}
+
+/// Deep-search research commands (RFC-071).
+#[derive(Subcommand)]
+enum ResearchCmd {
+    /// Run a bounded deep search (rounds follow the open requirements)
+    Run {
+        /// Research question
+        query: String,
+        /// Workspace that owns the research task
+        #[arg(long, default_value = "default")]
+        workspace: String,
+        /// Maximum rounds (1-8)
+        #[arg(long, default_value_t = 3)]
+        max_rounds: u32,
+        /// Search profile id
+        #[arg(long, default_value = "general")]
+        profile: String,
+        /// Resume an existing research workspace
+        #[arg(long)]
+        session: Option<String>,
+    },
+    /// Show a research workspace (turns + accumulated evidence)
+    Show {
+        /// Session id (from `research run`)
+        session: String,
+    },
 }
 
 /// Versioned policy management commands (RFC-034).
@@ -1186,6 +1218,46 @@ async fn run(cli: Cli) -> Result<(), SearchOsError> {
                 }
             }
         }
+        Command::Research { cmd } => match cmd {
+            ResearchCmd::Run {
+                query,
+                workspace,
+                max_rounds,
+                profile,
+                session,
+            } => {
+                let rt = runtime(cli_ref).await?;
+                let req = searchos_application::research::research_request(
+                    query,
+                    profile,
+                    searchos_domain::request::SearchMode::LocalFirst,
+                    workspace,
+                    100_000,
+                    5,
+                )?;
+                let session_id = session
+                    .clone()
+                    .unwrap_or_else(|| searchos_domain::new_id("research"));
+                let run = rt
+                    .research
+                    .deep_search(req, &session_id, *max_rounds)
+                    .await?;
+                print(&serde_json::to_value(&run).unwrap_or_default(), format);
+                Ok(())
+            }
+            ResearchCmd::Show { session } => {
+                let rt = runtime(cli_ref).await?;
+                let workspace = rt
+                    .session_store
+                    .get(session)
+                    .ok_or_else(|| SearchOsError::validation("session", "UNKNOWN_SESSION"))?;
+                print(
+                    &serde_json::to_value(&workspace).unwrap_or_default(),
+                    format,
+                );
+                Ok(())
+            }
+        },
         Command::Stats { cmd } => {
             let rt = runtime(cli_ref).await?;
             let snapshot = searchos_observability::MetricsRegistry::global().snapshot();

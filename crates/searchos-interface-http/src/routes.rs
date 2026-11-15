@@ -403,6 +403,9 @@ pub fn api_route_table() -> Vec<RouteSpec> {
         RouteSpec::new("POST", "/replay/{trace_id}", post(replay_trace)),
         // RFC-086: batch replay evaluation.
         RouteSpec::new("POST", "/evaluation/replay", post(evaluate_replays)),
+        // RFC-071: bounded deep-search research runs + workspace inspection.
+        RouteSpec::new("POST", "/research/run", post(research_run)),
+        RouteSpec::new("GET", "/research/{session_id}", get(research_workspace)),
         // RFC-070: memory lifecycle (expire + consolidate).
         RouteSpec::new("POST", "/memory/lifecycle", post(memory_lifecycle)),
         // RFC-034: versioned policy management (read + write + history).
@@ -2196,6 +2199,110 @@ async fn evaluate_replays(
     })?))
 }
 
+/// `POST /research/run` — bounded deep search (RFC-071).
+///
+/// Each round is a full search recorded as a turn; the final gate's open
+/// requirements become the next round's focus. Stops on coverage, the round
+/// cap, or TOTAL budget exhaustion.
+async fn research_run(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    state.authorize(&headers)?;
+    let workspace = body
+        .get("workspace")
+        .and_then(|v| v.as_str())
+        .unwrap_or("default");
+    state.authorize_workspace(&headers, workspace)?;
+    let query = body.get("query").and_then(|v| v.as_str()).ok_or_else(|| {
+        ApiError::from_domain(&searchos_domain::SearchOsError::Validation(
+            searchos_domain::ValidationError {
+                field: "query".into(),
+                message: "MISSING_QUERY".into(),
+            },
+        ))
+    })?;
+    let profile = body
+        .get("profile")
+        .and_then(|v| v.as_str())
+        .unwrap_or("general");
+    let mode = body
+        .get("mode")
+        .and_then(|v| v.as_str())
+        .map(|m| m.to_string())
+        .unwrap_or_else(|| "local_first".into());
+    let mode = searchos_domain::request::SearchMode::parse(&mode).map_err(|_| {
+        ApiError::from_domain(&searchos_domain::SearchOsError::Validation(
+            searchos_domain::ValidationError {
+                field: "mode".into(),
+                message: "UNKNOWN_MODE".into(),
+            },
+        ))
+    })?;
+    let max_rounds = body
+        .get("max_rounds")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(3)
+        .clamp(1, 8) as u32;
+    let max_total_cost_micros = body
+        .get("max_total_cost_micros")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(100_000);
+    let max_external_queries = body
+        .get("max_external_queries")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(5) as u32;
+    let session_id = body
+        .get("session_id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| searchos_domain::new_id("research"));
+    let req = searchos_application::research::research_request(
+        query,
+        profile,
+        mode,
+        workspace,
+        max_total_cost_micros,
+        max_external_queries,
+    )
+    .map_err(|e| ApiError::from_domain(&e))?;
+    let run = state
+        .runtime
+        .research
+        .deep_search(req, &session_id, max_rounds)
+        .await
+        .map_err(|e| ApiError::from_domain(&e))?;
+    Ok(Json(serde_json::to_value(run).map_err(|e| {
+        ApiError::from_domain(&searchos_domain::SearchOsError::Internal(e.to_string()))
+    })?))
+}
+
+/// `GET /research/{session_id}` — the accumulated research workspace.
+async fn research_workspace(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Path(session_id): axum::extract::Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    state.authorize(&headers)?;
+    let session = state
+        .runtime
+        .session_store
+        .get(&session_id)
+        .ok_or_else(|| {
+            ApiError::from_domain(&searchos_domain::SearchOsError::Validation(
+                searchos_domain::ValidationError {
+                    field: "session_id".into(),
+                    message: "UNKNOWN_SESSION".into(),
+                },
+            ))
+        })?;
+    state.authorize_workspace(&headers, &session.workspace_id)?;
+    Ok(Json(serde_json::to_value(session).map_err(|e| {
+        ApiError::from_domain(&searchos_domain::SearchOsError::Internal(e.to_string()))
+    })?))
+}
+
 /// RFC-070: run the memory lifecycle (expire + merge duplicates).
 /// `apply = false` (default) is a dry run — nothing is deleted.
 async fn memory_lifecycle(
@@ -3066,6 +3173,84 @@ mod tests {
             .unwrap()
             .iter()
             .all(|s| s["enabled"] == true));
+    }
+
+    #[tokio::test]
+    async fn research_endpoints_run_and_inspect_the_workspace() {
+        let (st, _d) = state().await;
+        // Seed a document so the run can serve local evidence.
+        st.runtime
+            .application
+            .ingest_service
+            .ingest_text(
+                searchos_application::ingest_service::IngestRequest::new(
+                    searchos_domain::ids::WorkspaceId::new("default"),
+                ),
+                "Research workspace endpoint evidence about bounded deep search rounds.",
+            )
+            .await
+            .unwrap();
+        st.runtime.process_outbox(256).await.unwrap();
+        let app = router(st);
+
+        use tower::ServiceExt;
+        let post = |app: axum::Router, uri: &str, body: serde_json::Value| {
+            let uri = uri.to_string();
+            async move {
+                let resp = app
+                    .oneshot(
+                        axum::http::Request::builder()
+                            .method("POST")
+                            .uri(uri)
+                            .header("content-type", "application/json")
+                            .body(axum::body::Body::from(body.to_string()))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                let status = resp.status().as_u16();
+                let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+                    .await
+                    .unwrap();
+                (
+                    status,
+                    serde_json::from_slice::<serde_json::Value>(&bytes).unwrap(),
+                )
+            }
+        };
+
+        let (status, run) = post(
+            app.clone(),
+            "/research/run",
+            serde_json::json!({
+                "query": "bounded deep search rounds",
+                "session_id": "research_http_gate",
+                "max_rounds": 2
+            }),
+        )
+        .await;
+        assert_eq!(status, 200, "{run}");
+        assert_eq!(run["session_id"], "research_http_gate");
+        assert!(run["rounds"].as_array().unwrap().len() <= 2);
+
+        let resp = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("GET")
+                    .uri("/research/research_http_gate")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = resp.status().as_u16();
+        let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let workspace: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(status, 200, "{workspace}");
+        assert!(!workspace["turns"].as_array().unwrap().is_empty());
+        assert!(!workspace["evidence"].as_array().unwrap().is_empty());
     }
 
     #[tokio::test]

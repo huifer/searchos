@@ -27,6 +27,34 @@ pub struct SessionTurn {
     pub recorded_at: String,
 }
 
+/// Why a bounded deep-search run stopped (RFC-071).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResearchStopReason {
+    /// The final gate found no open requirements.
+    Covered,
+    /// The caller's round cap was reached.
+    RoundCap,
+    /// The TOTAL budget across rounds was exhausted.
+    BudgetExhausted,
+}
+
+/// One evidence item accumulated by a research session (RFC-071).
+///
+/// The workspace remembers WHAT a research task already found, so a follow-up
+/// turn (or a human) can inspect the accumulated evidence without re-reading
+/// every trace. It is NOT a shortcut: searches still run in full.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct WorkspaceEvidence {
+    pub url: String,
+    pub title: Option<String>,
+    pub source: String,
+    pub score: f32,
+    /// Turn trace that served this evidence.
+    pub trace_id: String,
+    pub recorded_at: String,
+}
+
 /// A multi-turn research session.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SearchSession {
@@ -38,6 +66,10 @@ pub struct SearchSession {
     /// Open requirements left after the LAST turn. This is what a follow-up
     /// turn should target via `focus_requirements`.
     pub open_requirements: Vec<CoverageGap>,
+    /// Evidence accumulated across turns (deduped by URL, bounded).
+    /// Additive with serde default so older persisted payloads load.
+    #[serde(default)]
+    pub evidence: Vec<WorkspaceEvidence>,
 }
 
 /// Hard bounds so a chatty agent cannot grow the process without limit.
@@ -161,6 +193,7 @@ impl SessionStore {
             updated_at: now,
             turns: Vec::new(),
             open_requirements: Vec::new(),
+            evidence: Vec::new(),
         };
         inner
             .sessions
@@ -182,6 +215,20 @@ impl SessionStore {
         turn: SessionTurn,
         open_requirements: Vec<CoverageGap>,
     ) -> Option<SearchSession> {
+        self.record_turn_with_evidence(session_id, workspace_id, turn, open_requirements, &[])
+    }
+
+    /// Records a turn AND accumulates its evidence into the workspace
+    /// (RFC-071). Deduped by URL (newest trace wins), bounded by the session
+    /// limit so a chatty agent cannot grow the process without limit.
+    pub fn record_turn_with_evidence(
+        &self,
+        session_id: &str,
+        workspace_id: &str,
+        turn: SessionTurn,
+        open_requirements: Vec<CoverageGap>,
+        evidence: &[WorkspaceEvidence],
+    ) -> Option<SearchSession> {
         let mut inner = self.inner.lock().unwrap();
         let session = inner.sessions.get_mut(session_id)?;
         session.workspace_id = workspace_id.to_string();
@@ -192,6 +239,15 @@ impl SessionStore {
             session.turns.drain(0..overflow);
         }
         session.open_requirements = open_requirements;
+        for item in evidence {
+            session.evidence.retain(|e| e.url != item.url);
+            session.evidence.push(item.clone());
+        }
+        if session.evidence.len() > self.limits.max_turns_per_session * 20 {
+            // Bounded: keep the newest entries.
+            let overflow = session.evidence.len() - self.limits.max_turns_per_session * 20;
+            session.evidence.drain(0..overflow);
+        }
         let snapshot = session.clone();
         drop(inner);
         self.persist_save(&snapshot);

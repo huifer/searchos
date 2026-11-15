@@ -1299,6 +1299,56 @@ async fn validity_gate_allows_payload(
     }
 }
 
+/// RFC-071: records a session turn + accumulates its evidence into the
+/// research workspace. Shared by the full pipeline and the exact-cache hit
+/// path so a cache-served continuation still advances the workspace.
+fn record_session_turn(
+    store: &Arc<crate::session::SessionStore>,
+    req: &SearchRequest,
+    response: &mut SearchResponse,
+    decision_path: &str,
+    coverage_gaps: &[searchos_domain::decision::CoverageGap],
+) {
+    let Some(session_id) = req.session_id.as_deref() else {
+        return;
+    };
+    store.create_or_get(session_id, req.workspace_id.as_str());
+    let evidence: Vec<crate::session::WorkspaceEvidence> = response
+        .results
+        .iter()
+        .map(|r| crate::session::WorkspaceEvidence {
+            url: r.url.clone(),
+            title: r.title.clone(),
+            source: r.source.clone(),
+            score: r.score,
+            trace_id: response.trace_id.to_string(),
+            recorded_at: Utc::now().to_rfc3339(),
+        })
+        .collect();
+    let turn = crate::session::SessionTurn {
+        query: req.query.clone(),
+        trace_id: response.trace_id.clone(),
+        status: response.status.as_str().to_string(),
+        decision_path: decision_path.to_string(),
+        open_requirements: coverage_gaps.len(),
+        recorded_at: Utc::now().to_rfc3339(),
+    };
+    if let Some(session) = store.record_turn_with_evidence(
+        session_id,
+        req.workspace_id.as_str(),
+        turn,
+        coverage_gaps.to_vec(),
+        &evidence,
+    ) {
+        response.session_id = Some(session.session_id);
+        response.focus_requirements = session
+            .open_requirements
+            .iter()
+            .map(|g| g.question.clone())
+            .collect();
+    }
+}
+
 /// Best-effort analytics event; never fails the search request.
 async fn record_analytics(
     deps: &Arc<SearchDependencies>,
@@ -1651,6 +1701,14 @@ impl SearchService for SearchServiceImpl {
                     serde_json::from_value::<SearchResponse>(hit.value.payload.clone())
                 {
                     resp.replayed = true;
+                    // RFC-071: a cache-served turn still advances the
+                    // research workspace (the session is bookkeeping, not a
+                    // retrieval shortcut).
+                    if let Some(store) = self.deps.session_store.as_ref() {
+                        let path = resp.decision.path.clone();
+                        let gaps = resp.coverage_gaps.clone();
+                        record_session_turn(store, &req, &mut resp, &path, &gaps);
+                    }
                     let payload = serde_json::to_value(&resp)
                         .map_err(|e| SearchOsError::Internal(e.to_string()))?;
                     self.deps
@@ -2501,31 +2559,9 @@ async fn run_pipeline(
     // ---- Agent session turn recording (best-effort) --------------------
     // Runs after the response exists so the session can round-trip the
     // follow-up contract (next focus requirements) onto the response.
-    if let Some(session_id) = req.session_id.as_deref() {
-        if let Some(store) = &deps.session_store {
-            store.create_or_get(session_id, req.workspace_id.as_str());
-            let turn = crate::session::SessionTurn {
-                query: req.query.clone(),
-                trace_id: trace_id.clone(),
-                status: status.as_str().to_string(),
-                decision_path: decision.path_name().to_string(),
-                open_requirements: verdict.coverage_gaps.len(),
-                recorded_at: Utc::now().to_rfc3339(),
-            };
-            if let Some(session) = store.record_turn(
-                session_id,
-                req.workspace_id.as_str(),
-                turn,
-                verdict.coverage_gaps.clone(),
-            ) {
-                response.session_id = Some(session.session_id);
-                response.focus_requirements = session
-                    .open_requirements
-                    .iter()
-                    .map(|g| g.question.clone())
-                    .collect();
-            }
-        }
+    if let Some(store) = &deps.session_store {
+        let path = decision.path_name().to_string();
+        record_session_turn(store, &req, &mut response, &path, &verdict.coverage_gaps);
     }
     // Shared transport result cap (Part 30 INV-30-19).
     response.results.truncate(max_results);

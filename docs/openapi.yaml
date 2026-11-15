@@ -401,6 +401,56 @@ paths:
                   document_id: { type: string }
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /research/run:
+    post:
+      tags: [Search]
+      summary: Bounded deep-search research run (RFC-071)
+      description: |
+        Runs up to `max_rounds` full searches for one research task. Each
+        round is recorded as a session turn; the final gate's open
+        requirements become the next round's focus. Stops on coverage, the
+        round cap, or TOTAL budget exhaustion. The workspace (turns +
+        accumulated evidence) is durable and inspectable at
+        `GET /research/{session_id}`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [query]
+              properties:
+                query: { type: string }
+                profile: { type: string, default: general }
+                mode: { type: string, enum: [local_only, local_first, hybrid, external_first, external_only] }
+                workspace: { type: string, default: default }
+                session_id: { type: string }
+                max_rounds: { type: integer, minimum: 1, maximum: 8, default: 3 }
+                max_total_cost_micros: { type: integer, format: int64, default: 100000 }
+                max_external_queries: { type: integer, default: 5 }
+      responses:
+        '200':
+          description: The bounded run (rounds, workspace totals, final response).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ResearchRun' }
+  /research/{session_id}:
+    get:
+      tags: [Search]
+      summary: Research workspace (turns + accumulated evidence)
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: The workspace.
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '400': { $ref: '#/components/responses/NotFound' }
+
   /memory/lifecycle:
     post:
       tags: [Memory]
@@ -1629,7 +1679,36 @@ components:
               rule: { type: string }
               count: { type: integer }
         rules_version: { type: string }
-    PolicyVersionRow:
+    ResearchRound:
+      type: object
+      properties:
+        round: { type: integer }
+        query: { type: string }
+        trace_id: { type: string }
+        status: { type: string }
+        quality: { type: string }
+        decision_path: { type: string }
+        result_count: { type: integer }
+        open_requirements: { type: integer }
+        spent_micros: { type: integer, format: int64 }
+    ResearchRun:
+      type: object
+      properties:
+        session_id: { type: string }
+        rounds:
+          type: array
+          items: { $ref: '#/components/schemas/ResearchRound' }
+        evidence_count: { type: integer }
+        open_requirements:
+          type: array
+          items: { type: object, additionalProperties: true }
+        covered: { type: boolean }
+        stopped:
+          type: string
+          enum: [covered, round_cap, budget_exhausted]
+        total_spent_micros: { type: integer, format: int64 }
+        final_response: { type: object, additionalProperties: true }
+        PolicyVersionRow:
       type: object
       description: One append-only policy version (RFC-034).
       properties:
