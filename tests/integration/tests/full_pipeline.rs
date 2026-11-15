@@ -93,6 +93,7 @@ fn rebuild_deps(
         policy_state: None,
         negative_cache: runtime.negative_cache.clone(),
         semantic_dedup: true,
+        expansion_mode: "followup".into(),
         incremental: true,
         query_expansion: true,
         reranking: true,
@@ -1042,6 +1043,7 @@ async fn federated_execute_mode_bills_once_and_matches_legacy_results() {
             validity: None,
             policy_state: None,
             negative_cache: runtime.negative_cache.clone(),
+            expansion_mode: "followup".into(),
             semantic_dedup: true,
             incremental: true,
             query_expansion: true,
@@ -1296,6 +1298,7 @@ async fn federated_failures_trip_the_source_circuit_in_the_live_pipeline() {
         policy_state: None,
         negative_cache: runtime.negative_cache.clone(),
         semantic_dedup: true,
+        expansion_mode: "followup".into(),
         incremental: true,
         query_expansion: true,
         reranking: true,
@@ -1470,6 +1473,7 @@ async fn federated_execute_respects_a_tiny_wall_clock_budget() {
         policy_state: None,
         negative_cache: runtime.negative_cache.clone(),
         semantic_dedup: true,
+        expansion_mode: "followup".into(),
         incremental: true,
         query_expansion: true,
         reranking: true,
@@ -1619,6 +1623,7 @@ async fn context_assembly_collapses_cross_host_syndicated_content() {
         policy_state: None,
         negative_cache: runtime.negative_cache.clone(),
         semantic_dedup: true,
+        expansion_mode: "followup".into(),
         incremental: true,
         query_expansion: true,
         reranking: true,
@@ -1761,6 +1766,7 @@ async fn decision_rejects_external_only_when_all_sources_are_tripped() {
         policy_state: None,
         negative_cache: runtime.negative_cache.clone(),
         semantic_dedup: true,
+        expansion_mode: "followup".into(),
         incremental: true,
         query_expansion: true,
         reranking: true,
@@ -1922,6 +1928,7 @@ async fn cost_adaptive_downsizes_the_external_plan_within_budget() {
             validity: None,
             policy_state: None,
             negative_cache: runtime.negative_cache.clone(),
+            expansion_mode: "followup".into(),
             semantic_dedup: true,
             incremental: true,
             query_expansion: true,
@@ -1973,4 +1980,134 @@ async fn cost_adaptive_downsizes_the_external_plan_within_budget() {
     assert_eq!(calls, 0, "nothing is bought when the plan is unaffordable");
     let adaptive = trace.cost_adaptive.expect("trace still explains why");
     assert_eq!(adaptive.affordable_external_queries, 2);
+}
+
+/// RFC-072: initial query expansion adds bounded synonym / sub-question
+/// variants to the FIRST plan when the mode allows it, competing for the
+/// same affordable query budget — and stays off by default.
+#[tokio::test]
+async fn initial_query_expansion_is_opt_in_and_budget_bounded() {
+    use async_trait::async_trait;
+    use searchos_provider::error::ProviderError;
+    use searchos_provider::traits::{ProviderResult, SearchParams, SearchProvider};
+
+    struct RecordingProvider {
+        queries: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+    #[async_trait]
+    impl SearchProvider for RecordingProvider {
+        fn id(&self) -> &str {
+            "recording_web"
+        }
+        fn capabilities(&self) -> searchos_domain::provider::ProviderCapabilities {
+            searchos_domain::provider::ProviderCapabilities {
+                search: true,
+                ..Default::default()
+            }
+        }
+        async fn search(&self, params: &SearchParams) -> Result<ProviderResult, ProviderError> {
+            self.queries.lock().unwrap().push(params.query.clone());
+            Ok(ProviderResult {
+                entries: Vec::new(),
+                duration_ms: 1,
+                bytes_transferred: 8,
+            })
+        }
+        async fn health_check(&self) -> Result<bool, ProviderError> {
+            Ok(true)
+        }
+    }
+
+    let run = |mode: &'static str| async move {
+        let mut cfg = SearchOsConfig::default();
+        let dir = tempfile::tempdir().unwrap();
+        cfg.app.data_dir = dir.path().to_path_buf();
+        cfg.federation.strategy = "legacy".into();
+        cfg.intelligence.query_expansion_mode = mode.into();
+        let runtime = searchos_core::SearchOsRuntime::init(cfg).await.unwrap();
+        let queries = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let provider: Arc<dyn SearchProvider> = Arc::new(RecordingProvider {
+            queries: Arc::clone(&queries),
+        });
+        runtime
+            .provider_registry
+            .register(searchos_provider::RegisteredProvider::from_search(
+                provider.clone(),
+                0,
+                "USD",
+            ));
+        let deps = SearchDependencies {
+            profiles: searchos_policy::ProfileRegistry::builtin(),
+            quality: searchos_policy::QualityPolicy::default(),
+            freshness: searchos_policy::FreshnessPolicy::default_policy(),
+            source: searchos_policy::SourcePolicy::default_policy(),
+            cost_config: searchos_cost::CostModelConfig::default_config(),
+            bm25: runtime.fulltext.clone(),
+            vector: Some(runtime.vector.clone()),
+            hybrid: Some(runtime.hybrid.clone()),
+            embedder: runtime.embedder.clone(),
+            canonical_cache: runtime.canonical_cache.clone(),
+            semantic_cache: runtime.semantic_cache.clone(),
+            retrieval_cache: runtime.retrieval_cache.clone(),
+            embedding_cache: runtime.embedding_cache.clone(),
+            rerank_cache: runtime.rerank_cache.clone(),
+            router: runtime.provider_registry.clone(),
+            search_providers: vec![provider],
+            local_port: runtime.local_port(),
+            traces: runtime.traces(),
+            cost_sink: runtime.cost_sink(),
+            task_recorder: runtime.task_recorder(),
+            singleflight: runtime.singleflight.clone(),
+            cache: runtime.exact_cache.clone(),
+            validity: None,
+            policy_state: None,
+            negative_cache: runtime.negative_cache.clone(),
+            expansion_mode: mode.into(),
+            semantic_dedup: true,
+            incremental: true,
+            query_expansion: true,
+            reranking: true,
+            allow_external: true,
+            promotion: None,
+            session_store: None,
+            federation_registry: None,
+            federation_strategy: "legacy".into(),
+            federation_limits: searchos_domain::FederationLimits::default(),
+        };
+        let svc = SearchServiceImpl::new(Arc::new(deps));
+        let mut req = request(
+            "how to configure the tokio async runtime",
+            SearchMode::ExternalOnly,
+        );
+        req.budget.max_external_queries = 2;
+        // Only the FIRST round: follow-up rounds legitimately reformulate
+        // and would blur the mode comparison.
+        req.budget.max_acquisition_rounds = 0;
+        let _ = svc.search(req).await.unwrap();
+        let seen = queries.lock().unwrap().clone();
+        (seen, runtime)
+    };
+
+    // Default (followup): the first plan is the raw query only.
+    let (default_queries, _rt) = run("followup").await;
+    assert!(
+        default_queries
+            .iter()
+            .all(|q| q == "how to configure the tokio async runtime"),
+        "{default_queries:?}"
+    );
+
+    // initial: a bounded variant is added within the query budget.
+    let (expanded, rt) = run("initial").await;
+    assert!(
+        expanded.len() <= 2,
+        "the expansion never exceeds the budget: {expanded:?}"
+    );
+    assert!(
+        expanded
+            .iter()
+            .any(|q| q != "how to configure the tokio async runtime"),
+        "an expansion variant was planned: {expanded:?}"
+    );
+    let _ = rt;
 }

@@ -70,6 +70,7 @@ fn rebuild_deps(runtime: &Arc<searchos_core::SearchOsRuntime>) -> Arc<SearchDepe
         policy_state: None,
         negative_cache: runtime.negative_cache.clone(),
         semantic_dedup: true,
+        expansion_mode: "followup".into(),
         incremental: true,
         query_expansion: true,
         reranking: true,

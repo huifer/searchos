@@ -125,6 +125,19 @@ multi-arch images, and attaches the matching section of this file.
   `ingest_redacts_secrets_before_object_write`,
   `redaction_can_be_disabled_explicitly` and
   `ingest_time_secret_redaction_is_wired_through_config`.
+- **Query expansion: synonyms + sub-questions (RFC-072 slice).** A shared
+  `SYNONYMS` table (also usable for normalization) drives
+  `synonym_variants` (one-term replacement, whitespace/punctuation
+  preserved) and `sub_question_variants` (question-shaped queries only:
+  "how to X" → "X", "X example", "X documentation"). A new
+  `intelligence.query_expansion_mode` (`followup` default / `initial` /
+  `both`) decides WHERE expansion may add queries: `followup` keeps the
+  first plan free of extra spend, `initial`/`both` add bounded variants that
+  fill only the REMAINING affordable query slots (RFC-076) and never exceed
+  the budget. Gates: six query-crate tests (including the word-boundary
+  regression `token_replacement_keeps_word_boundaries` — a bug this gate
+  found: "async runtime" became "asynchronousruntime") and the live-pipeline
+  gate `initial_query_expansion_is_opt_in_and_budget_bounded`.
 - **Memory lifecycle (RFC-070 slice).** `memory.retention_days` (default
   365, `0` = keep forever) now drives BOTH read-time freshness and an
   explicit sweep: `MemoryService::expire(apply)` reports/deletes entries

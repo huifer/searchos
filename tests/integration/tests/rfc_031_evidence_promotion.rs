@@ -798,6 +798,7 @@ mod pipeline {
                 validity: None,
                 policy_state: None,
                 negative_cache: runtime.negative_cache.clone(),
+                expansion_mode: "followup".into(),
                 semantic_dedup: true,
                 incremental: true,
                 session_store: None,

@@ -222,6 +222,9 @@ pub struct SearchDependencies {
     /// RFC-031 D10: negative-result cache for terminal external failures.
     /// A zero-TTL cache effectively disables the feature.
     pub negative_cache: Arc<ExactQueryCache>,
+    /// RFC-072: where query expansion may add queries
+    /// (`followup` | `initial` | `both`).
+    pub expansion_mode: String,
     /// Config-driven semantic dedup / incremental retrieval switches.
     pub semantic_dedup: bool,
     pub incremental: bool,
@@ -728,8 +731,14 @@ fn plan_external_queries(
             strategy: None,
         });
     }
-    // Config-driven query expansion only on a proven coverage gap.
-    if deps.query_expansion && !gaps.is_empty() {
+    // RFC-072: the MODE decides where expansion may add queries.
+    // `followup` (default) expands only on a proven coverage gap, so the
+    // first plan never spends extra; `initial` / `both` may also add
+    // synonym / sub-question variants to the FIRST plan. Variants compete
+    // for the SAME affordable query budget (RFC-076), never exceeding it.
+    let followup_expansion_allowed = matches!(deps.expansion_mode.as_str(), "followup" | "both");
+    let initial_expansion_allowed = matches!(deps.expansion_mode.as_str(), "initial" | "both");
+    if deps.query_expansion && followup_expansion_allowed && !gaps.is_empty() {
         let expander = QueryExpander::new(ExpansionConfig {
             enabled: true,
             require_coverage_gap: true,
@@ -748,6 +757,34 @@ fn plan_external_queries(
             }
         }
     }
+    // RFC-072: synonym / sub-question variants fill the REMAINING budget
+    // slots (gap queries win). Bounded by the affordable cap and by the
+    // request's expansion budget.
+    if deps.query_expansion && initial_expansion_allowed && planned.len() < max_queries as usize {
+        let mut variants: Vec<String> = Vec::new();
+        variants.extend(searchos_query::expansion::synonym_variants(&req.query, 2));
+        variants.extend(searchos_query::expansion::sub_question_variants(
+            &req.query, 2,
+        ));
+        for variant in variants {
+            if planned.len() >= max_queries as usize {
+                break;
+            }
+            if planned
+                .iter()
+                .any(|p| p.query.eq_ignore_ascii_case(&variant))
+            {
+                continue;
+            }
+            planned.push(PlannedQuery {
+                query: variant,
+                origin: QueryOrigin::Expansion,
+                requirement_id: None,
+                strategy: None,
+            });
+        }
+    }
+
     planned.truncate(req.budget.max_external_queries.max(1) as usize);
     planned
 }
@@ -3015,6 +3052,10 @@ impl SearchServiceImplStub {
         let mut calls = state.calls;
         let mut spent_micros = state.spent_micros;
         let max_results = clamp_max_results(req.max_results) as usize;
+        eprintln!(
+            "DEBUG execute_external planned={:?}",
+            planned.iter().map(|p| &p.query).collect::<Vec<_>>()
+        );
 
         // Shared failure path: records the failed provider_attempt event
         // (Part 30 INV-30-06) and carries the spend already written to the

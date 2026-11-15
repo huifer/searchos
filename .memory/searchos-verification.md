@@ -325,6 +325,18 @@ The SearchOS implementation (`~/git_repo/searchos`) is verified by these command
   `--apply` reduces entries 2→1. Note: fetch/DNS tests can flake on a
   sandbox without network — rerun before treating as regressions.
 
+- **RFC-072 query expansion slice (2026-11-14):** `SYNONYMS` table +
+  `synonyms_for` / `synonym_variants` / `sub_question_variants` in
+  `searchos-query`; `intelligence.query_expansion_mode` (`followup`
+  default / `initial` / `both`, consumed per INV-30-20); deps carry
+  `expansion_mode`; initial variants only fill remaining affordable slots
+  (RFC-076) and are appended AFTER gap queries. Gotchas: the legacy
+  `execute_external` fans out per QUERY (good for asserting plans) while
+  `execute` runs one representative query per SOURCE; follow-up rounds
+  reformulate regardless of the expansion mode, so a first-plan comparison
+  must set `budget.max_acquisition_rounds = 0`. Full suite **770 passed /
+  0 failed** (84 suites); clippy/fmt/route scan green.
+
 **Known environment notes:**
 - LanceDB requires `protoc` at build time (`brew install protobuf`).
 - Live network tests (fetch of https://example.com) tolerate sandbox timeouts by design.

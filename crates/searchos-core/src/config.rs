@@ -71,6 +71,11 @@ impl Default for FederationConfig {
 #[serde(default)]
 pub struct IntelligenceConfig {
     pub query_expansion: bool,
+    /// RFC-072: where query expansion may add queries.
+    /// `followup` (default): only follow-up rounds expand — no extra spend on
+    /// the first plan. `initial`: the first plan may add synonym /
+    /// sub-question variants. `both`: every round may expand.
+    pub query_expansion_mode: String,
     /// Attaches a real reranker to the hybrid retriever (RFC-007 7.7).
     pub reranking: bool,
     /// `local` (offline feature reranker) | `remote` (cross-encoder endpoint).
@@ -87,6 +92,7 @@ impl Default for IntelligenceConfig {
     fn default() -> Self {
         Self {
             query_expansion: true,
+            query_expansion_mode: "followup".into(),
             reranking: true,
             reranker_provider: "local".into(),
             reranker_url: String::new(),
@@ -781,6 +787,7 @@ pub const ALL_CONFIG_FIELDS: &[&str] = &[
     "federation.source_timeout_ms",
     "federation.max_sources",
     "intelligence.query_expansion",
+    "intelligence.query_expansion_mode",
     "intelligence.reranking",
     "intelligence.reranker_provider",
     "intelligence.reranker_url",
@@ -892,6 +899,7 @@ pub const CONSUMED_CONFIG_FIELDS: &[&str] = &[
     "federation.source_timeout_ms",
     "federation.max_sources",
     "intelligence.query_expansion",
+    "intelligence.query_expansion_mode",
     "intelligence.reranking",
     "intelligence.reranker_provider",
     "intelligence.reranker_url",

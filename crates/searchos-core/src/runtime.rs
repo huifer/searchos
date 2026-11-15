@@ -826,6 +826,7 @@ impl SearchOsRuntime {
             })),
             policy_state: Some(Arc::clone(&policy_state)),
             negative_cache: Arc::clone(&negative_cache),
+            expansion_mode: config.intelligence.query_expansion_mode.clone(),
             semantic_dedup: config.search.semantic_dedup,
             incremental: config.search.incremental,
             query_expansion: config.intelligence.query_expansion,
