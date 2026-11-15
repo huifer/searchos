@@ -68,7 +68,7 @@ Legend: **Have** = implemented & tested · **Partial** = exists but narrower tha
 | 067 | Context Assembly | **Delivered + wired** | `crates/searchos-context/` engine; `SearchRequest.context_budget` → application assembly → `SearchResponse.context` | none for v1 |
 | 068 | Token Budget Management | **Delivered + wired** | `ContextBudget` validated at every transport edge; invalid budgets are client errors; OpenAPI documents both schemas | none for v1 |
 | 069 | Agent Session Memory | **Partial → memory AND session transcripts are Sources** | `session.rs` + `agent_sessions` (migration v7, commit `ff8b2be`) persists follow-ups across restart; `AgentMemorySource` + `SessionTranscriptSource` both registered as federated sources in the runtime | memory lifecycle (RFC-070, P3) |
-| 070 | Memory Lifecycle (forget / consolidate / expire) | **Gap** | `searchos-memory` has bounded in-process sessions but no extraction/consolidation/expiry pipeline | RFC-070 (P3) |
+| 070 | Memory Lifecycle (forget / consolidate / expire) | **Delivered (v1 slice)** | `memory.retention_days` (default 365, 0 = keep forever) drives READ-time freshness AND the explicit sweep (`MemoryService::expire`); `MemoryService::consolidate` merges duplicate content within one namespace+sharing by normalized-text fingerprint, keeping the newest copy (isolation beats dedupe); dry-run by default, `searchos memory lifecycle [--apply]` + `POST /memory/lifecycle` | extraction (auto-derive memories from sessions/tasks), access-based decay |
 | 071 | Deep Search Engine | **Partial** | bounded iterative acquisition (`max_acquisition_rounds`), `coverage_gaps`, `POST /search/plan`, `POST /search/follow-up`; no task-level research workspace | RFC-071 (P4) |
 | 072 | Query Expansion | **Partial** | decomposition for comparison-with-≥2-entities + reformulated follow-up queries; no synonym/sub-question expansion | RFC-072 (P4) |
 | 073 | Evidence Coverage | **Have** | `RequirementStatus`, `GapAnalyzer`, `coverage_gaps`, `focus_requirements`, graded qrels / nDCG / MRR / Recall@5 | reuse |
@@ -197,7 +197,7 @@ The design documents are text-only and cannot break the Rust or frontend gates.
 | 067 | Context Assembly | **已交付并接入** | `crates/searchos-context/` 引擎；`SearchRequest.context_budget` → application 装配 → `SearchResponse.context` | v1 无剩余 |
 | 068 | Token Budget Management | **已交付并接入** | `ContextBudget` 在每个传输边缘校验；非法预算是客户端错误；OpenAPI 已登记两个 schema | v1 无剩余 |
 | 069 | Agent Session Memory | **部分 → 记忆与会话逐字稿均为 Source** | `session.rs` + `agent_sessions`（migration v7，提交 `ff8b2be`）已支持重启后 follow-up；`AgentMemorySource` + `SessionTranscriptSource` 均已在 runtime 注册为联邦 Source | 记忆生命周期（RFC-070，P3） |
-| 070 | Memory Lifecycle（遗忘/归纳/过期） | **缺口** | `searchos-memory` 只有有界进程内会话，无提取/巩固/过期流水线 | RFC-070（P3） |
+| 070 | Memory Lifecycle（遗忘/归纳/过期） | **已交付（v1 切片）** | `memory.retention_days`（默认 365，0 = 永久）同时驱动**读时新鲜度**与显式清扫（`MemoryService::expire`）；`MemoryService::consolidate` 按规范化文本指纹合并同一命名空间+共享策略内的重复内容、保留最新副本（隔离优先于去重）；默认 dry-run，`searchos memory lifecycle [--apply]` + `POST /memory/lifecycle` | 自动提取（从会话/任务归纳记忆）、按访问衰减 |
 | 071 | Deep Search Engine | **部分** | 有界迭代采集（`max_acquisition_rounds`）、`coverage_gaps`、`POST /search/plan`、`POST /search/follow-up`；无任务级 Research Workspace | RFC-071（P4） |
 | 072 | Query Expansion | **部分** | 比较类 ≥2 实体拆解 + 追问改写；无同义词/子问题扩展 | RFC-072（P4） |
 | 073 | Evidence Coverage | **已有** | `RequirementStatus`、`GapAnalyzer`、`coverage_gaps`、`focus_requirements`、分级 qrels / nDCG / MRR / Recall@5 | 复用 |

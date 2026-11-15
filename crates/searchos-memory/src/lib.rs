@@ -11,4 +11,4 @@ pub mod governance;
 pub mod service;
 
 pub use governance::{NamespaceGuard, RetentionPolicy};
-pub use service::{MemorySearchHit, MemoryService, MemoryStats};
+pub use service::{MemoryLifecycleReport, MemorySearchHit, MemoryService, MemoryStats};

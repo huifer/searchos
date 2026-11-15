@@ -125,6 +125,20 @@ multi-arch images, and attaches the matching section of this file.
   `ingest_redacts_secrets_before_object_write`,
   `redaction_can_be_disabled_explicitly` and
   `ingest_time_secret_redaction_is_wired_through_config`.
+- **Memory lifecycle (RFC-070 slice).** `memory.retention_days` (default
+  365, `0` = keep forever) now drives BOTH read-time freshness and an
+  explicit sweep: `MemoryService::expire(apply)` reports/deletes entries
+  past the window, and `MemoryService::consolidate(apply)` merges duplicate
+  content within one namespace + sharing policy (normalized-text
+  fingerprint, newest copy wins — workspace isolation beats dedupe).
+  Both are DRY RUN by default; `searchos memory lifecycle [--apply]` and
+  `POST /memory/lifecycle` run them. Gates:
+  `expiry_uses_the_configured_retention_window` (dry run mutates nothing,
+  expired entries never surface at read time, apply deletes),
+  `zero_retention_keeps_entries_forever`,
+  `consolidation_keeps_the_newest_copy_and_deletes_duplicates`,
+  `identical_content_in_different_workspaces_is_not_merged`, and the HTTP
+  gate `memory_lifecycle_endpoint_dry_runs_and_applies`.
 - **Cost-adaptive path selection (RFC-076 slice).** `SearchBudget` gains
   `cost_adaptive` (default **false**). With the flag ON, when the FULL
   external plan is over budget but a smaller plan fits, the decision engine

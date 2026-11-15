@@ -886,6 +886,8 @@ impl SearchOsRuntime {
             embedding_provider: memory_embedding_provider,
             embedding_model: memory_embedding_model,
             enabled: config.memory.enabled,
+            retention_days: (config.memory.retention_days > 0)
+                .then_some(config.memory.retention_days),
         });
         let memory_service: Arc<dyn searchos_memory::MemoryService> = memory_sqlite;
         let memory_facade = MemoryFacade::new(Arc::clone(&memory_service));
@@ -2472,6 +2474,20 @@ struct SqliteMemoryStore {
     embedding_provider: String,
     embedding_model: String,
     enabled: bool,
+    /// RFC-070: retention window for reads + lifecycle expiry (`None` keeps
+    /// entries forever).
+    retention_days: Option<u64>,
+}
+
+/// Stable label for a sharing policy (consolidation group key).
+fn sharing_label(sharing: searchos_domain::memory::SharingPolicy) -> &'static str {
+    use searchos_domain::memory::SharingPolicy;
+    match sharing {
+        SharingPolicy::Private => "private",
+        SharingPolicy::ProjectShared => "project_shared",
+        SharingPolicy::WorkspaceShared => "workspace_shared",
+        SharingPolicy::GlobalPublic => "global_public",
+    }
 }
 
 /// Normalizes obvious synonyms before feature hashing, so "asynchronous
@@ -2538,9 +2554,14 @@ impl searchos_memory::MemoryService for SqliteMemoryStore {
         let entries = self.export_internal().await?;
         let mut visible = searchos_memory::NamespaceGuard::visible_entries(&entries, reader);
         // Freshness Check: default retention sweep excludes expired entries.
+        let retention = searchos_memory::RetentionPolicy {
+            retention_days: self.retention_days,
+            export_allowed: true,
+            restore_allowed: true,
+        };
         let stale: HashSet<String> = searchos_memory::NamespaceGuard::retention_sweep(
             &visible,
-            &searchos_memory::RetentionPolicy::default(),
+            &retention,
             chrono::Utc::now(),
         )
         .into_iter()
@@ -2651,6 +2672,93 @@ impl searchos_memory::MemoryService for SqliteMemoryStore {
                 .iter()
                 .filter(|e| e.embedding_status != "none")
                 .count() as u64,
+        })
+    }
+
+    /// RFC-070: expire entries past the configured retention window.
+    /// A dry run reports the ids WITHOUT deleting anything.
+    async fn expire(
+        &self,
+        apply: bool,
+    ) -> Result<searchos_memory::MemoryLifecycleReport, SearchOsError> {
+        let entries = self.export_internal().await?;
+        let policy = searchos_memory::RetentionPolicy {
+            retention_days: self.retention_days,
+            export_allowed: true,
+            restore_allowed: true,
+        };
+        let expired =
+            searchos_memory::NamespaceGuard::retention_sweep(&entries, &policy, chrono::Utc::now());
+        if apply {
+            let repo = repos::MemoryRepo::new(&self.store);
+            for id in &expired {
+                let _ = repo.delete(id)?;
+            }
+        }
+        Ok(searchos_memory::MemoryLifecycleReport {
+            expired,
+            merged_groups: 0,
+            removed_duplicates: 0,
+            applied: apply,
+        })
+    }
+
+    /// RFC-070: merge duplicate content within one namespace + sharing,
+    /// keeping the NEWEST copy (updated_at, then id for determinism). The
+    /// content fingerprint is the same normalized-text digest the evidence
+    /// layer uses (never a semantic/trust claim).
+    async fn consolidate(
+        &self,
+        apply: bool,
+    ) -> Result<searchos_memory::MemoryLifecycleReport, SearchOsError> {
+        let entries = self.export_internal().await?;
+        let mut groups: std::collections::HashMap<String, Vec<&MemoryEntry>> =
+            std::collections::HashMap::new();
+        for entry in &entries {
+            let Some(fingerprint) = searchos_domain::evidence::normalized_content_fingerprint(
+                &format!("{} {}", entry.title, entry.content),
+            ) else {
+                continue;
+            };
+            let key = format!(
+                "{}|{}|{}|{}|{}",
+                entry.namespace.workspace.as_str(),
+                entry.namespace.project.as_deref().unwrap_or(""),
+                entry.namespace.agent.as_deref().unwrap_or(""),
+                sharing_label(entry.sharing),
+                fingerprint
+            );
+            groups.entry(key).or_default().push(entry);
+        }
+        let mut merged_groups = 0usize;
+        let mut removed: Vec<String> = Vec::new();
+        for group in groups.values() {
+            if group.len() < 2 {
+                continue;
+            }
+            merged_groups += 1;
+            // Newest copy wins; id breaks ties deterministically.
+            let mut sorted: Vec<&&MemoryEntry> = group.iter().collect();
+            sorted.sort_by(|a, b| {
+                b.updated_at
+                    .cmp(&a.updated_at)
+                    .then_with(|| a.id.as_str().cmp(b.id.as_str()))
+            });
+            for entry in sorted.into_iter().skip(1) {
+                removed.push(entry.id.to_string());
+            }
+        }
+        if apply {
+            let repo = repos::MemoryRepo::new(&self.store);
+            for id in &removed {
+                let _ = repo.delete(id)?;
+            }
+        }
+        Ok(searchos_memory::MemoryLifecycleReport {
+            expired: Vec::new(),
+            merged_groups,
+            removed_duplicates: removed.len(),
+            applied: apply,
         })
     }
 }

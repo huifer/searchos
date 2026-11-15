@@ -401,6 +401,39 @@ paths:
                   document_id: { type: string }
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /memory/lifecycle:
+    post:
+      tags: [Memory]
+      summary: Memory lifecycle — expire + consolidate (RFC-070)
+      description: |
+        Expires entries past `memory.retention_days` and merges duplicate
+        content within one namespace+sharing (newest copy wins). `apply:
+        false` (default) is a dry run: it reports what WOULD be removed and
+        deletes nothing.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                apply: { type: boolean, default: false }
+      responses:
+        '200':
+          description: Lifecycle report.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  expired: { type: integer }
+                  expired_ids:
+                    type: array
+                    items: { type: string }
+                  merged_groups: { type: integer }
+                  removed_duplicates: { type: integer }
+                  applied: { type: boolean }
+
   /policies:
     get:
       tags: [Policies]

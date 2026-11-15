@@ -403,6 +403,8 @@ pub fn api_route_table() -> Vec<RouteSpec> {
         RouteSpec::new("POST", "/replay/{trace_id}", post(replay_trace)),
         // RFC-086: batch replay evaluation.
         RouteSpec::new("POST", "/evaluation/replay", post(evaluate_replays)),
+        // RFC-070: memory lifecycle (expire + consolidate).
+        RouteSpec::new("POST", "/memory/lifecycle", post(memory_lifecycle)),
         // RFC-034: versioned policy management (read + write + history).
         RouteSpec::new("GET", "/policies", get(list_policies)),
         RouteSpec::new(
@@ -2194,6 +2196,43 @@ async fn evaluate_replays(
     })?))
 }
 
+/// RFC-070: run the memory lifecycle (expire + merge duplicates).
+/// `apply = false` (default) is a dry run — nothing is deleted.
+async fn memory_lifecycle(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Option<Json<serde_json::Value>>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    state.authorize(&headers)?;
+    let apply = body
+        .map(|Json(v)| v)
+        .unwrap_or_default()
+        .get("apply")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let expired = state
+        .runtime
+        .application
+        .memory_service
+        .expire(apply)
+        .await
+        .map_err(|e| ApiError::from_domain(&e))?;
+    let consolidated = state
+        .runtime
+        .application
+        .memory_service
+        .consolidate(apply)
+        .await
+        .map_err(|e| ApiError::from_domain(&e))?;
+    Ok(Json(serde_json::json!({
+        "expired": expired.expired.len(),
+        "expired_ids": expired.expired,
+        "merged_groups": consolidated.merged_groups,
+        "removed_duplicates": consolidated.removed_duplicates,
+        "applied": apply,
+    })))
+}
+
 /// RFC-034: currently active policy versions (one per kind).
 async fn list_policies(
     State(state): State<AppState>,
@@ -3027,6 +3066,63 @@ mod tests {
             .unwrap()
             .iter()
             .all(|s| s["enabled"] == true));
+    }
+
+    #[tokio::test]
+    async fn memory_lifecycle_endpoint_dry_runs_and_applies() {
+        let (st, _d) = state().await;
+        // Seed one entry outside the default 365-day window.
+        let now = chrono::Utc::now();
+        let repo = searchos_storage_sqlite::repos::MemoryRepo::new(&st.runtime.sqlite);
+        repo.insert(&searchos_domain::memory::MemoryEntry {
+            id: searchos_domain::ids::MemoryEntryId::generate(),
+            namespace: searchos_domain::memory::MemoryNamespace {
+                workspace: WorkspaceId::new("default"),
+                project: None,
+                agent: None,
+            },
+            sharing: searchos_domain::memory::SharingPolicy::WorkspaceShared,
+            title: "ancient note".into(),
+            content: "ancient memory content for the lifecycle gate".into(),
+            url: None,
+            tags: Vec::new(),
+            created_at: now - chrono::Duration::days(400),
+            updated_at: now - chrono::Duration::days(400),
+            embedding_status: "none".into(),
+        })
+        .unwrap();
+        let app = router(st);
+
+        use tower::ServiceExt;
+        let post = |app: axum::Router, body: serde_json::Value| async move {
+            let resp = app
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri("/memory/lifecycle")
+                        .header("content-type", "application/json")
+                        .body(axum::body::Body::from(body.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = resp.status().as_u16();
+            let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+                .await
+                .unwrap();
+            let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            (status, value)
+        };
+
+        let (status, dry) = post(app.clone(), serde_json::json!({})).await;
+        assert_eq!(status, 200, "{dry}");
+        assert_eq!(dry["expired"], 1);
+        assert_eq!(dry["applied"], false);
+
+        let (status, applied) = post(app, serde_json::json!({ "apply": true })).await;
+        assert_eq!(status, 200, "{applied}");
+        assert_eq!(applied["applied"], true);
+        assert_eq!(applied["expired"], 1);
     }
 
     #[tokio::test]

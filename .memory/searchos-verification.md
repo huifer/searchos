@@ -312,6 +312,19 @@ The SearchOS implementation (`~/git_repo/searchos`) is verified by these command
   passed / 0 failed** (83 suites); clippy/fmt/route scan green. CLI smoke:
   `policy set` (minimum_quality 1.0) → quality failed; rollback → passed.
 
+- **RFC-070 memory lifecycle slice (2026-11-14):** `memory.retention_days`
+  (default 365, 0 = forever) wired into `SqliteMemoryStore` (read-time
+  sweep + explicit `expire`); `consolidate` groups by
+  (workspace, project, agent, sharing, normalized fingerprint) keeping the
+  newest copy. `MemoryService` trait gained `expire`/`consolidate` with
+  DEFAULT impls (non-breaking); `MemoryUseCase` facade + CLI
+  `memory lifecycle [--apply]` + `POST /memory/lifecycle`. Gates: 4
+  integration tests + the HTTP dry-run/apply gate.
+  Full suite **762 passed / 0 failed** (84 suites); clippy/fmt/route scan
+  green. Live CLI: two identical memories → dry run reports 1 merged group,
+  `--apply` reduces entries 2→1. Note: fetch/DNS tests can flake on a
+  sandbox without network — rerun before treating as regressions.
+
 **Known environment notes:**
 - LanceDB requires `protoc` at build time (`brew install protobuf`).
 - Live network tests (fetch of https://example.com) tolerate sandbox timeouts by design.

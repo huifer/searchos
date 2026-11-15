@@ -81,6 +81,16 @@ pub trait MemoryUseCase: Send + Sync {
         &self,
         reader: &searchos_domain::memory::MemoryNamespace,
     ) -> Result<Vec<MemoryEntry>, SearchOsError>;
+    /// RFC-070 lifecycle: expire old entries (`apply = false` = dry run).
+    async fn expire(
+        &self,
+        apply: bool,
+    ) -> Result<searchos_memory::MemoryLifecycleReport, SearchOsError>;
+    /// RFC-070 lifecycle: merge duplicate content, keeping the newest copy.
+    async fn consolidate(
+        &self,
+        apply: bool,
+    ) -> Result<searchos_memory::MemoryLifecycleReport, SearchOsError>;
 }
 
 /// Cost use case (ledger append + summaries).
@@ -186,5 +196,19 @@ impl MemoryUseCase for MemoryFacade {
         Ok(searchos_memory::NamespaceGuard::visible_entries(
             &entries, reader,
         ))
+    }
+
+    async fn expire(
+        &self,
+        apply: bool,
+    ) -> Result<searchos_memory::MemoryLifecycleReport, SearchOsError> {
+        self.inner.expire(apply).await
+    }
+
+    async fn consolidate(
+        &self,
+        apply: bool,
+    ) -> Result<searchos_memory::MemoryLifecycleReport, SearchOsError> {
+        self.inner.consolidate(apply).await
     }
 }

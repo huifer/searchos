@@ -319,6 +319,12 @@ enum MemoryCmd {
         #[arg(long, value_delimiter = ',')]
         tags: Vec<String>,
     },
+    /// Run the memory lifecycle: expire old entries + merge duplicates (RFC-070)
+    Lifecycle {
+        /// Actually delete (default: dry run, report only)
+        #[arg(long)]
+        apply: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -996,6 +1002,20 @@ async fn run(cli: Cli) -> Result<(), SearchOsError> {
                 MemoryCmd::Stats => {
                     let stats = rt.application.memory_service.stats().await?;
                     print(&serde_json::to_value(stats).unwrap_or_default(), format);
+                }
+                MemoryCmd::Lifecycle { apply } => {
+                    let expired = rt.application.memory_service.expire(*apply).await?;
+                    let consolidated = rt.application.memory_service.consolidate(*apply).await?;
+                    print(
+                        &serde_json::json!({
+                            "expired": expired.expired.len(),
+                            "expired_ids": expired.expired,
+                            "merged_groups": consolidated.merged_groups,
+                            "removed_duplicates": consolidated.removed_duplicates,
+                            "applied": *apply,
+                        }),
+                        format,
+                    );
                 }
                 MemoryCmd::Remember {
                     title,

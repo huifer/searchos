@@ -496,6 +496,11 @@ pub struct PrivacyConfig {
 pub struct MemoryConfig {
     pub enabled: bool,
     pub embedding: EmbeddingConfig,
+    /// RFC-070: retention window in days. `0` keeps entries forever. Applies
+    /// to READ-time freshness and to the explicit lifecycle sweep; nothing
+    /// is deleted unless a sweep is run (CLI/HTTP) or the entry falls out of
+    /// the read window.
+    pub retention_days: u64,
 }
 
 impl Default for MemoryConfig {
@@ -503,6 +508,7 @@ impl Default for MemoryConfig {
         Self {
             enabled: true,
             embedding: EmbeddingConfig::default(),
+            retention_days: 365,
         }
     }
 }
@@ -761,6 +767,7 @@ pub const ALL_CONFIG_FIELDS: &[&str] = &[
     "ingest.redact_pii",
     "privacy.egress_remote_rerank",
     "memory.enabled",
+    "memory.retention_days",
     "memory.embedding.provider",
     "memory.embedding.model",
     "memory.embedding.url",
@@ -871,6 +878,7 @@ pub const CONSUMED_CONFIG_FIELDS: &[&str] = &[
     "ingest.redact_pii",
     "privacy.egress_remote_rerank",
     "memory.enabled",
+    "memory.retention_days",
     "memory.embedding.provider",
     "memory.embedding.model",
     "memory.embedding.url",
