@@ -445,6 +445,182 @@ impl<'a> OutboxRepo<'a> {
     }
 }
 
+/// One append-only policy version row (RFC-034).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PolicyVersionRow {
+    pub id: String,
+    pub kind: String,
+    pub policy_id: String,
+    pub version: i64,
+    pub payload_json: String,
+    pub status: String,
+    pub notes: Option<String>,
+    pub created_at: String,
+}
+
+/// Versioned policy management (RFC-034). All writes are transactional:
+/// submission and rollback keep exactly ONE active row per (kind, policy_id).
+pub struct PolicyRepo<'a> {
+    store: &'a SqliteStore,
+}
+
+impl<'a> PolicyRepo<'a> {
+    pub fn new(store: &'a SqliteStore) -> Self {
+        Self { store }
+    }
+
+    fn row(r: &rusqlite::Row<'_>) -> Result<PolicyVersionRow, rusqlite::Error> {
+        Ok(PolicyVersionRow {
+            id: r.get(0)?,
+            kind: r.get(1)?,
+            policy_id: r.get(2)?,
+            version: r.get(3)?,
+            payload_json: r.get(4)?,
+            status: r.get(5)?,
+            notes: r.get(6)?,
+            created_at: r.get(7)?,
+        })
+    }
+
+    /// Seeds version 1 if the kind has no history yet (idempotent).
+    pub fn ensure_initial(
+        &self,
+        kind: &str,
+        payload_json: &str,
+    ) -> Result<PolicyVersionRow, SearchOsError> {
+        if let Some(row) = self.active(kind)? {
+            return Ok(row);
+        }
+        self.store.with_conn(|c| {
+            let tx = c.unchecked_transaction().map_err(e)?;
+            let row = PolicyVersionRow {
+                id: searchos_domain::new_id("polv"),
+                kind: kind.into(),
+                policy_id: "default".into(),
+                version: 1,
+                payload_json: payload_json.into(),
+                status: "active".into(),
+                notes: Some("initial policy from runtime configuration".into()),
+                created_at: now(),
+            };
+            tx.execute(
+                "INSERT INTO policy_versions (id, kind, policy_id, version, payload_json, status, notes, created_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+                params![row.id, row.kind, row.policy_id, row.version, row.payload_json, row.status, row.notes, row.created_at],
+            ).map_err(e)?;
+            tx.commit().map_err(e)?;
+            Ok(row)
+        })
+    }
+
+    pub fn active(&self, kind: &str) -> Result<Option<PolicyVersionRow>, SearchOsError> {
+        self.store.with_conn(|c| {
+            c.query_row(
+                "SELECT id, kind, policy_id, version, payload_json, status, notes, created_at
+                 FROM policy_versions WHERE kind = ?1 AND policy_id = 'default' AND status = 'active'",
+                params![kind],
+                Self::row,
+            )
+            .optional()
+            .map_err(e)
+        })
+    }
+
+    pub fn versions(&self, kind: &str) -> Result<Vec<PolicyVersionRow>, SearchOsError> {
+        self.store.with_conn(|c| {
+            let mut stmt = c
+                .prepare(
+                    "SELECT id, kind, policy_id, version, payload_json, status, notes, created_at
+                     FROM policy_versions WHERE kind = ?1 AND policy_id = 'default'
+                     ORDER BY version DESC",
+                )
+                .map_err(e)?;
+            let rows = stmt.query_map(params![kind], Self::row).map_err(e)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(e)
+        })
+    }
+
+    /// Submits a NEW version and makes it the sole active one.
+    pub fn submit(
+        &self,
+        kind: &str,
+        payload_json: &str,
+        notes: Option<&str>,
+    ) -> Result<PolicyVersionRow, SearchOsError> {
+        self.store.with_conn(|c| {
+            let tx = c.unchecked_transaction().map_err(e)?;
+            let next: i64 = tx
+                .query_row(
+                    "SELECT COALESCE(MAX(version),0) + 1 FROM policy_versions WHERE kind = ?1 AND policy_id = 'default'",
+                    params![kind],
+                    |r| r.get(0),
+                )
+                .map_err(e)?;
+            tx.execute(
+                "UPDATE policy_versions SET status = 'retired' WHERE kind = ?1 AND policy_id = 'default' AND status = 'active'",
+                params![kind],
+            ).map_err(e)?;
+            let row = PolicyVersionRow {
+                id: searchos_domain::new_id("polv"),
+                kind: kind.into(),
+                policy_id: "default".into(),
+                version: next,
+                payload_json: payload_json.into(),
+                status: "active".into(),
+                notes: notes.map(|n| n.to_string()),
+                created_at: now(),
+            };
+            tx.execute(
+                "INSERT INTO policy_versions (id, kind, policy_id, version, payload_json, status, notes, created_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+                params![row.id, row.kind, row.policy_id, row.version, row.payload_json, row.status, row.notes, row.created_at],
+            ).map_err(e)?;
+            tx.commit().map_err(e)?;
+            Ok(row)
+        })
+    }
+
+    /// Reactivates an EXISTING version (rollback) while keeping all history.
+    pub fn activate(
+        &self,
+        kind: &str,
+        version: i64,
+    ) -> Result<Option<PolicyVersionRow>, SearchOsError> {
+        self.store.with_conn(|c| {
+            let tx = c.unchecked_transaction().map_err(e)?;
+            let target: Option<String> = tx
+                .query_row(
+                    "SELECT id FROM policy_versions WHERE kind = ?1 AND policy_id = 'default' AND version = ?2",
+                    params![kind, version],
+                    |r| r.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(e)?;
+            let Some(id) = target else {
+                return Ok(None);
+            };
+            tx.execute(
+                "UPDATE policy_versions SET status = 'retired' WHERE kind = ?1 AND policy_id = 'default' AND status = 'active'",
+                params![kind],
+            ).map_err(e)?;
+            tx.execute(
+                "UPDATE policy_versions SET status = 'active' WHERE id = ?1",
+                params![id],
+            ).map_err(e)?;
+            let row = tx
+                .query_row(
+                    "SELECT id, kind, policy_id, version, payload_json, status, notes, created_at
+                     FROM policy_versions WHERE id = ?1",
+                    params![id],
+                    Self::row,
+                )
+                .map_err(e)?;
+            tx.commit().map_err(e)?;
+            Ok(Some(row))
+        })
+    }
+}
+
 /// Append-only deletion-propagation audit (RFC-087).
 pub struct DeletionAuditRepo<'a> {
     store: &'a SqliteStore,

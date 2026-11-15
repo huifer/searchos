@@ -67,6 +67,7 @@ fn rebuild_deps(runtime: &Arc<searchos_core::SearchOsRuntime>) -> Arc<SearchDepe
         singleflight: runtime.singleflight.clone(),
         cache: runtime.exact_cache.clone(),
         validity: None,
+        policy_state: None,
         negative_cache: runtime.negative_cache.clone(),
         semantic_dedup: true,
         incremental: true,

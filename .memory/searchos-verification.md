@@ -278,6 +278,26 @@ The SearchOS implementation (`~/git_repo/searchos`) is verified by these command
   clippy/fmt/route scan green. Live CLI: `eval replay --limit 3` → 2
   evaluated, agreement 1.0, all offline.
 
+- **RFC-034 policy management stage (2026-11-14):** migration **v11**
+  `policy_versions` (append-only, unique (kind, policy_id, version), one
+  active row); `PolicyRepo` (ensure_initial/submit/activate/versions);
+  `PolicyState` in application with `stamp()` in EVERY cache key
+  (`key_version` in search + `policy_version` in retrieval); deps read
+  policies via `effective_quality/freshness/source()`. HTTP
+  `GET /policies`, `GET /policies/{kind}/versions`, `PUT /policies/{kind}`,
+  `POST /policies/{kind}/rollback`; CLI `policy show/versions/set/rollback`.
+  Runtime `activate_policy` sets state AND invalidates all response caches
+  (learned: policy changes MUST clear singleflight retention too).
+  Simulation uses an ISOLATED `PolicyState` (mutating `deps.quality` is a
+  no-op once the state is wired). Gates: repo
+  `policy_history_is_append_only_with_one_active_version`, runtime
+  `submitting_a_policy_hot_reloads_the_quality_gate_without_restart`,
+  `active_policy_survives_a_runtime_restart`,
+  `replay_and_simulation_consume_the_current_policy`, HTTP
+  `policy_endpoints_submit_audit_and_rollback`. Full suite **750 passed /
+  0 failed** (83 suites); clippy/fmt/route scan green. Live CLI: set
+  minimum_quality=1.0 → quality failed; rollback → passed; stamp changes.
+
 **Known environment notes:**
 - LanceDB requires `protoc` at build time (`brew install protobuf`).
 - Live network tests (fetch of https://example.com) tolerate sandbox timeouts by design.

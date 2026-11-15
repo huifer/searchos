@@ -217,6 +217,8 @@ pub struct SearchDependencies {
     /// RFC-077: hit-time evidence validity. `None` skips the checks (tests
     /// and harnesses that never mutate documents behind the caches).
     pub validity: Option<std::sync::Arc<dyn crate::validity::EvidenceValidityPort>>,
+    /// RFC-034: live policy state. `None` keeps the build-time policies.
+    pub policy_state: Option<crate::policy::SharedPolicyState>,
     /// RFC-031 D10: negative-result cache for terminal external failures.
     /// A zero-TTL cache effectively disables the feature.
     pub negative_cache: Arc<ExactQueryCache>,
@@ -518,7 +520,7 @@ impl SearchServiceImpl {
             .ok_or_else(|| {
                 SearchOsError::validation("profile", format!("unknown profile {}", req.profile))
             })?;
-        let source_policy = deps.source.clone().with_constraints(
+        let source_policy = deps.effective_source().with_constraints(
             &req.constraints.required_domains,
             &req.constraints.excluded_domains,
         );
@@ -527,8 +529,8 @@ impl SearchServiceImpl {
             normalized_query: analysis.normalized.clone(),
             language: analysis.language.clone(),
             profile_version: profile.version.clone(),
-            freshness_policy: deps.freshness.version.clone(),
-            source_policy: deps.source.version.clone(),
+            freshness_policy: deps.effective_freshness().version.clone(),
+            source_policy: deps.effective_source().version.clone(),
             workspace_scope: req.workspace_id.to_string(),
             mode: req.mode.as_str().to_string(),
             freshness_requirement: freshness_label.clone(),
@@ -1018,7 +1020,7 @@ fn semantic_compatibility(
         intents: analysis.intents.clone(),
         language: analysis.language.clone(),
         workspace_scope: req.workspace_id.to_string(),
-        freshness_policy: deps.freshness.version.clone(),
+        freshness_policy: deps.effective_freshness().version.clone(),
         source_policy: source_policy.version.clone(),
         freshness_requirement: freshness_label.to_string(),
         mode: req.mode.as_str().to_string(),
@@ -1093,8 +1095,11 @@ async fn retrieve_local_candidates(
     let pool_k = top_k.saturating_mul(4).clamp(top_k, 200);
     let freshness_label = effective_freshness_label(req, profile);
     let policy_version = format!(
-        "{}|{}|{}",
-        profile.version, deps.freshness.version, source_policy.version
+        "{}|{}|{}|{}",
+        profile.version,
+        deps.effective_freshness().version,
+        source_policy.version,
+        deps.policy_stamp()
     );
     let compatibility =
         semantic_compatibility(deps, req, analysis, source_policy, &freshness_label);
@@ -1445,6 +1450,36 @@ fn local_results_and_evidence(
     (items, evidence, relevances)
 }
 
+impl SearchDependencies {
+    /// RFC-034: policies currently in force (hot-reloaded) or the build-time
+    /// defaults. Every policy read in the pipeline goes through these.
+    pub fn effective_quality(&self) -> searchos_policy::QualityPolicy {
+        self.policy_state
+            .as_ref()
+            .map(|s| s.quality())
+            .unwrap_or_else(|| self.quality.clone())
+    }
+    pub fn effective_freshness(&self) -> searchos_policy::FreshnessPolicy {
+        self.policy_state
+            .as_ref()
+            .map(|s| s.freshness())
+            .unwrap_or_else(|| self.freshness.clone())
+    }
+    pub fn effective_source(&self) -> searchos_policy::SourcePolicy {
+        self.policy_state
+            .as_ref()
+            .map(|s| s.source())
+            .unwrap_or_else(|| self.source.clone())
+    }
+    /// Cache-key component: a policy change invalidates cached answers.
+    pub fn policy_stamp(&self) -> String {
+        self.policy_state
+            .as_ref()
+            .map(|s| s.stamp())
+            .unwrap_or_else(|| "static".into())
+    }
+}
+
 #[async_trait]
 impl SearchService for SearchServiceImpl {
     /// Plan-only entry point (trait object): delegates to the inherent
@@ -1496,8 +1531,8 @@ impl SearchService for SearchServiceImpl {
             normalized_query: analysis.normalized.clone(),
             language: analysis.language.clone(),
             profile_version: profile.version.clone(),
-            freshness_policy: self.deps.freshness.version.clone(),
-            source_policy: self.deps.source.version.clone(),
+            freshness_policy: self.deps.effective_freshness().version.clone(),
+            source_policy: self.deps.effective_source().version.clone(),
             workspace_scope: req.workspace_id.to_string(),
             mode: req.mode.as_str().to_string(),
             freshness_requirement: freshness_label.clone(),
@@ -1505,13 +1540,15 @@ impl SearchService for SearchServiceImpl {
         let cache_key = SearchCacheKey {
             query_fingerprint: fp.clone(),
             profile_version: profile.version.clone(),
-            freshness_policy_version: self.deps.freshness.version.clone(),
-            source_policy_version: self.deps.source.version.clone(),
+            freshness_policy_version: self.deps.effective_freshness().version.clone(),
+            source_policy_version: self.deps.effective_source().version.clone(),
             language: analysis.language.clone(),
             workspace_scope: req.workspace_id.to_string(),
             mode: req.mode.as_str().to_string(),
             freshness_requirement: freshness_label.clone(),
-            key_version: CACHE_KEY_VERSION.to_string(),
+            // RFC-034: a policy submit/rollback changes this component, so
+            // cached answers cannot outlive the policy that produced them.
+            key_version: format!("{}|{}", CACHE_KEY_VERSION, self.deps.policy_stamp()),
         };
 
         // Claim BEFORE the cache lookup. A cache hit is still a request with
@@ -1784,7 +1821,7 @@ async fn run_pipeline(
     // Decision input cap: the retrieval pool is oversized for freshness, but
     // the engine must judge the same top_k it did before the pool existed.
     let decision_top_k = clamp_max_results(req.max_results.max(10)) as usize;
-    let source_policy = deps.source.clone().with_constraints(
+    let source_policy = deps.effective_source().with_constraints(
         &req.constraints.required_domains,
         &req.constraints.excluded_domains,
     );
@@ -1798,7 +1835,7 @@ async fn run_pipeline(
         &task_id,
     )
     .await?;
-    let freshness_policy = deps.freshness.clone();
+    let freshness_policy = deps.effective_freshness();
     let evals: Vec<LocalCandidateEval> = all_hits
         .iter()
         .map(|c| {
@@ -1863,8 +1900,8 @@ async fn run_pipeline(
 
     // ---- Decision (RFC-004) ------------------------------------------
     let gate = QualityGate::new(
-        deps.quality.clone(),
-        deps.freshness.clone(),
+        deps.effective_quality(),
+        deps.effective_freshness(),
         source_policy.clone(),
     );
     let engine = searchos_decision::DefaultDecisionEngine::new(gate);
@@ -2233,8 +2270,8 @@ async fn run_pipeline(
 
     // ---- Final quality gate over the full evidence set (RFC-005) --------
     let gate = QualityGate::new(
-        deps.quality.clone(),
-        deps.freshness.clone(),
+        deps.effective_quality(),
+        deps.effective_freshness(),
         source_policy.clone(),
     );
     // Relevance comes from the actual retrieval / provider scores, not a

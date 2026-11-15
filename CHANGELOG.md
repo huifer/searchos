@@ -125,6 +125,21 @@ multi-arch images, and attaches the matching section of this file.
   `ingest_redacts_secrets_before_object_write`,
   `redaction_can_be_disabled_explicitly` and
   `ingest_time_secret_redaction_is_wired_through_config`.
+- **Versioned policy management (RFC-034).** Migration **v11** adds
+  `policy_versions` — an append-only history per policy kind (quality /
+  freshness / source) with exclusive activation. `PolicyRepo` (seed, submit,
+  rollback, list) + `PolicyState` (runtime hot reload) + a policy stamp in
+  every cache key mean a submit/rollback takes effect WITHOUT a restart and
+  cached answers can never outlive the policy that produced them. HTTP:
+  `GET /policies`, `GET /policies/{kind}/versions`, `PUT /policies/{kind}`
+  (validated payloads — malformed or out-of-range policies are client
+  errors), `POST /policies/{kind}/rollback`. CLI: `searchos policy
+  show|versions|set|rollback`. Gates: repo-level
+  `policy_history_is_append_only_with_one_active_version`, runtime
+  `submitting_a_policy_hot_reloads_the_quality_gate_without_restart`,
+  `active_policy_survives_a_runtime_restart`,
+  `replay_and_simulation_consume_the_current_policy`, and the HTTP round
+  trip `policy_endpoints_submit_audit_and_rollback`.
 - **Replay / policy simulation / evaluation stage (RFC-040 / 075 / 086).**
   `POST /replay/{trace_id}` reconstructs the original request from
   `search_tasks` + the decision trace and re-executes it through the REAL

@@ -14,6 +14,7 @@ pub mod fetch_service;
 pub mod ingest_service;
 pub mod memory_source;
 pub mod merge;
+pub mod policy;
 pub mod promotion_service;
 pub mod redaction;
 pub mod replay;

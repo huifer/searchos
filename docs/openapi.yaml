@@ -401,6 +401,101 @@ paths:
                   document_id: { type: string }
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /policies:
+    get:
+      tags: [Policies]
+      summary: Active policy versions (RFC-034)
+      description: One active row per kind plus the live in-memory version stamp.
+      responses:
+        '200':
+          description: Active policies.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  policies:
+                    type: array
+                    items: { $ref: '#/components/schemas/PolicyVersionRow' }
+                  live: { type: object, additionalProperties: true }
+  /policies/{kind}/versions:
+    get:
+      tags: [Policies]
+      summary: Append-only policy history
+      parameters:
+        - name: kind
+          in: path
+          required: true
+          schema: { type: string, enum: [quality, freshness, source] }
+      responses:
+        '200':
+          description: Newest-first history.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  kind: { type: string }
+                  versions:
+                    type: array
+                    items: { $ref: '#/components/schemas/PolicyVersionRow' }
+        '400': { $ref: '#/components/responses/NotFound' }
+  /policies/{kind}:
+    put:
+      tags: [Policies]
+      summary: Submit and activate a new policy version (RFC-034)
+      description: |
+        Validates the payload, appends a new version, retires the previous
+        active one and hot-reloads the runtime. The policy stamp changes, so
+        cached answers built under the old policy are no longer reused.
+      parameters:
+        - name: kind
+          in: path
+          required: true
+          schema: { type: string, enum: [quality, freshness, source] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [policy]
+              properties:
+                policy: { type: object, additionalProperties: true }
+                notes: { type: string }
+      responses:
+        '200':
+          description: The newly activated version.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PolicyVersionRow' }
+        '400': { $ref: '#/components/responses/NotFound' }
+  /policies/{kind}/rollback:
+    post:
+      tags: [Policies]
+      summary: Reactivate an existing policy version (RFC-034)
+      parameters:
+        - name: kind
+          in: path
+          required: true
+          schema: { type: string, enum: [quality, freshness, source] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [version]
+              properties:
+                version: { type: integer }
+      responses:
+        '200':
+          description: The reactivated version.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PolicyVersionRow' }
+        '400': { $ref: '#/components/responses/NotFound' }
+
   /replay/{trace_id}:
     post:
       tags: [Search]
@@ -1501,7 +1596,19 @@ components:
               rule: { type: string }
               count: { type: integer }
         rules_version: { type: string }
-    PolicyOverride:
+    PolicyVersionRow:
+      type: object
+      description: One append-only policy version (RFC-034).
+      properties:
+        id: { type: string }
+        kind: { type: string, enum: [quality, freshness, source] }
+        policy_id: { type: string }
+        version: { type: integer, format: int64 }
+        payload_json: { type: string }
+        status: { type: string, enum: [active, retired] }
+        notes: { type: string, nullable: true }
+        created_at: { type: string }
+        PolicyOverride:
       type: object
       description: Caller-supplied quality-policy override for simulation.
       properties:

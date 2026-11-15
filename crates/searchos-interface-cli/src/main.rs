@@ -170,6 +170,11 @@ enum Command {
         #[command(subcommand)]
         cmd: ProfileCmd,
     },
+    /// Versioned policy management (RFC-034)
+    Policy {
+        #[command(subcommand)]
+        cmd: PolicyCmd,
+    },
     /// Operational statistics (RFC-015 15.3)
     Stats {
         #[command(subcommand)]
@@ -327,6 +332,40 @@ enum ProviderCmd {
     },
     /// Per-provider circuit state and rate-limit status
     Health,
+}
+
+/// Versioned policy management commands (RFC-034).
+#[derive(Subcommand)]
+enum PolicyCmd {
+    /// Show the active policy versions
+    Show,
+    /// Show the append-only history of one policy kind
+    Versions {
+        /// quality | freshness | source
+        #[arg(long, default_value = "quality")]
+        kind: String,
+    },
+    /// Submit a new policy version from a JSON file
+    Set {
+        /// quality | freshness | source
+        #[arg(long, default_value = "quality")]
+        kind: String,
+        /// Path to a JSON policy document
+        #[arg(long)]
+        file: PathBuf,
+        /// Optional audit note
+        #[arg(long)]
+        notes: Option<String>,
+    },
+    /// Reactivate an existing policy version
+    Rollback {
+        /// quality | freshness | source
+        #[arg(long, default_value = "quality")]
+        kind: String,
+        /// Version number to reactivate
+        #[arg(long)]
+        version: i64,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1071,6 +1110,61 @@ async fn run(cli: Cli) -> Result<(), SearchOsError> {
                 }
             }
             Ok(())
+        }
+        Command::Policy { cmd } => {
+            let rt = runtime(cli_ref).await?;
+            let repo = repos::PolicyRepo::new(&rt.sqlite);
+            match cmd {
+                PolicyCmd::Show => {
+                    let mut active = Vec::new();
+                    for kind in searchos_application::policy::POLICY_KINDS {
+                        if let Some(row) = repo.active(kind)? {
+                            active.push(row);
+                        }
+                    }
+                    print(
+                        &serde_json::json!({
+                            "policies": active,
+                            "live": rt.policy_state.versions(),
+                        }),
+                        format,
+                    );
+                    Ok(())
+                }
+                PolicyCmd::Versions { kind } => {
+                    let pkind = searchos_application::policy::PolicyKind::parse(kind)
+                        .ok_or_else(|| SearchOsError::validation("kind", "UNKNOWN_POLICY_KIND"))?;
+                    let rows = repo.versions(pkind.as_str())?;
+                    print(
+                        &serde_json::json!({ "kind": kind, "versions": rows }),
+                        format,
+                    );
+                    Ok(())
+                }
+                PolicyCmd::Set { kind, file, notes } => {
+                    let pkind = searchos_application::policy::PolicyKind::parse(kind)
+                        .ok_or_else(|| SearchOsError::validation("kind", "UNKNOWN_POLICY_KIND"))?;
+                    let raw = std::fs::read_to_string(file)
+                        .map_err(|e| SearchOsError::Storage(e.to_string()))?;
+                    let value: serde_json::Value = serde_json::from_str(&raw)
+                        .map_err(|e| SearchOsError::validation("policy", e.to_string()))?;
+                    let payload = searchos_application::policy::validate_payload(pkind, &value)?;
+                    let row = repo.submit(pkind.as_str(), &payload, notes.as_deref())?;
+                    rt.activate_policy(pkind, &row).await?;
+                    print(&serde_json::to_value(&row).unwrap_or_default(), format);
+                    Ok(())
+                }
+                PolicyCmd::Rollback { kind, version } => {
+                    let pkind = searchos_application::policy::PolicyKind::parse(kind)
+                        .ok_or_else(|| SearchOsError::validation("kind", "UNKNOWN_POLICY_KIND"))?;
+                    let row = repo.activate(pkind.as_str(), *version)?.ok_or_else(|| {
+                        SearchOsError::validation("version", "UNKNOWN_POLICY_VERSION")
+                    })?;
+                    rt.activate_policy(pkind, &row).await?;
+                    print(&serde_json::to_value(&row).unwrap_or_default(), format);
+                    Ok(())
+                }
+            }
         }
         Command::Stats { cmd } => {
             let rt = runtime(cli_ref).await?;

@@ -763,6 +763,31 @@ CREATE INDEX IF NOT EXISTS idx_deletion_audit_workspace
     ON deletion_audit(workspace_id, deleted_at DESC);
 "#,
     },
+    // v11 - versioned policy management (RFC-034).
+    // Released migrations above remain immutable.
+    Migration {
+        version: 11,
+        name: "policy_versions",
+        sql: r#"
+-- Append-only policy history. Exactly one row per (kind, policy_id) may be
+-- 'active'; submission retires the previous one, rollback reactivates an
+-- older row WITHOUT deleting history (audit + reversibility).
+CREATE TABLE IF NOT EXISTS policy_versions (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,          -- quality | freshness | source
+    policy_id TEXT NOT NULL,     -- e.g. default
+    version INTEGER NOT NULL,
+    payload_json TEXT NOT NULL,
+    status TEXT NOT NULL,        -- active | retired
+    notes TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_policy_versions_unique
+    ON policy_versions(kind, policy_id, version);
+CREATE INDEX IF NOT EXISTS idx_policy_versions_active
+    ON policy_versions(kind, policy_id, status);
+"#,
+    },
 ];
 
 /// Applies pending migrations to a connection. Each version is atomic: SQL

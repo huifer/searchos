@@ -102,7 +102,7 @@ The Master Index orders work **Foundation → Retrieval → Intelligence → Mem
 |---|---|---|
 | P0 | 001–025 verification, 046, 054, 055, **063, 064, 062**, 061 | **Delivered**: final Master Index, bilingual RFC-062/063/064, [P0 dependency review](rfc-062-dependency-review.md), `searchos-federated` kernel (trait + registry + resource model + planner + executor + Phase 2 adapters, 56 tests) |
 | P1 | 065, 047, **066**, 050, 039, 080, 032, 079 | weighted RRF delivered and wired (federated execute + retrieval verticals); 065 vertical routing, outcome-driven per-source circuit breaker and per-source latency budget (080 slice) delivered; rest planned (047, 050, 039, 032, 079) |
-| P2 | 034, 076, 077, 078, 075, 086, 040 | **Context wiring delivered** (`context_budget` end to end); **077 cache validity delivered**; **076 source-aware decisions delivered**; **040 replay + 075 policy simulation + 086 evaluation delivered**: offline replay from recorded tasks/traces (`POST /replay/{trace_id}`), what-if quality-policy overrides with a baseline run, batch evaluation (`POST /evaluation/replay`, `searchos eval replay`) on top of the existing 078 ledger and 079 benchmark | 034 custom policy authoring, 076 cost-adaptive path selection |
+| P2 | 034, 076, 077, 078, 075, 086, 040 | **Context wiring delivered** (`context_budget` end to end); **077 cache validity delivered**; **076 source-aware decisions delivered**; **040 replay + 075 policy simulation + 086 evaluation delivered**; **034 versioned policy management delivered** (migration v11 `policy_versions`, append-only history, exclusive activation, hot reload via `PolicyState` + policy stamp in every cache key, `GET/PUT /policies/{kind}` + rollback + `searchos policy show/set/versions/rollback`) | 076 cost-adaptive path selection |
 | P3 | 030, 036, 057, 058, **069, 070, 087** | planned (sessions already persist, `ff8b2be`) |
 | P4 | 038, 071, 072, 073, 074, 059, **067, 068** | **Delivered**: `searchos-context` engine + assembly, ahead of its slot (pure/additive/independently testable) |
 | P5–P6 | extensions, Gateway/Dashboard, distributed | planned / staged |
@@ -231,7 +231,7 @@ Master Index 的推进顺序是 **Foundation → Retrieval → Intelligence → 
 |---|---|---|
 | P0 | 001–025 核对、046、054、055、**063、064、062**、061 | **已交付**：最终 Master Index、双语 RFC-062/063/064、[P0 依赖审查](rfc-062-dependency-review.md)、`searchos-federated` 内核（trait + registry + 资源模型 + planner + 执行器 + Phase 2 适配器，56 测试） |
 | P1 | 065、047、**066**、050、039、080、032、079 | 带权 RRF 已交付并接线（联邦 execute + 检索垂直列表）；065 垂直路由、逐源熔断 + 逐源延迟预算（080 切片）已交付；其余计划中（047、050、039、032、079） |
-| P2 | 034、076、077、078、075、086、040 | **上下文接入已交付**（`context_budget` 全链路）；**077 缓存有效性已交付**；**076 来源感知决策已交付**；**040 回放 + 075 策略仿真 + 086 评估已交付**：从 search_tasks/trace 重建请求的离线回放（`POST /replay/{trace_id}`）、带基线对照的质量策略 what-if、批量评估（`POST /evaluation/replay`、`searchos eval replay`），复用已有 078 账本与 079 benchmark | 034 自定义策略编写、076 成本自适应路径选择 |
+| P2 | 034、076、077、078、075、086、040 | **上下文接入已交付**（`context_budget` 全链路）；**077 缓存有效性已交付**；**076 来源感知决策已交付**；**040 回放 + 075 策略仿真 + 086 评估已交付**；**034 版本化策略管理已交付**（migration v11 `policy_versions`、只增历史、激活互斥、经 `PolicyState` + 策略 stamp 热更新，`GET/PUT /policies/{kind}` + 回滚 + `searchos policy show/set/versions/rollback`） | 076 成本自适应路径选择 |
 | P3 | 030、036、057、058、**069、070、087** | 计划中（会话已持久化，`ff8b2be`） |
 | P4 | 038、071、072、073、074、059、**067、068** | **已交付**：`searchos-context` 引擎与装配，先于其位置落地（纯函数、加法式、可独立验证） |
 | P5–P6 | 扩展、Gateway/Dashboard、分布式 | 计划中 / 分阶段 |

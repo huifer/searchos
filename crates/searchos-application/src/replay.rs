@@ -237,7 +237,21 @@ impl ReplayService {
         let service = match policy_override {
             Some(over) if !over.is_empty() => {
                 let mut deps = (*offline_deps).clone();
-                over.apply(&mut deps.quality);
+                // RFC-034: when a live PolicyState is wired it is the source
+                // of truth for policies, so the what-if needs an ISOLATED
+                // state — mutating `deps.quality` alone would do nothing.
+                // The deployed store is never touched.
+                if let Some(state) = deps.policy_state.as_ref() {
+                    let mut quality = state.quality();
+                    over.apply(&mut quality);
+                    deps.policy_state = Some(Arc::new(crate::policy::PolicyState::new(
+                        quality,
+                        state.freshness(),
+                        state.source(),
+                    )));
+                } else {
+                    over.apply(&mut deps.quality);
+                }
                 SearchServiceImpl::new(Arc::new(deps))
             }
             _ => SearchServiceImpl::new(Arc::clone(&offline_deps)),

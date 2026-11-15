@@ -29,7 +29,7 @@ use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
 use axum::middleware::{from_fn, Next};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post, MethodRouter};
+use axum::routing::{delete, get, post, put, MethodRouter};
 use axum::{Json, Router};
 use futures_util::stream;
 use searchos_application::analytics::AnalyticsQuery;
@@ -403,6 +403,15 @@ pub fn api_route_table() -> Vec<RouteSpec> {
         RouteSpec::new("POST", "/replay/{trace_id}", post(replay_trace)),
         // RFC-086: batch replay evaluation.
         RouteSpec::new("POST", "/evaluation/replay", post(evaluate_replays)),
+        // RFC-034: versioned policy management (read + write + history).
+        RouteSpec::new("GET", "/policies", get(list_policies)),
+        RouteSpec::new(
+            "GET",
+            "/policies/{kind}/versions",
+            get(list_policy_versions),
+        ),
+        RouteSpec::new("PUT", "/policies/{kind}", put(submit_policy)),
+        RouteSpec::new("POST", "/policies/{kind}/rollback", post(rollback_policy)),
         RouteSpec::new(
             "GET",
             "/documents/{id}/versions",
@@ -2185,6 +2194,126 @@ async fn evaluate_replays(
     })?))
 }
 
+/// RFC-034: currently active policy versions (one per kind).
+async fn list_policies(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    state.authorize(&headers)?;
+    let repo = searchos_storage_sqlite::repos::PolicyRepo::new(&state.runtime.sqlite);
+    let mut active = Vec::new();
+    for kind in searchos_application::policy::POLICY_KINDS {
+        if let Some(row) = repo.active(kind).map_err(|e| ApiError::from_domain(&e))? {
+            active.push(row);
+        }
+    }
+    Ok(Json(serde_json::json!({
+        "policies": active,
+        "live": state.runtime.policy_state.versions(),
+    })))
+}
+
+fn policy_kind(kind: &str) -> Result<searchos_application::policy::PolicyKind, ApiError> {
+    searchos_application::policy::PolicyKind::parse(kind).ok_or_else(|| {
+        ApiError::from_domain(&searchos_domain::SearchOsError::Validation(
+            searchos_domain::ValidationError {
+                field: "kind".into(),
+                message: "UNKNOWN_POLICY_KIND".into(),
+            },
+        ))
+    })
+}
+
+async fn list_policy_versions(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Path(kind): axum::extract::Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    state.authorize(&headers)?;
+    let kind = policy_kind(&kind)?;
+    let rows = searchos_storage_sqlite::repos::PolicyRepo::new(&state.runtime.sqlite)
+        .versions(kind.as_str())
+        .map_err(|e| ApiError::from_domain(&e))?;
+    Ok(Json(
+        serde_json::json!({ "kind": kind.as_str(), "versions": rows }),
+    ))
+}
+
+/// RFC-034: submit a NEW policy version and activate it atomically.
+async fn submit_policy(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Path(kind): axum::extract::Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    state.authorize(&headers)?;
+    let kind = policy_kind(&kind)?;
+    let payload = body.get("policy").ok_or_else(|| {
+        ApiError::from_domain(&searchos_domain::SearchOsError::Validation(
+            searchos_domain::ValidationError {
+                field: "policy".into(),
+                message: "MISSING_POLICY".into(),
+            },
+        ))
+    })?;
+    let payload_json = searchos_application::policy::validate_payload(kind, payload)
+        .map_err(|e| ApiError::from_domain(&e))?;
+    let notes = body.get("notes").and_then(|v| v.as_str());
+    let row = searchos_storage_sqlite::repos::PolicyRepo::new(&state.runtime.sqlite)
+        .submit(kind.as_str(), &payload_json, notes)
+        .map_err(|e| ApiError::from_domain(&e))?;
+    state
+        .runtime
+        .activate_policy(kind, &row)
+        .await
+        .map_err(|e| ApiError::from_domain(&e))?;
+    Ok(Json(serde_json::to_value(&row).map_err(|e| {
+        ApiError::from_domain(&searchos_domain::SearchOsError::Internal(e.to_string()))
+    })?))
+}
+
+/// RFC-034: roll back to an EXISTING version (history is never deleted).
+async fn rollback_policy(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Path(kind): axum::extract::Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    state.authorize(&headers)?;
+    let kind = policy_kind(&kind)?;
+    let version = body
+        .get("version")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| {
+            ApiError::from_domain(&searchos_domain::SearchOsError::Validation(
+                searchos_domain::ValidationError {
+                    field: "version".into(),
+                    message: "MISSING_VERSION".into(),
+                },
+            ))
+        })?;
+    let repo = searchos_storage_sqlite::repos::PolicyRepo::new(&state.runtime.sqlite);
+    let row = repo
+        .activate(kind.as_str(), version)
+        .map_err(|e| ApiError::from_domain(&e))?
+        .ok_or_else(|| {
+            ApiError::from_domain(&searchos_domain::SearchOsError::Validation(
+                searchos_domain::ValidationError {
+                    field: "version".into(),
+                    message: "UNKNOWN_POLICY_VERSION".into(),
+                },
+            ))
+        })?;
+    state
+        .runtime
+        .activate_policy(kind, &row)
+        .await
+        .map_err(|e| ApiError::from_domain(&e))?;
+    Ok(Json(serde_json::to_value(&row).map_err(|e| {
+        ApiError::from_domain(&searchos_domain::SearchOsError::Internal(e.to_string()))
+    })?))
+}
+
 /// `GET /profiles` — versioned built-in search profiles (RFC-019 19.5).
 async fn list_profiles(
     State(state): State<AppState>,
@@ -2898,6 +3027,115 @@ mod tests {
             .unwrap()
             .iter()
             .all(|s| s["enabled"] == true));
+    }
+
+    #[tokio::test]
+    async fn policy_endpoints_submit_audit_and_rollback() {
+        let (st, _d) = state().await;
+        let app = router(st);
+
+        use tower::ServiceExt;
+        let call = |app: axum::Router, method: &str, uri: &str, body: serde_json::Value| {
+            let (method, uri) = (method.to_string(), uri.to_string());
+            async move {
+                let resp = app
+                    .oneshot(
+                        axum::http::Request::builder()
+                            .method(method.as_str())
+                            .uri(uri)
+                            .header("content-type", "application/json")
+                            .body(axum::body::Body::from(body.to_string()))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                let status = resp.status().as_u16();
+                let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+                    .await
+                    .unwrap();
+                let value: serde_json::Value =
+                    serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+                (status, value)
+            }
+        };
+
+        let stricter = searchos_policy::QualityPolicy {
+            minimum_quality: 0.91,
+            version: "test-v2".into(),
+            ..Default::default()
+        };
+        let (status, submitted) = call(
+            app.clone(),
+            "PUT",
+            "/policies/quality",
+            serde_json::json!({ "policy": stricter, "notes": "HTTP submit" }),
+        )
+        .await;
+        assert_eq!(status, 200, "{submitted}");
+        assert_eq!(submitted["version"], 2);
+        assert_eq!(submitted["status"], "active");
+
+        let (status, active) = call(app.clone(), "GET", "/policies", serde_json::json!({})).await;
+        assert_eq!(status, 200);
+        let rows = active["policies"].as_array().unwrap();
+        assert!(rows
+            .iter()
+            .any(|r| r["kind"] == "quality" && r["version"] == 2));
+
+        let (status, history) = call(
+            app.clone(),
+            "GET",
+            "/policies/quality/versions",
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert_eq!(history["versions"].as_array().unwrap().len(), 2);
+
+        let (status, rolled) = call(
+            app.clone(),
+            "POST",
+            "/policies/quality/rollback",
+            serde_json::json!({ "version": 1 }),
+        )
+        .await;
+        assert_eq!(status, 200, "{rolled}");
+        assert_eq!(rolled["version"], 1);
+
+        // Invalid payload / kind / version are explicit client errors.
+        assert_eq!(
+            call(
+                app.clone(),
+                "PUT",
+                "/policies/quality",
+                serde_json::json!({})
+            )
+            .await
+            .0,
+            400
+        );
+        assert_eq!(
+            call(
+                app.clone(),
+                "PUT",
+                "/policies/unknown",
+                serde_json::json!({ "policy": {} })
+            )
+            .await
+            .0,
+            400
+        );
+        assert_eq!(
+            call(
+                app,
+                "POST",
+                "/policies/quality/rollback",
+                serde_json::json!({ "version": 999 })
+            )
+            .await
+            .0,
+            400
+        );
     }
 
     #[tokio::test]

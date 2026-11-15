@@ -178,6 +178,8 @@ pub struct SearchOsRuntime {
     /// search service (shared Arc state, offline replay by construction).
     pub search_deps: Arc<searchos_application::search_service::SearchDependencies>,
     pub replay: Arc<searchos_application::replay::ReplayService>,
+    /// RFC-034: live policy state (hot reload / rollback).
+    pub policy_state: Arc<searchos_application::policy::PolicyState>,
 }
 
 impl SearchOsRuntime {
@@ -649,6 +651,73 @@ impl SearchOsRuntime {
                 Some(Arc::clone(&embedder)),
             ),
         );
+        // RFC-034: versioned policy management. Durable history is seeded
+        // with the deployed policies on first boot; on later boots the
+        // ACTIVE row wins (a submitted/rolled-back policy survives restart).
+        let policy_repo = repos::PolicyRepo::new(&sqlite);
+        let mut quality_policy = searchos_policy::QualityPolicy {
+            minimum_quality: config.policies.minimum_quality,
+            require_provenance: config.policies.require_provenance,
+            ..Default::default()
+        };
+        let mut freshness_policy = searchos_policy::FreshnessPolicy::default_policy();
+        let mut source_policy = searchos_policy::SourcePolicy::default_policy();
+        let mut policy_versions_rows = Vec::new();
+        for (kind, payload) in [
+            (
+                "quality",
+                serde_json::to_string(&quality_policy).unwrap_or_default(),
+            ),
+            (
+                "freshness",
+                serde_json::to_string(&freshness_policy).unwrap_or_default(),
+            ),
+            (
+                "source",
+                serde_json::to_string(&source_policy).unwrap_or_default(),
+            ),
+        ] {
+            let row = policy_repo.ensure_initial(kind, &payload)?;
+            policy_versions_rows.push(row.clone());
+            match kind {
+                "quality" => {
+                    if let Ok(p) =
+                        serde_json::from_str::<searchos_policy::QualityPolicy>(&row.payload_json)
+                    {
+                        quality_policy = p;
+                    }
+                }
+                "freshness" => {
+                    if let Ok(p) =
+                        serde_json::from_str::<searchos_policy::FreshnessPolicy>(&row.payload_json)
+                    {
+                        freshness_policy = p;
+                    }
+                }
+                "source" => {
+                    if let Ok(p) =
+                        serde_json::from_str::<searchos_policy::SourcePolicy>(&row.payload_json)
+                    {
+                        source_policy = p;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let policy_state = Arc::new(searchos_application::policy::PolicyState::new(
+            quality_policy.clone(),
+            freshness_policy.clone(),
+            source_policy.clone(),
+        ));
+        for row in &policy_versions_rows {
+            let kind = searchos_application::policy::PolicyKind::parse(&row.kind);
+            if let Some(kind) = kind {
+                // Re-apply the durable active version so the stamp matches
+                // the version numbers (no bump beyond the initial one).
+                let _ = policy_state.set(kind, row.version, &row.payload_json);
+            }
+        }
+
         let promotion_for_runtime: Option<
             Arc<dyn searchos_application::promotion_service::EvidencePromotionService>,
         > = Some(Arc::clone(&promotion_impl) as _);
@@ -723,7 +792,7 @@ impl SearchOsRuntime {
 
         let deps = Arc::new(searchos_application::search_service::SearchDependencies {
             profiles: searchos_policy::ProfileRegistry::builtin(),
-            quality: searchos_policy::QualityPolicy::default(),
+            quality: quality_policy.clone(),
             freshness: searchos_policy::FreshnessPolicy::default_policy(),
             source: searchos_policy::SourcePolicy::default_policy(),
             cost_config: cost_config.clone(),
@@ -755,6 +824,7 @@ impl SearchOsRuntime {
             validity: Some(Arc::new(SqliteEvidenceValidity {
                 store: Arc::clone(&sqlite),
             })),
+            policy_state: Some(Arc::clone(&policy_state)),
             negative_cache: Arc::clone(&negative_cache),
             semantic_dedup: config.search.semantic_dedup,
             incremental: config.search.incremental,
@@ -935,6 +1005,7 @@ impl SearchOsRuntime {
             incremental: config.search.incremental,
             search_deps,
             replay,
+            policy_state,
         });
 
         // Explicit config-driven index maintenance. Remediation never runs
@@ -1343,6 +1414,22 @@ impl SearchOsRuntime {
                     .inc_counter("deletion.audit_failed_total");
             }
         }
+        Ok(())
+    }
+
+    /// RFC-034: activate a durable policy version in the live state AND
+    /// invalidate every response-level cache (exact / negative / canonical /
+    /// semantic / retrieval / rerank / singleflight). A policy change must
+    /// not be shadowed by a cached answer or a singleflight retention entry
+    /// produced under the previous policy.
+    pub async fn activate_policy(
+        &self,
+        kind: searchos_application::policy::PolicyKind,
+        row: &repos::PolicyVersionRow,
+    ) -> Result<(), SearchOsError> {
+        self.policy_state
+            .set(kind, row.version, &row.payload_json)?;
+        self.invalidate_caches().await;
         Ok(())
     }
 
