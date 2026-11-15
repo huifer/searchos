@@ -399,6 +399,10 @@ pub fn api_route_table() -> Vec<RouteSpec> {
         RouteSpec::new("DELETE", "/documents/{id}", delete(delete_document)),
         // RFC-087: append-only deletion-propagation audit.
         RouteSpec::new("GET", "/deletions", get(list_deletions)),
+        // RFC-040/075: search replay and policy simulation (offline).
+        RouteSpec::new("POST", "/replay/{trace_id}", post(replay_trace)),
+        // RFC-086: batch replay evaluation.
+        RouteSpec::new("POST", "/evaluation/replay", post(evaluate_replays)),
         RouteSpec::new(
             "GET",
             "/documents/{id}/versions",
@@ -2105,6 +2109,82 @@ async fn list_deletions(
     Ok(Json(serde_json::json!({ "deletions": rows })))
 }
 
+/// RFC-040/075: re-execute a recorded trace offline, optionally under a
+/// quality-policy override. No provider is ever called.
+async fn replay_trace(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Path(trace_id): axum::extract::Path<String>,
+    body: Option<Json<serde_json::Value>>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    state.authorize(&headers)?;
+    let policy = body
+        .and_then(|Json(v)| v.get("policy").cloned())
+        .map(serde_json::from_value::<searchos_application::replay::PolicyOverride>)
+        .transpose()
+        .map_err(|e| {
+            ApiError::from_domain(&searchos_domain::SearchOsError::Validation(
+                searchos_domain::ValidationError {
+                    field: "policy".into(),
+                    message: e.to_string(),
+                },
+            ))
+        })?;
+    let outcome = state
+        .runtime
+        .replay
+        .replay(&trace_id, policy)
+        .await
+        .map_err(|e| ApiError::from_domain(&e))?;
+    Ok(Json(serde_json::to_value(outcome).map_err(|e| {
+        ApiError::from_domain(&searchos_domain::SearchOsError::Internal(e.to_string()))
+    })?))
+}
+
+/// RFC-086: aggregate offline replays over the most recent recorded traces.
+async fn evaluate_replays(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Option<Json<serde_json::Value>>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    state.authorize(&headers)?;
+    let value = body.map(|Json(v)| v).unwrap_or_default();
+    let limit = value
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(20)
+        .clamp(1, 200) as u32;
+    let workspace = value
+        .get("workspace")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    if let Some(workspace) = workspace.as_deref() {
+        state.authorize_workspace(&headers, workspace)?;
+    }
+    let policy = value
+        .get("policy")
+        .cloned()
+        .map(serde_json::from_value::<searchos_application::replay::PolicyOverride>)
+        .transpose()
+        .map_err(|e| {
+            ApiError::from_domain(&searchos_domain::SearchOsError::Validation(
+                searchos_domain::ValidationError {
+                    field: "policy".into(),
+                    message: e.to_string(),
+                },
+            ))
+        })?;
+    let report = state
+        .runtime
+        .replay
+        .evaluate(limit, workspace.as_deref(), policy)
+        .await
+        .map_err(|e| ApiError::from_domain(&e))?;
+    Ok(Json(serde_json::to_value(report).map_err(|e| {
+        ApiError::from_domain(&searchos_domain::SearchOsError::Internal(e.to_string()))
+    })?))
+}
+
 /// `GET /profiles` — versioned built-in search profiles (RFC-019 19.5).
 async fn list_profiles(
     State(state): State<AppState>,
@@ -2818,6 +2898,91 @@ mod tests {
             .unwrap()
             .iter()
             .all(|s| s["enabled"] == true));
+    }
+
+    #[tokio::test]
+    async fn replay_and_evaluation_endpoints_round_trip() {
+        let (st, _d) = state().await;
+        // Record a real trace through the runtime's own search service.
+        let req = searchos_domain::request::SearchRequest::new(
+            "replay endpoint round trip",
+            searchos_domain::ids::ProfileId::general(),
+            searchos_domain::request::SearchMode::LocalOnly,
+            searchos_domain::ids::WorkspaceId::new("default"),
+        )
+        .unwrap();
+        let trace_id = st
+            .runtime
+            .application
+            .search_service
+            .search(req)
+            .await
+            .unwrap()
+            .trace_id;
+        let app = router(st);
+
+        use tower::ServiceExt;
+        let post = |app: axum::Router, uri: String, body: serde_json::Value| async move {
+            let resp = app
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri(uri)
+                        .header("content-type", "application/json")
+                        .body(axum::body::Body::from(body.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = resp.status().as_u16();
+            let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+                .await
+                .unwrap();
+            let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            (status, value)
+        };
+
+        // RFC-040: offline replay of a recorded trace.
+        let (status, replay) = post(
+            app.clone(),
+            format!("/replay/{}", trace_id.as_str()),
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(status, 200, "{replay}");
+        assert_eq!(replay["trace_id"], trace_id.as_str());
+        assert_eq!(replay["offline"], true);
+
+        // RFC-075: the same endpoint accepts a policy override.
+        let (status, simulated) = post(
+            app.clone(),
+            format!("/replay/{}", trace_id.as_str()),
+            serde_json::json!({ "policy": {"minimum_quality": 1.0} }),
+        )
+        .await;
+        assert_eq!(status, 200, "{simulated}");
+        assert_eq!(simulated["policy_applied"], true);
+        assert!(simulated["baseline"].is_object());
+
+        // RFC-086: batch evaluation over recent traces.
+        let (status, evaluation) = post(
+            app,
+            "/evaluation/replay".into(),
+            serde_json::json!({ "limit": 5, "workspace": "default" }),
+        )
+        .await;
+        assert_eq!(status, 200, "{evaluation}");
+        assert!(evaluation["evaluated"].as_u64().unwrap() >= 1);
+        assert!(evaluation["decision_agreement_rate"].is_number());
+
+        // An invalid policy override is a client error, not a silent ignore.
+        let (status, bad) = post(
+            router(state().await.0),
+            format!("/replay/{}", trace_id.as_str()),
+            serde_json::json!({ "policy": {"minimum_quality": "not-a-number"} }),
+        )
+        .await;
+        assert_eq!(status, 400, "{bad}");
     }
 
     #[tokio::test]

@@ -401,6 +401,61 @@ paths:
                   document_id: { type: string }
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /replay/{trace_id}:
+    post:
+      tags: [Search]
+      summary: Replay a recorded decision offline (RFC-040 / RFC-075)
+      description: |
+        Reconstructs the recorded request from search_tasks + the decision
+        trace, then re-executes it with a FRESH request id and ZERO external
+        queries. No provider is ever called. An optional `policy` object
+        overrides quality thresholds for what-if simulation; the replay runs
+        on an isolated service sharing all other state.
+      parameters:
+        - name: trace_id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                policy: { $ref: '#/components/schemas/PolicyOverride' }
+      responses:
+        '200':
+          description: Original vs replayed decision snapshots.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReplayOutcome' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /evaluation/replay:
+    post:
+      tags: [Search]
+      summary: Aggregate replay evaluation (RFC-086)
+      description: |
+        Batches offline replays over the most recent recorded traces and
+        reports decision agreement, quality changes and per-trace detail.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                limit: { type: integer, minimum: 1, maximum: 200, default: 20 }
+                workspace: { type: string }
+                policy: { $ref: '#/components/schemas/PolicyOverride' }
+      responses:
+        '200':
+          description: Evaluation report.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EvaluationReport' }
+
   /deletions:
     get:
       tags: [Knowledge]
@@ -1446,7 +1501,53 @@ components:
               rule: { type: string }
               count: { type: integer }
         rules_version: { type: string }
-    DeletionAuditEntry:
+    PolicyOverride:
+      type: object
+      description: Caller-supplied quality-policy override for simulation.
+      properties:
+        minimum_quality: { type: number, format: float, minimum: 0, maximum: 1 }
+        minimum_coverage: { type: number, format: float, minimum: 0, maximum: 1 }
+        minimum_distinct_sources: { type: integer }
+    DecisionSnapshot:
+      type: object
+      properties:
+        decision_path: { type: string }
+        decision_reason: { type: string }
+        final_outcome: { type: string, nullable: true }
+        estimated_cost_micros: { type: integer, format: int64 }
+        quality_status: { type: string }
+        status: { type: string }
+    ReplayOutcome:
+      type: object
+      properties:
+        trace_id: { type: string }
+        task_id: { type: string }
+        query: { type: string }
+        original: { $ref: '#/components/schemas/DecisionSnapshot' }
+        replayed: { $ref: '#/components/schemas/DecisionSnapshot' }
+        decision_changed: { type: boolean }
+        quality_changed: { type: boolean }
+        policy_applied: { type: boolean }
+        baseline:
+          allOf:
+            - $ref: '#/components/schemas/DecisionSnapshot'
+          nullable: true
+        offline: { type: boolean }
+        notes:
+          type: array
+          items: { type: string }
+    EvaluationReport:
+      type: object
+      properties:
+        evaluated: { type: integer }
+        decision_changes: { type: integer }
+        quality_changes: { type: integer }
+        decision_agreement_rate: { type: number, format: float }
+        policy_applied: { type: boolean }
+        per_trace:
+          type: array
+          items: { $ref: '#/components/schemas/ReplayOutcome' }
+        DeletionAuditEntry:
       type: object
       description: One append-only deletion-propagation audit row (RFC-087).
       properties:

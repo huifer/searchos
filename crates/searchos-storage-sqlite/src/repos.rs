@@ -57,6 +57,18 @@ pub fn ensure_agent(
     })
 }
 
+/// RFC-040: the original request facts for one decision trace.
+#[derive(Debug, Clone)]
+pub struct RecordedSearchTask {
+    pub task_id: String,
+    pub trace_id: String,
+    pub query: String,
+    pub profile_id: String,
+    pub mode: String,
+    pub workspace_id: String,
+    pub status: String,
+}
+
 /// Search task persistence.
 pub struct TaskRepo<'a> {
     store: &'a SqliteStore,
@@ -65,6 +77,52 @@ pub struct TaskRepo<'a> {
 impl<'a> TaskRepo<'a> {
     pub fn new(store: &'a SqliteStore) -> Self {
         Self { store }
+    }
+
+    /// Looks up the task row that OWNS a trace id.
+    pub fn by_trace_id(&self, trace_id: &str) -> Result<Option<RecordedSearchTask>, SearchOsError> {
+        self.store.with_conn(|c| {
+            c.query_row(
+                "SELECT id, workspace_id, query, profile_id, mode, trace_id, status FROM search_tasks WHERE trace_id = ?1",
+                params![trace_id],
+                |r| {
+                    Ok(RecordedSearchTask {
+                        task_id: r.get(0)?,
+                        workspace_id: r.get(1)?,
+                        query: r.get(2)?,
+                        profile_id: r.get(3)?,
+                        mode: r.get(4)?,
+                        trace_id: r.get(5)?,
+                        status: r.get(6)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(e)
+        })
+    }
+
+    /// Recent trace ids, optionally workspace-scoped (RFC-086 evaluation).
+    pub fn recent_trace_ids(
+        &self,
+        limit: u32,
+        workspace: Option<&str>,
+    ) -> Result<Vec<String>, SearchOsError> {
+        self.store.with_conn(|c| {
+            let mut stmt = c
+                .prepare(
+                    "SELECT trace_id FROM search_tasks
+                     WHERE (?1 IS NULL OR workspace_id = ?1)
+                     ORDER BY started_at DESC LIMIT ?2",
+                )
+                .map_err(e)?;
+            let rows = stmt
+                .query_map(params![workspace, limit.clamp(1, 200)], |r| {
+                    r.get::<_, String>(0)
+                })
+                .map_err(e)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(e)
+        })
     }
 
     /// Inserts a task row (RFC-004 trace: every search task recorded).

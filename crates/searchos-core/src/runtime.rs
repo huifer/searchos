@@ -174,6 +174,10 @@ pub struct SearchOsRuntime {
     pub trace_retention_days: u32,
     pub semantic_dedup: bool,
     pub incremental: bool,
+    /// RFC-040/075/086: deps + replay service assembled alongside the main
+    /// search service (shared Arc state, offline replay by construction).
+    pub search_deps: Arc<searchos_application::search_service::SearchDependencies>,
+    pub replay: Arc<searchos_application::replay::ReplayService>,
 }
 
 impl SearchOsRuntime {
@@ -771,8 +775,16 @@ impl SearchOsRuntime {
             },
         });
 
+        let search_deps = Arc::clone(&deps);
         let search_service: Arc<dyn searchos_application::search_service::SearchService> =
             Arc::new(searchos_application::search_service::SearchServiceImpl::new(deps));
+        // RFC-040/075/086: replay, policy simulation and evaluation.
+        let replay = Arc::new(searchos_application::replay::ReplayService::new(
+            Arc::clone(&search_deps),
+            Arc::new(SqliteReplayLookup {
+                store: Arc::clone(&sqlite),
+            }),
+        ));
 
         // RFC-029: local data import. Same DocumentPort as fetch, plus batch
         // job tracking over sqlite.
@@ -921,6 +933,8 @@ impl SearchOsRuntime {
             trace_retention_days: config.observability.trace_retention_days,
             semantic_dedup: config.search.semantic_dedup,
             incremental: config.search.incremental,
+            search_deps,
+            replay,
         });
 
         // Explicit config-driven index maintenance. Remediation never runs
@@ -1534,6 +1548,47 @@ impl searchos_decision::LocalKnowledgePort for TantivyLocalPort {
 }
 
 /// TaskRecorder over sqlite.
+/// RFC-040: durable lookup of recorded tasks / traces for replay.
+struct SqliteReplayLookup {
+    store: Arc<SqliteStore>,
+}
+
+#[async_trait::async_trait]
+impl searchos_application::replay::RecordedTaskLookup for SqliteReplayLookup {
+    async fn by_trace_id(
+        &self,
+        trace_id: &str,
+    ) -> Result<Option<searchos_application::replay::RecordedSearchTask>, SearchOsError> {
+        let row = repos::TaskRepo::new(&self.store).by_trace_id(trace_id)?;
+        Ok(
+            row.map(|r| searchos_application::replay::RecordedSearchTask {
+                task_id: r.task_id,
+                trace_id: r.trace_id,
+                query: r.query,
+                profile_id: r.profile_id,
+                mode: r.mode,
+                workspace_id: r.workspace_id,
+                status: r.status,
+            }),
+        )
+    }
+
+    async fn recent_trace_ids(
+        &self,
+        limit: u32,
+        workspace: Option<&str>,
+    ) -> Result<Vec<String>, SearchOsError> {
+        repos::TaskRepo::new(&self.store).recent_trace_ids(limit, workspace)
+    }
+
+    async fn trace(
+        &self,
+        trace_id: &str,
+    ) -> Result<Option<searchos_domain::decision::DecisionTrace>, SearchOsError> {
+        repos::DecisionRepo::new(&self.store).get_trace(trace_id)
+    }
+}
+
 struct SqliteTaskRecorder {
     store: Arc<SqliteStore>,
 }

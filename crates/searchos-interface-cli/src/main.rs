@@ -368,6 +368,18 @@ enum EvalCmd {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Replay recent recorded traces offline and aggregate decisions (RFC-086)
+    Replay {
+        /// Maximum traces to replay
+        #[arg(long, default_value_t = 20)]
+        limit: u32,
+        /// Workspace scope
+        #[arg(long)]
+        workspace: Option<String>,
+        /// Quality threshold override as JSON (RFC-075)
+        #[arg(long)]
+        policy: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1247,6 +1259,27 @@ async fn run(cli: Cli) -> Result<(), SearchOsError> {
                     .map_err(|e| SearchOsError::Storage(e.to_string()))?;
                 }
                 print(&report, format);
+                Ok(())
+            }
+            EvalCmd::Replay {
+                limit,
+                workspace,
+                policy,
+            } => {
+                let rt = runtime(cli_ref).await?;
+                let override_value: Option<searchos_application::replay::PolicyOverride> =
+                    match policy {
+                        Some(raw) => Some(
+                            serde_json::from_str(raw)
+                                .map_err(|e| SearchOsError::validation("policy", e.to_string()))?,
+                        ),
+                        None => None,
+                    };
+                let report = rt
+                    .replay
+                    .evaluate(*limit, workspace.as_deref(), override_value)
+                    .await?;
+                print(&serde_json::to_value(&report).unwrap_or_default(), format);
                 Ok(())
             }
         },

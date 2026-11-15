@@ -16,6 +16,7 @@ pub mod memory_source;
 pub mod merge;
 pub mod promotion_service;
 pub mod redaction;
+pub mod replay;
 pub mod search_service;
 pub mod session;
 pub mod session_source;

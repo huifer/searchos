@@ -125,6 +125,23 @@ multi-arch images, and attaches the matching section of this file.
   `ingest_redacts_secrets_before_object_write`,
   `redaction_can_be_disabled_explicitly` and
   `ingest_time_secret_redaction_is_wired_through_config`.
+- **Replay / policy simulation / evaluation stage (RFC-040 / 075 / 086).**
+  `POST /replay/{trace_id}` reconstructs the original request from
+  `search_tasks` + the decision trace and re-executes it through the REAL
+  pipeline with a fresh request id, fully OFFLINE (external disabled, zero
+  external queries, fresh response caches and singleflight so the replay
+  never reads the recorded answer). It returns original vs replayed
+  decision snapshots plus honest offline caveats. A `policy` body overrides
+  quality thresholds for a what-if simulation: the service runs a
+  default-policy BASELINE first (own idempotency identity) and compares
+  decision and quality changes. `POST /evaluation/replay` batches this over
+  recent traces with workspace scoping and reports decision agreement;
+  `searchos eval replay --limit N` is the CLI surface. Gates: four runtime
+  integration tests (`replay_reconstructs_the_recorded_request_offline`,
+  `unknown_trace_is_an_explicit_error`,
+  `policy_simulation_uses_a_baseline_and_applies_the_override`,
+  `evaluation_aggregates_recent_replays`) and the HTTP round trip
+  `replay_and_evaluation_endpoints_round_trip`.
 - **Per-source egress enforcement (RFC-087 slice).** The remote reranker is
   now an egress boundary: workspace-owned content (`searchos-*://` schemes —
   ingested documents, memory, session transcripts) NEVER reaches the remote

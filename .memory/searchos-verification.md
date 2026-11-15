@@ -263,6 +263,21 @@ The SearchOS implementation (`~/git_repo/searchos`) is verified by these command
   Gates: 4 egress tests with a real TCP mock endpoint in the retrieval
   crate. Full suite **736 passed / 0 failed**; clippy/fmt/route scan green.
 
+- **P2 stage: replay / simulation / evaluation (2026-11-14):** `replay.rs`
+  in application + `SqliteReplayLookup` in core + `runtime.replay` /
+  `runtime.search_deps` (SearchDependencies now derives Clone); storage
+  `TaskRepo::by_trace_id` / `recent_trace_ids`; routes `POST
+  /replay/{trace_id}` + `POST /evaluation/replay`; CLI `eval replay`.
+  **Offline replay invariants:** fresh request id per RUN (baseline and
+  simulation need DIFFERENT idempotency identities), fresh exact/negative
+  caches + singleflight (else the recorded answer is served), offline deps
+  with `allow_external=false` but the cost budget INTACT (zeroing it trips
+  Rule 5 BudgetExceeded for every external-allowing mode), baseline-run
+  caches cleared before the simulated run. Gates: 4 integration + 1 HTTP
+  round-trip. Full suite **741 passed / 0 failed** (82 suites);
+  clippy/fmt/route scan green. Live CLI: `eval replay --limit 3` → 2
+  evaluated, agreement 1.0, all offline.
+
 **Known environment notes:**
 - LanceDB requires `protoc` at build time (`brew install protobuf`).
 - Live network tests (fetch of https://example.com) tolerate sandbox timeouts by design.

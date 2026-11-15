@@ -187,7 +187,10 @@ impl From<SearchOsError> for ExternalExecutionError {
 }
 
 /// Everything the search service needs, injected by the runtime.
+/// `Clone` lets RFC-075 policy simulation build an isolated service with one
+/// overridden policy while sharing all the (Arc) state behind it.
 #[allow(clippy::too_many_arguments)]
+#[derive(Clone)]
 pub struct SearchDependencies {
     pub profiles: ProfileRegistry,
     pub quality: QualityPolicy,
@@ -1106,7 +1109,6 @@ async fn retrieve_local_candidates(
             &query_vector,
         ) {
             if validity_gate_allows(deps, &cached).await {
-                eprintln!("DEBUG cand cache=semantic n={}", cached.len());
                 metrics.inc_semantic_reuse();
                 return Ok(cached);
             }
@@ -1120,7 +1122,6 @@ async fn retrieve_local_candidates(
         &policy_version,
     ) {
         if validity_gate_allows(deps, &cached).await {
-            eprintln!("DEBUG cand cache=canonical n={}", cached.len());
             return Ok(cached);
         }
         metrics.inc_counter("cache.validity_reject_total");
@@ -1128,7 +1129,6 @@ async fn retrieve_local_candidates(
     if deps.incremental {
         if let Some(cached) = deps.retrieval_cache.get(fp, pool_k, &policy_version) {
             if validity_gate_allows(deps, &cached).await {
-                eprintln!("DEBUG cand cache=retrieval n={}", cached.len());
                 return Ok(cached);
             }
             metrics.inc_counter("cache.validity_reject_total");
