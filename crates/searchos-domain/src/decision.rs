@@ -29,6 +29,9 @@ pub enum DecisionReason {
     ProviderUnavailable,
     /// Workspace policy forbids this request.
     WorkspacePolicyDenied,
+    /// RFC-076: the external plan was downsized to fit the remaining
+    /// budget (cost-adaptive path selection).
+    ExternalPlanDownsized,
 }
 
 impl DecisionReason {
@@ -39,6 +42,7 @@ impl DecisionReason {
             Self::LocalEvidenceSufficientForProfile => "local_evidence_sufficient_for_profile",
             Self::LocalEvidenceStale => "local_evidence_stale",
             Self::LocalCoverageInsufficient => "local_coverage_insufficient",
+            Self::ExternalPlanDownsized => "external_plan_downsized",
             Self::StrictFreshnessRequired => "strict_freshness_required",
             Self::ExplicitSourceRequirement => "explicit_source_requirement",
             Self::ModeForcesExternal => "mode_forces_external",
@@ -216,6 +220,24 @@ impl SearchDecision {
     }
 }
 
+/// RFC-076: cost-adaptive reasoning recorded on the trace. The engine
+/// compares the per-query price against the remaining budget and, when the
+/// budget only affords FEWER external queries than requested, reports the
+/// downsize — the plan must fit what the caller actually paid for.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct CostAdaptiveTrace {
+    /// External queries the caller's budget config requested.
+    pub requested_external_queries: u32,
+    /// External queries the remaining budget can actually afford.
+    pub affordable_external_queries: u32,
+    pub estimated_cost_per_query_micros: i64,
+    /// True when the budget afforded fewer queries than requested.
+    pub downsized: bool,
+    /// True when even ONE external query does not fit the budget (the
+    /// external path is unaffordable; the decision must reject or degrade).
+    pub external_unaffordable: bool,
+}
+
 /// Explainable decision record (RFC-004 4.5, P-011).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DecisionTrace {
@@ -247,6 +269,10 @@ pub struct DecisionTrace {
     /// legacy path so old traces stay byte-compatible.
     #[serde(default)]
     pub federation_execution: Option<FederationExecutionTrace>,
+    /// RFC-076: cost-adaptive affordability reasoning. `None` when the mode
+    /// never allows external (LocalOnly).
+    #[serde(default)]
+    pub cost_adaptive: Option<CostAdaptiveTrace>,
 }
 
 /// Which federated sources a task planned, executed, and lost (RFC-062 §16).

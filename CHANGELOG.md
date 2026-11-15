@@ -125,6 +125,21 @@ multi-arch images, and attaches the matching section of this file.
   `ingest_redacts_secrets_before_object_write`,
   `redaction_can_be_disabled_explicitly` and
   `ingest_time_secret_redaction_is_wired_through_config`.
+- **Cost-adaptive path selection (RFC-076 slice).** `SearchBudget` gains
+  `cost_adaptive` (default **false**). With the flag ON, when the FULL
+  external plan is over budget but a smaller plan fits, the decision engine
+  downsizes instead of rejecting: a new `DecisionReason::ExternalPlanDownsized`
+  is emitted, the trace records requested vs affordable external queries
+  (`CostAdaptiveTrace` with the per-query price), and the pipeline caps the
+  planned queries at the affordable count (migration **v12** persists the
+  reasoning on the trace). Rule-5's red line is untouched: flag off ⇒ reject,
+  and when even ONE query does not fit ⇒ reject in both modes. Gates:
+  `budget_affording_fewer_queries_downsizes_the_plan`,
+  `rule5_red_line_holds_when_cost_adaptive_is_off`,
+  `external_unaffordable_budget_rejects_before_execution`,
+  `unpriced_provider_keeps_the_query_count_cap`, and the live-pipeline gate
+  `cost_adaptive_downsizes_the_external_plan_within_budget` (priced fake
+  provider; asserts calls ≤ affordable and non-BudgetExhausted status).
 - **Versioned policy management (RFC-034).** Migration **v11** adds
   `policy_versions` — an append-only history per policy kind (quality /
   freshness / source) with exclusive activation. `PolicyRepo` (seed, submit,

@@ -57,6 +57,7 @@ pub trait LocalKnowledgePort: Send + Sync {
 }
 
 /// Everything the engine needs for one decision (RFC-004 4.2 pipeline input).
+#[derive(Clone)]
 pub struct DecisionInput {
     pub analysis: QueryAnalysis,
     pub profile: SearchProfile,
@@ -65,6 +66,9 @@ pub struct DecisionInput {
     pub local_candidates: Vec<LocalCandidateEval>,
     /// Estimated minimum cost of an external path (micros).
     pub estimated_external_cost_micros: i64,
+    /// RFC-076: estimated price of ONE external query (micros). Zero when
+    /// unpriced (then the query-count cap is the only affordability bound).
+    pub estimated_external_cost_per_query_micros: i64,
     /// Currency for estimates.
     pub currency: String,
     /// Required sub-questions for coverage (RFC-005 5.6).
@@ -434,23 +438,37 @@ impl DecisionEngine for DefaultDecisionEngine {
         let local_allowed = input.mode.allows_local();
         let external_allowed = input.mode.allows_external();
 
-        // Rule 5: budget — all quality paths over budget ⇒ Reject.
-        if external_allowed {
-            let est = Money {
-                amount_micros: input.estimated_external_cost_micros,
-                currency: input.currency.clone(),
+        // Rule 5: budget — all quality paths over budget ⇒ Reject, UNLESS
+        // the caller opted into RFC-076 cost-adaptive path selection and a
+        // SMALLER plan still fits. In that case the rule chain CONTINUES
+        // under the affordable cap: the eventual decision keeps its normal
+        // mode semantics (ExternalOnly stays external, local evidence can
+        // still win), the trace records the downsize, and the pipeline
+        // caps the external plan at `affordable_external_queries`. When
+        // even ONE query does not fit, the external path is unaffordable
+        // and Rule 5 keeps its red line.
+        let est = Money {
+            amount_micros: input.estimated_external_cost_micros,
+            currency: input.currency.clone(),
+        };
+        let max = Money {
+            amount_micros: input.budget.max_total_cost_micros,
+            currency: input.currency.clone(),
+        };
+        let affordable_external_queries = if input.estimated_external_cost_per_query_micros > 0 {
+            (input.budget.max_total_cost_micros / input.estimated_external_cost_per_query_micros)
+                .clamp(0, i64::from(input.budget.max_external_queries)) as u32
+        } else {
+            input.budget.max_external_queries
+        };
+        let external_unaffordable = external_allowed && affordable_external_queries == 0;
+        let over_budget = est.amount_micros > max.amount_micros || max.amount_micros <= 0;
+        if over_budget && !(input.budget.cost_adaptive && !external_unaffordable) {
+            let decision = SearchDecision::Reject {
+                reason: DecisionReason::BudgetExceeded,
             };
-            let max = Money {
-                amount_micros: input.budget.max_total_cost_micros,
-                currency: input.currency.clone(),
-            };
-            if max.amount_micros <= 0 || est.amount_micros > max.amount_micros {
-                let decision = SearchDecision::Reject {
-                    reason: DecisionReason::BudgetExceeded,
-                };
-                let trace = self.build_trace(&trace_id, &task_id, &input, &decision, 0, &est);
-                return Ok((decision, trace));
-            }
+            let trace = self.build_trace(&trace_id, &task_id, &input, &decision, 0, &est);
+            return Ok((decision, trace));
         }
 
         // ExternalOnly: never intercepted by local cache, and no local
@@ -818,6 +836,25 @@ impl DefaultDecisionEngine {
             // federated executor ran, via a trace re-record (INSERT OR
             // REPLACE). The engine never knows about execution.
             federation_execution: None,
+            cost_adaptive: if input.mode.allows_external() {
+                let affordable = if input.estimated_external_cost_per_query_micros > 0 {
+                    (input.budget.max_total_cost_micros
+                        / input.estimated_external_cost_per_query_micros)
+                        .clamp(0, i64::from(input.budget.max_external_queries))
+                        as u32
+                } else {
+                    input.budget.max_external_queries
+                };
+                Some(searchos_domain::decision::CostAdaptiveTrace {
+                    requested_external_queries: input.budget.max_external_queries,
+                    affordable_external_queries: affordable,
+                    estimated_cost_per_query_micros: input.estimated_external_cost_per_query_micros,
+                    downsized: affordable < input.budget.max_external_queries,
+                    external_unaffordable: affordable == 0,
+                })
+            } else {
+                None
+            },
         }
     }
 }
@@ -880,6 +917,7 @@ mod tests {
             excluded_domains: vec![],
             stale_document_ids: vec![],
             external_sources_healthy: None,
+            estimated_external_cost_per_query_micros: 1_000,
         }
     }
 
@@ -1208,5 +1246,136 @@ mod tests {
             }
             other => panic!("expected hybrid, got {other:?}"),
         }
+    }
+
+    // ---- RFC-076: cost-adaptive affordability ---------------------------
+
+    #[tokio::test]
+    async fn budget_affording_fewer_queries_downsizes_the_plan() {
+        // 1_000 micros/query, 2_500 budget: only 2 of 3 requested queries
+        // are affordable. With cost_adaptive ON the plan is downsized to
+        // what the budget affords (external_plan_downsized), the trace
+        // records the downsize, and the estimate reflects the AFFORDABLE
+        // plan.
+        let mut inp = input(
+            "What is the latest Tokio version?",
+            "general",
+            SearchMode::LocalFirst,
+            vec![candidate("https://tokio.rs", "Tokio", false)],
+        );
+        inp.budget.max_external_queries = 3;
+        inp.budget.max_total_cost_micros = 2_500;
+        inp.budget.cost_adaptive = true;
+        inp.estimated_external_cost_per_query_micros = 1_000;
+        let (d, t) = engine().decide(inp).await.unwrap();
+        // The decision keeps its normal mode/freshness semantics; the
+        // trace carries the downsize for the pipeline to enforce.
+        assert!(d.requires_external(), "{d:?}");
+        let c = t.cost_adaptive.expect("cost-adaptive trace recorded");
+        assert_eq!(c.requested_external_queries, 3);
+        assert_eq!(c.affordable_external_queries, 2);
+        assert!(c.downsized);
+        assert!(!c.external_unaffordable);
+    }
+
+    #[tokio::test]
+    async fn rule5_red_line_holds_when_cost_adaptive_is_off() {
+        // Default (flag off): the full plan over budget ⇒ Reject (RFC-004
+        // Rule 5), and the trace still records the affordability reasoning.
+        let mut inp = input(
+            "What is the latest Tokio version?",
+            "general",
+            SearchMode::LocalFirst,
+            vec![candidate("https://tokio.rs", "Tokio", false)],
+        );
+        inp.budget.max_external_queries = 3;
+        inp.budget.max_total_cost_micros = 2_500;
+        inp.estimated_external_cost_per_query_micros = 1_000;
+        let (d, t) = engine().decide(inp).await.unwrap();
+        assert_eq!(
+            d,
+            SearchDecision::Reject {
+                reason: DecisionReason::BudgetExceeded
+            }
+        );
+        let c = t.cost_adaptive.expect("cost-adaptive trace recorded");
+        assert_eq!(c.affordable_external_queries, 2);
+        assert!(c.downsized, "affordability is measured either way");
+        assert!(!c.external_unaffordable);
+    }
+
+    #[tokio::test]
+    async fn external_unaffordable_budget_rejects_before_execution() {
+        // 1_000 micros/query, 500 budget: even ONE query does not fit —
+        // the red line holds with cost_adaptive ON as well.
+        let mut inp = input(
+            "What is the latest Tokio version?",
+            "general",
+            SearchMode::LocalFirst,
+            vec![candidate("https://tokio.rs", "Tokio", false)],
+        );
+        inp.budget.max_external_queries = 3;
+        inp.budget.max_total_cost_micros = 500;
+        inp.budget.cost_adaptive = true;
+        inp.estimated_external_cost_per_query_micros = 1_000;
+        let (d, t) = engine().decide(inp).await.unwrap();
+        assert_eq!(
+            d,
+            SearchDecision::Reject {
+                reason: DecisionReason::BudgetExceeded
+            }
+        );
+        let c = t.cost_adaptive.expect("cost-adaptive trace recorded");
+        assert!(c.external_unaffordable);
+        assert_eq!(c.affordable_external_queries, 0);
+    }
+
+    #[tokio::test]
+    async fn local_only_never_records_cost_adaptive_reasoning() {
+        let inp = input(
+            "What is Tokio? rust async runtime explanation",
+            "general",
+            SearchMode::LocalOnly,
+            vec![candidate("https://tokio.rs", "Tokio", true)],
+        );
+        let (_d, t) = engine().decide(inp).await.unwrap();
+        assert!(
+            t.cost_adaptive.is_none(),
+            "LocalOnly never egresses, so no cost reasoning"
+        );
+    }
+
+    #[tokio::test]
+    async fn unpriced_provider_keeps_the_query_count_cap() {
+        // Unpriced (0) per-query cost: the affordability bound is the
+        // configured query count, never zero.
+        let mut inp = input(
+            "What is the latest Tokio version?",
+            "general",
+            SearchMode::ExternalOnly,
+            vec![],
+        );
+        inp.estimated_external_cost_per_query_micros = 0;
+        let (d, t) = engine().decide(inp.clone()).await.unwrap();
+        assert!(matches!(d, SearchDecision::ExternalOnly { .. }), "{d:?}");
+        let c = t.cost_adaptive.expect("cost-adaptive trace recorded");
+        assert_eq!(
+            c.affordable_external_queries,
+            inp.budget.max_external_queries
+        );
+        assert!(!c.downsized);
+        assert!(!c.external_unaffordable);
+    }
+
+    #[tokio::test]
+    async fn local_only_traces_no_cost_adaptive_reasoning() {
+        let inp = input(
+            "What is Tokio? rust async runtime explanation",
+            "general",
+            SearchMode::LocalOnly,
+            vec![candidate("https://tokio.rs", "Tokio", true)],
+        );
+        let (_d, t) = engine().decide(inp).await.unwrap();
+        assert!(t.cost_adaptive.is_none(), "LocalOnly never egresses");
     }
 }

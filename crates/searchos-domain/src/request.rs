@@ -149,6 +149,12 @@ pub struct SearchBudget {
     /// default so cached payloads and older configs stay deserializable.
     #[serde(default)]
     pub federation: FederationLimits,
+    /// RFC-076 cost-adaptive path selection. When the FULL external plan is
+    /// over budget but a SMALLER plan fits, downsize instead of rejecting.
+    /// Default false preserves the RFC-004 Rule-5 red line (all quality
+    /// paths over budget ⇒ Reject).
+    #[serde(default)]
+    pub cost_adaptive: bool,
 }
 
 fn default_max_acquisition_rounds() -> u32 {
@@ -167,6 +173,7 @@ impl Default for SearchBudget {
             max_query_expansions: 3,
             currency: "USD".into(),
             federation: FederationLimits::default(),
+            cost_adaptive: false,
         }
     }
 }

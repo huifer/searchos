@@ -788,6 +788,15 @@ CREATE INDEX IF NOT EXISTS idx_policy_versions_active
     ON policy_versions(kind, policy_id, status);
 "#,
     },
+    // v12 - cost-adaptive reasoning on decision traces (RFC-076).
+    // Append-only: v11 stays untouched.
+    Migration {
+        version: 12,
+        name: "trace_cost_adaptive",
+        sql: r#"
+ALTER TABLE decision_traces ADD COLUMN cost_adaptive_json TEXT;
+"#,
+    },
 ];
 
 /// Applies pending migrations to a connection. Each version is atomic: SQL

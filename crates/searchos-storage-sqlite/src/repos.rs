@@ -239,8 +239,8 @@ impl<'a> DecisionRepo<'a> {
     pub fn insert_trace(&self, t: &DecisionTrace) -> Result<(), SearchOsError> {
         self.store.with_conn(|c| {
             c.execute(
-                "INSERT OR REPLACE INTO decision_traces (id, task_id, intents_json, profile_version, local_candidates, accepted_candidates, freshness_status, coverage_status, source_status, selected_path, rejection_reasons_json, estimated_cost_micros, estimated_currency, actual_cost_micros, decision_at, stages_json, final_strategy, final_outcome, federation_json)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)",
+                "INSERT OR REPLACE INTO decision_traces (id, task_id, intents_json, profile_version, local_candidates, accepted_candidates, freshness_status, coverage_status, source_status, selected_path, rejection_reasons_json, estimated_cost_micros, estimated_currency, actual_cost_micros, decision_at, stages_json, final_strategy, final_outcome, federation_json, cost_adaptive_json)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
                 params![
                     t.trace_id.as_str(),
                     t.task_id.as_str(),
@@ -262,6 +262,11 @@ impl<'a> DecisionRepo<'a> {
                     t.final_strategy,
                     t.final_outcome,
                     t.federation_execution
+                        .as_ref()
+                        .map(serde_json::to_string)
+                        .transpose()
+                        .map_err(|er| SearchOsError::Internal(er.to_string()))?,
+                    t.cost_adaptive
                         .as_ref()
                         .map(serde_json::to_string)
                         .transpose()
@@ -324,7 +329,7 @@ impl<'a> DecisionRepo<'a> {
         self.store.with_conn(|c| {
             let row = c
                 .query_row(
-                    "SELECT dt.id, dt.task_id, dt.intents_json, dt.profile_version, dt.local_candidates, dt.accepted_candidates, dt.freshness_status, dt.coverage_status, dt.source_status, dt.selected_path, dt.rejection_reasons_json, dt.estimated_cost_micros, dt.estimated_currency, dt.actual_cost_micros, dt.decision_at, dt.stages_json, dt.final_strategy, dt.final_outcome, dt.federation_json
+                    "SELECT dt.id, dt.task_id, dt.intents_json, dt.profile_version, dt.local_candidates, dt.accepted_candidates, dt.freshness_status, dt.coverage_status, dt.source_status, dt.selected_path, dt.rejection_reasons_json, dt.estimated_cost_micros, dt.estimated_currency, dt.actual_cost_micros, dt.decision_at, dt.stages_json, dt.final_strategy, dt.final_outcome, dt.federation_json, dt.cost_adaptive_json
                      FROM decision_traces dt
                      LEFT JOIN search_tasks st ON st.id = dt.task_id
                      WHERE dt.id = ?1
@@ -351,6 +356,7 @@ impl<'a> DecisionRepo<'a> {
                             r.get::<_, Option<String>>(16)?,
                             r.get::<_, Option<String>>(17)?,
                             r.get::<_, Option<String>>(18)?,
+                            r.get::<_, Option<String>>(19)?,
                         ))
                     },
                 )
@@ -367,6 +373,12 @@ impl<'a> DecisionRepo<'a> {
                     .map_err(|er| SearchOsError::Internal(er.to_string()))?;
             let federation_execution = row
                 .18
+                .as_deref()
+                .map(serde_json::from_str)
+                .transpose()
+                .map_err(|er| SearchOsError::Internal(er.to_string()))?;
+            let cost_adaptive = row
+                .19
                 .as_deref()
                 .map(serde_json::from_str)
                 .transpose()
@@ -392,6 +404,7 @@ impl<'a> DecisionRepo<'a> {
                 final_strategy: row.16,
                 final_outcome: row.17,
                 federation_execution,
+                cost_adaptive,
             }))
         })
     }
@@ -2859,6 +2872,7 @@ mod tests {
             final_strategy: Some("local_resolve".into()),
             final_outcome: Some("completed".into()),
             federation_execution: None,
+            cost_adaptive: None,
         };
         d.insert_trace(&trace).unwrap();
         let back = d.get_trace(trace.trace_id.as_str()).unwrap().unwrap();
@@ -2899,6 +2913,7 @@ mod tests {
             final_strategy: Some("external_acquire".into()),
             final_outcome: Some("partial_then_external".into()),
             federation_execution: None,
+            cost_adaptive: None,
         };
         d.insert_trace(&trace).unwrap();
         assert!(d

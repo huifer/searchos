@@ -671,6 +671,7 @@ fn plan_external_queries(
     per_query_cost: i64,
     required_domains: &[String],
     excluded_domains: &[String],
+    affordable_external_queries: u32,
 ) -> Vec<PlannedQuery> {
     let gaps: Vec<CoverageGap> = match decision {
         SearchDecision::Hybrid {
@@ -691,10 +692,17 @@ fn plan_external_queries(
             strategy: g.strategy,
         })
         .collect();
+    // RFC-076: the plan fits what the budget can afford. The trace records
+    // the downsize; the plan enforces it (belt and braces with the cost cap
+    // inside build_external_plan).
+    let max_queries = req
+        .budget
+        .max_external_queries
+        .min(affordable_external_queries);
     let external_plan = build_external_plan(
         &needs,
         req.request_id.as_str(),
-        req.budget.max_external_queries,
+        max_queries,
         req.budget.max_total_cost_micros,
         per_query_cost,
         required_domains,
@@ -1945,6 +1953,11 @@ async fn run_pipeline(
         budget: req.budget.clone(),
         local_candidates,
         estimated_external_cost_micros: estimated_external,
+        estimated_external_cost_per_query_micros: if req.budget.max_external_queries > 0 {
+            estimated_external / i64::from(req.budget.max_external_queries)
+        } else {
+            0
+        },
         currency: req.budget.currency.clone(),
         required_subquestions: required.clone(),
         required_domains: req.constraints.required_domains.clone(),
@@ -1985,6 +1998,12 @@ async fn run_pipeline(
     let per_query_cost = estimator
         .estimate_request(provider_id.as_deref().unwrap_or("tavily"))
         .amount_micros;
+    // RFC-076: the affordable cap comes from the decision trace.
+    let affordable = trace
+        .cost_adaptive
+        .as_ref()
+        .map(|c| c.affordable_external_queries)
+        .unwrap_or(req.budget.max_external_queries);
     let planned_queries = plan_external_queries(
         &deps,
         &req,
@@ -1992,6 +2011,7 @@ async fn run_pipeline(
         per_query_cost,
         &req.constraints.required_domains,
         &req.constraints.excluded_domains,
+        affordable,
     );
     let max_promotions = deps
         .promotion

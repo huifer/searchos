@@ -298,6 +298,20 @@ The SearchOS implementation (`~/git_repo/searchos`) is verified by these command
   0 failed** (83 suites); clippy/fmt/route scan green. Live CLI: set
   minimum_quality=1.0 → quality failed; rollback → passed; stamp changes.
 
+- **RFC-076 cost-adaptive slice (2026-11-14, P2 finished):**
+  `SearchBudget.cost_adaptive` (default FALSE preserves Rule 5) + per-query
+  price on `DecisionInput`; engine Rule 5: over budget + flag on + affordable
+  ≥ 1 ⇒ continue under the affordable cap (decision reason
+  `ExternalPlanDownsized`); affordable == 0 ⇒ reject in both modes;
+  unpriced (0) per-query ⇒ query-count cap stands. Trace persists via
+  migration **v12** `cost_adaptive_json`; pipeline caps planned queries from
+  `trace.cost_adaptive`. Gates: 4 engine tests + live-pipeline gate
+  `cost_adaptive_downsizes_the_external_plan_within_budget` (priced fake
+  provider via `CostModelConfig::upsert_provider` — decision pricing uses
+  the COST MODEL, not the registry's declared cost). Full suite **757
+  passed / 0 failed** (83 suites); clippy/fmt/route scan green. CLI smoke:
+  `policy set` (minimum_quality 1.0) → quality failed; rollback → passed.
+
 **Known environment notes:**
 - LanceDB requires `protoc` at build time (`brew install protobuf`).
 - Live network tests (fetch of https://example.com) tolerate sandbox timeouts by design.

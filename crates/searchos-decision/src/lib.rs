@@ -18,6 +18,7 @@ pub use gap::{
     build_external_plan, ExternalQueryTask, ExternalSearchPlan, GapAnalyzer, InformationNeed,
 };
 pub use quality::{EvidenceEvaluation, QualityGate, QualityVerdict};
+pub use searchos_domain::decision::CostAdaptiveTrace;
 pub use state::{
     transition_allowed, DecisionStage, DecisionState, DecisionStateError, DecisionStateMachine,
     StageStatus,
