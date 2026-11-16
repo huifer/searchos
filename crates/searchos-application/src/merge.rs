@@ -24,6 +24,11 @@ pub struct MergeReport {
     /// these are occurrences, not independent corroboration.
     #[serde(default)]
     pub syndicated_copies: usize,
+    /// RFC-038: same-canonical folds observed during dedup — the removed
+    /// (raw) URL and the canonical URL that KEPT the evidence. `duplicate_of`
+    /// edges in the evidence graph are built from these.
+    #[serde(default)]
+    pub duplicate_links: Vec<(String, String)>,
     /// Distinct content communities: `merged_count - syndicated_copies`.
     #[serde(default)]
     pub independent_content_sources: usize,
@@ -103,9 +108,17 @@ pub fn merge_evidence(
                 }
             }
             // Keep the freshest version as the primary record; the older
-            // evidence is still counted through the conflict marker.
+            // evidence is still counted through the conflict marker. The
+            // folded-away URL becomes a `duplicate_of` edge (RFC-038).
             if ev.fetched_at > prev.fetched_at {
+                report
+                    .duplicate_links
+                    .push((prev.url.clone(), ev.url.clone()));
                 by_canonical.insert(key.clone(), ev);
+            } else {
+                report
+                    .duplicate_links
+                    .push((ev.url.clone(), prev.url.clone()));
             }
         } else {
             order.push(key.clone());
@@ -166,6 +179,72 @@ pub fn merge_evidence(
     }
     report.independent_content_sources = merged.len().saturating_sub(report.syndicated_copies);
     (merged, report)
+}
+
+/// Builds the RFC-038 evidence graph from what the merge actually observed:
+/// canonical folds (`duplicate_of`: a raw variant URL points at its
+/// canonical form) and cross-URL same-content groups (`same_content`,
+/// original → copy). Nodes are the URLs that appear as endpoints; an empty
+/// edge set means there was nothing to relate.
+pub fn build_evidence_graph(
+    merged: &[Evidence],
+    report: &MergeReport,
+) -> searchos_domain::response::EvidenceGraphBlock {
+    use searchos_domain::response::{EvidenceGraphEdge, EvidenceRelation};
+    let mut edges: Vec<EvidenceGraphEdge> = Vec::new();
+    let push = |edges: &mut Vec<EvidenceGraphEdge>, from: String, to: String, relation| {
+        if from != to && !edges.iter().any(|e| e.from == from && e.to == to) {
+            edges.push(EvidenceGraphEdge { from, to, relation });
+        }
+    };
+    // Surviving evidence whose raw URL is a VARIANT of its canonical form
+    // (tracking parameters, fragments, case) is a duplicate_of edge.
+    for ev in merged {
+        let canonical = canonical_url(&ev.url);
+        push(
+            &mut edges,
+            ev.url.clone(),
+            canonical,
+            EvidenceRelation::DuplicateOf,
+        );
+    }
+    // Folded-away URLs still point at the evidence that kept the content.
+    for (removed, kept) in &report.duplicate_links {
+        let kept_canonical = canonical_url(kept);
+        let removed_canonical = canonical_url(removed);
+        push(
+            &mut edges,
+            removed_canonical,
+            kept_canonical.clone(),
+            EvidenceRelation::DuplicateOf,
+        );
+        push(
+            &mut edges,
+            removed.clone(),
+            kept_canonical,
+            EvidenceRelation::DuplicateOf,
+        );
+    }
+    for group in &report.content_groups {
+        for copy in &group.copies {
+            push(
+                &mut edges,
+                copy.clone(),
+                group.original_url.clone(),
+                EvidenceRelation::SameContent,
+            );
+        }
+    }
+    let mut nodes: Vec<String> = Vec::new();
+    for edge in &edges {
+        if !nodes.contains(&edge.from) {
+            nodes.push(edge.from.clone());
+        }
+        if !nodes.contains(&edge.to) {
+            nodes.push(edge.to.clone());
+        }
+    }
+    searchos_domain::response::EvidenceGraphBlock { nodes, edges }
 }
 
 /// Primacy ordering used to pick the ORIGINAL publisher inside a content
@@ -306,6 +385,45 @@ mod tests {
             report.content_groups[0].original_url, "https://early.example.com/z",
             "earlier publication identifies the original"
         );
+    }
+
+    #[test]
+    fn evidence_graph_links_folds_and_syndication() {
+        let article =
+            "The federated planner records an auditable rejection chain for every source.";
+        let (merged, report) = merge_evidence(
+            vec![
+                ev("https://a.dev/x", article, 10),
+                ev("https://a.dev/x?utm_source=y", article, 1),
+            ],
+            vec![ev("https://mirror.dev/x", article, 1)],
+        );
+        let graph = build_evidence_graph(&merged, &report);
+        assert!(
+            graph
+                .edges
+                .iter()
+                .any(|e| e.relation == searchos_domain::response::EvidenceRelation::DuplicateOf),
+            "canonical folds become duplicate_of edges: {graph:?}"
+        );
+        assert!(
+            graph
+                .edges
+                .iter()
+                .any(|e| e.relation == searchos_domain::response::EvidenceRelation::SameContent),
+            "syndication becomes same_content edges: {graph:?}"
+        );
+        assert!(graph.nodes.len() >= 2);
+        // An unrelated single-source answer has nothing to graph.
+        let (plain, plain_report) = merge_evidence(
+            vec![ev(
+                "https://a.dev/y",
+                "a distinct snippet body that stands alone",
+                1,
+            )],
+            Vec::new(),
+        );
+        assert!(build_evidence_graph(&plain, &plain_report).edges.is_empty());
     }
 
     #[test]

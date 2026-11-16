@@ -160,6 +160,39 @@ pub struct SearchResponse {
     /// `results` and `provenance` remain the untruncated contract.
     #[serde(default)]
     pub context: Option<crate::context::ContextBlockSummary>,
+    /// RFC-038 evidence graph: duplicate folds and syndication relations the
+    /// evidence merge actually observed. `None` when the merged set has no
+    /// relations (a single-source answer has nothing to graph).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence_graph: Option<EvidenceGraphBlock>,
+}
+
+/// A relation between two pieces of evidence (RFC-038).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvidenceRelation {
+    /// The `from` URL canonicalizes to the `to` URL (same resource, one
+    /// document).
+    DuplicateOf,
+    /// The `from` URL carries the same normalized content as `to` (a
+    /// syndicated / re-published copy — corroboration accounting, RFC-074).
+    SameContent,
+}
+
+/// One directed edge of the evidence graph.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EvidenceGraphEdge {
+    pub from: String,
+    pub to: String,
+    pub relation: EvidenceRelation,
+}
+
+/// The evidence graph block attached to a response (RFC-038).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct EvidenceGraphBlock {
+    /// Canonical URLs that appear as endpoints.
+    pub nodes: Vec<String>,
+    pub edges: Vec<EvidenceGraphEdge>,
 }
 
 impl CoverageStatus {

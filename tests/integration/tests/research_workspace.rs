@@ -160,6 +160,7 @@ impl searchos_application::search_service::SearchService for StubSearch {
             session_id: req.session_id.clone(),
             focus_requirements: req.focus_requirements.clone(),
             context: None,
+            evidence_graph: None,
         })
     }
 

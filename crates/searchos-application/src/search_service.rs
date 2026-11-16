@@ -1389,6 +1389,7 @@ fn singleflight_timeout_response(
         warnings,
         task_id,
         SearchStatus::InsufficientEvidence,
+        None,
     )
 }
 
@@ -2252,6 +2253,7 @@ async fn run_pipeline(
                 warnings,
                 &task_id,
                 status,
+                None,
             );
             return serde_json::to_value(&response)
                 .map_err(|e| SearchOsError::Internal(e.to_string()));
@@ -2537,6 +2539,16 @@ async fn run_pipeline(
         deps.traces.record(trace.clone()).await?;
     }
 
+    // RFC-038: the graph comes from what the merge observed — dedup folds
+    // and syndication groups. An empty relation set yields `None`.
+    let graph = {
+        let block = crate::merge::build_evidence_graph(&merged_evidence, &merge_report);
+        if block.edges.is_empty() {
+            None
+        } else {
+            Some(block)
+        }
+    };
     let mut response = build_response(
         &req,
         &decision,
@@ -2551,6 +2563,7 @@ async fn run_pipeline(
         warnings,
         &task_id,
         status,
+        graph,
     );
     // Agent-facing contract: expose the open requirements so a caller can
     // decide between a targeted follow-up query and giving up (RFC-005 5.6).
@@ -2595,6 +2608,7 @@ fn build_response(
     warnings: Vec<String>,
     task_id: &TaskId,
     search_status: SearchStatus,
+    evidence_graph: Option<searchos_domain::response::EvidenceGraphBlock>,
 ) -> SearchResponse {
     SearchResponse {
         query: req.query.clone(),
@@ -2625,6 +2639,7 @@ fn build_response(
         session_id: None,
         focus_requirements: Vec::new(),
         context: assemble_context_block(req, &results),
+        evidence_graph,
     }
 }
 

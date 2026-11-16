@@ -125,6 +125,15 @@ multi-arch images, and attaches the matching section of this file.
   `ingest_redacts_secrets_before_object_write`,
   `redaction_can_be_disabled_explicitly` and
   `ingest_time_secret_redaction_is_wired_through_config`.
+- **Evidence graph on the response (RFC-038 slice).** `SearchResponse` gains
+  an optional `evidence_graph` block built from what the evidence merge
+  ACTUALLY observed: `duplicate_of` edges (a raw variant URL points at its
+  canonical form, including folded-away URLs) and `same_content` edges
+  (syndicated copy → original publisher, RFC-074). The block is omitted when
+  there is nothing to relate, so relation-free answers are unchanged. Gates:
+  `evidence_graph_links_folds_and_syndication` (merge) and the pipeline gate
+  `response_carries_an_evidence_graph_only_when_relations_exist` (variant URL
+  produces the edge; a standalone canonical answer stays `None`).
 - **Deep-search research workspace (RFC-071 slice).** A research task is a
   durable SESSION with an accumulated workspace: each turn's served results
   become `WorkspaceEvidence` (deduped by URL, bounded), and

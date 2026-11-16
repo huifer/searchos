@@ -2111,3 +2111,71 @@ async fn initial_query_expansion_is_opt_in_and_budget_bounded() {
     );
     let _ = rt;
 }
+
+/// RFC-038: a response whose evidence merge observed relations carries an
+/// evidence graph (canonical variant folds), and a relation-free answer
+/// carries `None`.
+#[tokio::test]
+async fn response_carries_an_evidence_graph_only_when_relations_exist() {
+    use searchos_domain::ids::{ChunkId, DocumentId, DocumentVersionId};
+
+    let make = |chunk: &'static str, url: &'static str, body: &'static str| async move {
+        let mut cfg = SearchOsConfig::default();
+        let dir = tempfile::tempdir().unwrap();
+        cfg.app.data_dir = dir.path().to_path_buf();
+        let runtime = searchos_core::SearchOsRuntime::init(cfg).await.unwrap();
+        runtime
+            .fulltext
+            .index(searchos_domain::retrieval::IndexedDocument {
+                chunk_id: ChunkId::new(chunk),
+                document_id: DocumentId::new(chunk),
+                version_id: DocumentVersionId::new(chunk),
+                title: Some("evidence graph notes".into()),
+                body: body.into(),
+                url: url.into(),
+                language: Some("en".into()),
+                workspace_id: "*".into(),
+                fetched_at: chrono::Utc::now(),
+            })
+            .await
+            .unwrap();
+        runtime.fulltext.commit().await.unwrap();
+        let resp = runtime
+            .application
+            .search_service
+            .search(request("evidence graph notes", SearchMode::LocalOnly))
+            .await
+            .unwrap();
+        (resp, runtime)
+    };
+
+    // A raw URL with tracking parameters is a VARIANT of its canonical form:
+    // the merge records the fold and the graph exposes it.
+    let (resp, _rt) = make(
+        "graph_a",
+        "https://graph.dev/notes?utm_source=feed",
+        "evidence graph notes about canonical variant folds",
+    )
+    .await;
+    let graph = resp
+        .evidence_graph
+        .as_ref()
+        .expect("a variant URL produces a duplicate_of edge");
+    assert!(
+        graph
+            .edges
+            .iter()
+            .any(|e| e.relation == searchos_domain::response::EvidenceRelation::DuplicateOf),
+        "{graph:?}"
+    );
+    assert!(graph.nodes.iter().any(|n| n.contains("graph.dev")));
+
+    // Same content, canonical URL, single source: nothing to relate.
+    let (plain, _rt2) = make(
+        "graph_b",
+        "https://graph.dev/canonical",
+        "a standalone note with no relations to graph",
+    )
+    .await;
+    assert!(plain.evidence_graph.is_none());
+}

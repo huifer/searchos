@@ -352,6 +352,20 @@ The SearchOS implementation (`~/git_repo/searchos`) is verified by these command
   budget) + HTTP round trip. Full suite **776 passed / 0 failed**
   (85 suites); clippy/fmt/route scan green.
 
+- **RFC-038 evidence-graph slice (2026-11-16):** `SearchResponse.evidence_graph:
+  Option<EvidenceGraphBlock>` (serde default + skip if none);
+  `MergeReport.duplicate_links` records folded URL pairs;
+  `build_evidence_graph(merged, report)` emits `duplicate_of` (raw variant →
+  canonical, including folded-away URLs) and `same_content` (copy →
+  original) edges. Gotcha: canonicalizing BOTH endpoints of a fold collapses
+  the edge into a self-loop — the `from` must stay the RAW URL. Gates:
+  `evidence_graph_links_folds_and_syndication` +
+  `response_carries_an_evidence_graph_only_when_relations_exist`. Full suite
+  **778 passed / 0 failed** (85 suites); clippy/fmt/route scan green.
+  Note: builds can be very slow under load (one `cargo test` appeared hung —
+  it was compiling); a stale `cargo test --all-targets` from another session
+  had to be killed.
+
 **Known environment notes:**
 - LanceDB requires `protoc` at build time (`brew install protobuf`).
 - Live network tests (fetch of https://example.com) tolerate sandbox timeouts by design.
