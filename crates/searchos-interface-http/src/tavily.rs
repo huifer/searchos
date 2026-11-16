@@ -532,6 +532,7 @@ mod tests {
                 published_at: Some(Utc::now()),
                 source: "local".into(),
                 highlight: None,
+                entity_id: None,
             }],
             quality: QualityReport {
                 status: QualityStatus::Passed,

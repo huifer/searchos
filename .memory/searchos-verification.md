@@ -396,6 +396,15 @@ The SearchOS implementation (`~/git_repo/searchos`) is verified by these command
   parse RFC3339 strictly (bad input = validation error). Full suite **784
   passed / 0 failed** (85 suites); clippy/fmt/route scan green.
 
+- **RFC-058 entity resolution v1 (2026-11-16):** `domain::entity` (EntityId
+  FNV over canonical name, EntityResolver longest-alias + first-owner-wins,
+  boundary-safe matching); migration v13 `entity_aliases`;
+  `EntityRepo`/`EntityStore`; runtime `entity_registry` read model rebuilt
+  from SQLite + write-through `register_entity`; `SearchDependencies.
+  entity_lookup` + `annotate_results` on `SearchResultItem.entity_id`;
+  HTTP `/entities*` + CLI `entity`. Full suite **794 passed / 0 failed**
+  (86 suites); clippy/fmt/route scan green.
+
 **Known environment notes:**
 - LanceDB requires `protoc` at build time (`brew install protobuf`).
 - Live network tests (fetch of https://example.com) tolerate sandbox timeouts by design.

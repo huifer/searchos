@@ -125,6 +125,19 @@ multi-arch images, and attaches the matching section of this file.
   `ingest_redacts_secrets_before_object_write`,
   `redaction_can_be_disabled_explicitly` and
   `ingest_time_secret_redaction_is_wired_through_config`.
+- **Entity resolution v1 (RFC-058).** A durable alias registry maps
+  registered aliases (canonical name included) to stable FNV-derived
+  `EntityId`s; the first registration keeps an alias and conflicts are
+  reported, never silently re-pointed. The in-memory read model is rebuilt
+  from SQLite at startup and updated write-through on registration. Search
+  results are annotated with `entity_id` when a REGISTERED alias matches
+  title / URL / content — an unregistered entity is never invented. Surfaces:
+  `GET /entities`, `POST /entities`, `POST /entities/resolve`, CLI
+  `searchos entity list|register|resolve`. Gates: six domain tests plus
+  `registered_aliases_annotate_search_results`,
+  `unregistered_text_never_invents_an_entity`,
+  `entity_registry_survives_runtime_restart_and_keeps_first_owner`, and the
+  HTTP round trip `entity_endpoints_register_resolve_and_list`.
 - **Historical as-of views (RFC-057 v1).** `SearchRequest.constraints.as_of`
   (RFC3339, optional) moves the freshness clock to a caller-declared instant:
   documents fetched AFTER that point are excluded (no time travel to

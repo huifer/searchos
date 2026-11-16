@@ -179,6 +179,11 @@ enum Command {
         #[command(subcommand)]
         cmd: PolicyCmd,
     },
+    /// Entity alias registry (RFC-058)
+    Entity {
+        #[command(subcommand)]
+        cmd: EntityCmd,
+    },
     /// Deep-search research workspace (RFC-071)
     Research {
         #[command(subcommand)]
@@ -347,6 +352,29 @@ enum ProviderCmd {
     },
     /// Per-provider circuit state and rate-limit status
     Health,
+}
+
+#[derive(Subcommand)]
+enum EntityCmd {
+    /// List registered entities and aliases
+    List,
+    /// Register a canonical entity with aliases
+    Register {
+        /// Canonical name
+        #[arg(long)]
+        name: String,
+        /// Comma-separated aliases
+        #[arg(long, value_delimiter = ',')]
+        aliases: Vec<String>,
+        /// Registration source: operator | heuristic
+        #[arg(long, default_value = "operator")]
+        source: String,
+    },
+    /// Resolve text against the alias registry
+    Resolve {
+        /// Text to resolve
+        text: String,
+    },
 }
 
 /// Deep-search research commands (RFC-071).
@@ -1267,6 +1295,53 @@ async fn run(cli: Cli) -> Result<(), SearchOsError> {
                     &serde_json::to_value(&workspace).unwrap_or_default(),
                     format,
                 );
+                Ok(())
+            }
+        },
+        Command::Entity { cmd } => match cmd {
+            EntityCmd::List => {
+                let rt = runtime(cli_ref).await?;
+                let aliases = searchos_application::entity::EntityLookup::alias_count(
+                    rt.entity_registry.as_ref(),
+                );
+                let entities = rt.entity_store.entities().await?;
+                print(
+                    &serde_json::json!({ "alias_count": aliases, "entities": entities }),
+                    format,
+                );
+                Ok(())
+            }
+            EntityCmd::Register {
+                name,
+                aliases,
+                source,
+            } => {
+                let rt = runtime(cli_ref).await?;
+                let source = match source.as_str() {
+                    "operator" => searchos_domain::entity::EntitySource::Operator,
+                    "heuristic" => searchos_domain::entity::EntitySource::Heuristic,
+                    other => {
+                        return Err(SearchOsError::validation(
+                            "source",
+                            format!("unknown {other}"),
+                        ))
+                    }
+                };
+                let entity = searchos_domain::entity::Entity::new(name, aliases.clone(), source);
+                let conflicts = rt.register_entity(&entity).await?;
+                print(
+                    &serde_json::json!({ "entity": entity, "conflicts": conflicts }),
+                    format,
+                );
+                Ok(())
+            }
+            EntityCmd::Resolve { text } => {
+                let rt = runtime(cli_ref).await?;
+                let matched = searchos_application::entity::EntityLookup::resolve(
+                    rt.entity_registry.as_ref(),
+                    text,
+                );
+                print(&serde_json::to_value(matched).unwrap_or_default(), format);
                 Ok(())
             }
         },

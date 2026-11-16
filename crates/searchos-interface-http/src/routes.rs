@@ -403,6 +403,10 @@ pub fn api_route_table() -> Vec<RouteSpec> {
         RouteSpec::new("POST", "/replay/{trace_id}", post(replay_trace)),
         // RFC-086: batch replay evaluation.
         RouteSpec::new("POST", "/evaluation/replay", post(evaluate_replays)),
+        // RFC-058: entity alias registry (read + register + resolve).
+        RouteSpec::new("GET", "/entities", get(list_entities)),
+        RouteSpec::new("POST", "/entities", post(register_entity)),
+        RouteSpec::new("POST", "/entities/resolve", post(resolve_entity)),
         // RFC-071: bounded deep-search research runs + workspace inspection.
         RouteSpec::new("POST", "/research/run", post(research_run)),
         RouteSpec::new("GET", "/research/{session_id}", get(research_workspace)),
@@ -2227,6 +2231,100 @@ async fn evaluate_replays(
     })?))
 }
 
+/// RFC-058: the current alias read model.
+async fn list_entities(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    state.authorize(&headers)?;
+    let aliases = state.runtime.entity_registry.snapshot();
+    let entities = state
+        .runtime
+        .entity_store
+        .entities()
+        .await
+        .map_err(|e| ApiError::from_domain(&e))?;
+    Ok(Json(serde_json::json!({
+        "aliases": aliases,
+        "alias_count": aliases.len(),
+        "entities": entities,
+    })))
+}
+
+/// RFC-058: register an entity (canonical name + aliases). Conflicts are
+/// reported in the response — first registration keeps an alias.
+async fn register_entity(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    state.authorize(&headers)?;
+    let canonical = body
+        .get("canonical_name")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "VALIDATION_FAILED",
+                "missing canonical_name",
+            )
+        })?;
+    let aliases: Vec<String> = body
+        .get("aliases")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str())
+                .map(|s| s.to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    let source = match body
+        .get("source")
+        .and_then(|v| v.as_str())
+        .unwrap_or("operator")
+    {
+        "operator" => searchos_domain::entity::EntitySource::Operator,
+        "heuristic" => searchos_domain::entity::EntitySource::Heuristic,
+        _ => {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "VALIDATION_FAILED",
+                "unknown source",
+            ))
+        }
+    };
+    let entity = searchos_domain::entity::Entity::new(canonical, aliases, source);
+    let conflicts = state
+        .runtime
+        .register_entity(&entity)
+        .await
+        .map_err(|e| ApiError::from_domain(&e))?;
+    Ok(Json(serde_json::json!({
+        "entity": entity,
+        "conflicts": conflicts,
+    })))
+}
+
+/// RFC-058: resolve text against the alias read model (diagnostics).
+async fn resolve_entity(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    state.authorize(&headers)?;
+    let text = body.get("text").and_then(|v| v.as_str()).ok_or_else(|| {
+        ApiError::new(StatusCode::BAD_REQUEST, "VALIDATION_FAILED", "missing text")
+    })?;
+    let matched = searchos_application::entity::EntityLookup::resolve(
+        state.runtime.entity_registry.as_ref(),
+        text,
+    );
+    Ok(Json(serde_json::to_value(matched).map_err(|e| {
+        ApiError::from_domain(&searchos_domain::SearchOsError::Internal(e.to_string()))
+    })?))
+}
+
 /// `POST /research/run` — bounded deep search (RFC-071).
 ///
 /// Each round is a full search recorded as a turn; the final gate's open
@@ -3201,6 +3299,75 @@ mod tests {
             .unwrap()
             .iter()
             .all(|s| s["enabled"] == true));
+    }
+
+    #[tokio::test]
+    async fn entity_endpoints_register_resolve_and_list() {
+        let (st, _d) = state().await;
+        let app = router(st);
+        use tower::ServiceExt;
+        let post = |app: axum::Router, uri: &str, body: serde_json::Value| {
+            let uri = uri.to_string();
+            async move {
+                let resp = app
+                    .oneshot(
+                        axum::http::Request::builder()
+                            .method("POST")
+                            .uri(uri)
+                            .header("content-type", "application/json")
+                            .body(axum::body::Body::from(body.to_string()))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                let status = resp.status().as_u16();
+                let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+                    .await
+                    .unwrap();
+                (
+                    status,
+                    serde_json::from_slice::<serde_json::Value>(&bytes).unwrap(),
+                )
+            }
+        };
+
+        let (status, registered) = post(
+            app.clone(),
+            "/entities",
+            serde_json::json!({
+                "canonical_name": "Tokio",
+                "aliases": ["tokio async runtime"]
+            }),
+        )
+        .await;
+        assert_eq!(status, 200, "{registered}");
+        assert!(registered["conflicts"].as_array().unwrap().is_empty());
+
+        let (status, matched) = post(
+            app.clone(),
+            "/entities/resolve",
+            serde_json::json!({ "text": "the tokio async runtime is fast" }),
+        )
+        .await;
+        assert_eq!(status, 200, "{matched}");
+        assert_eq!(matched["canonical_name"], "Tokio");
+
+        let resp = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/entities")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = resp.status().as_u16();
+        let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let list: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(status, 200, "{list}");
+        assert_eq!(list["alias_count"], 2);
     }
 
     #[tokio::test]

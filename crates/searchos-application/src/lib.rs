@@ -10,6 +10,7 @@
 //! gate → response with cost + trace.
 
 pub mod analytics;
+pub mod entity;
 pub mod fetch_service;
 pub mod ingest_service;
 pub mod memory_source;

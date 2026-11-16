@@ -401,6 +401,58 @@ paths:
                   document_id: { type: string }
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /entities:
+    get:
+      tags: [Knowledge]
+      summary: Registered entities and aliases (RFC-058)
+      responses:
+        '200':
+          description: Alias read model + durable entities.
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+    post:
+      tags: [Knowledge]
+      summary: Register an entity with aliases (RFC-058)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [canonical_name]
+              properties:
+                canonical_name: { type: string }
+                aliases:
+                  type: array
+                  items: { type: string }
+                source: { type: string, enum: [operator, heuristic], default: operator }
+      responses:
+        '200':
+          description: Registered entity plus conflicting aliases (first owner wins).
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+  /entities/resolve:
+    post:
+      tags: [Knowledge]
+      summary: Resolve text against registered aliases (RFC-058)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text: { type: string }
+      responses:
+        '200':
+          description: The matched entity or null.
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+
   /research/run:
     post:
       tags: [Search]

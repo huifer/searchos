@@ -12,6 +12,7 @@ pub mod context;
 pub mod cost;
 pub mod decision;
 pub mod document;
+pub mod entity;
 pub mod error;
 pub mod evidence;
 pub mod ids;
@@ -33,6 +34,7 @@ pub use decision::{
     GapResolutionStrategy, RequirementStatus, SearchDecision,
 };
 pub use document::{Document, DocumentChunk, DocumentStatus, DocumentVersion};
+pub use entity::{Entity, EntityId, EntityMatch, EntityResolver, EntitySource};
 pub use error::{SearchOsError, ValidationError, TRANSPORT_ERROR_CODES};
 pub use evidence::{Evidence, Provenance, ProvenanceOrigin, ReliabilityLevel};
 pub use ids::*;

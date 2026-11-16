@@ -307,6 +307,7 @@ fn deps(
         cache: runtime.exact_cache.clone(),
         validity: None,
         policy_state: None,
+        entity_lookup: None,
         negative_cache: runtime.negative_cache.clone(),
         semantic_dedup: true,
         expansion_mode: "followup".into(),

@@ -69,6 +69,132 @@ pub struct RecordedSearchTask {
     pub status: String,
 }
 
+/// Entity alias persistence (RFC-058). Append-only in practice: an existing
+/// alias keeps its first owner; operator entities may add aliases, never
+/// re-point them.
+pub struct EntityRepo<'a> {
+    store: &'a SqliteStore,
+}
+
+impl<'a> EntityRepo<'a> {
+    pub fn new(store: &'a SqliteStore) -> Self {
+        Self { store }
+    }
+
+    /// Registers an entity. Returns aliases already claimed by OTHER
+    /// entities (the domain resolver applies the same first-wins rule).
+    pub fn register(
+        &self,
+        entity: &searchos_domain::entity::Entity,
+    ) -> Result<Vec<String>, SearchOsError> {
+        self.store.with_conn(|c| {
+            let tx = c.unchecked_transaction().map_err(e)?;
+            let mut conflicts = Vec::new();
+            for alias in &entity.aliases {
+                let existing: Option<String> = tx
+                    .query_row(
+                        "SELECT entity_id FROM entity_aliases WHERE alias = ?1",
+                        params![alias],
+                        |r| r.get(0),
+                    )
+                    .optional()
+                    .map_err(e)?;
+                if existing.as_deref() == Some(entity.id.as_str()) {
+                    continue;
+                }
+                if existing.is_some() {
+                    conflicts.push(alias.clone());
+                    continue;
+                }
+                tx.execute(
+                    "INSERT INTO entity_aliases (alias, entity_id, canonical_name, source, created_at)
+                     VALUES (?1,?2,?3,?4,?5)",
+                    params![
+                        alias,
+                        entity.id.as_str(),
+                        entity.canonical_name,
+                        source_label(entity.source),
+                        entity.created_at.to_rfc3339(),
+                    ],
+                )
+                .map_err(e)?;
+            }
+            tx.commit().map_err(e)?;
+            Ok(conflicts)
+        })
+    }
+
+    /// All registered aliases, rebuilt as domain entities (candidates for
+    /// the in-memory resolver).
+    pub fn list_entities(&self) -> Result<Vec<searchos_domain::entity::Entity>, SearchOsError> {
+        self.store.with_conn(|c| {
+            let mut stmt = c
+                .prepare(
+                    "SELECT entity_id, canonical_name, alias, source, created_at
+                     FROM entity_aliases ORDER BY entity_id, alias",
+                )
+                .map_err(e)?;
+            let rows = stmt
+                .query_map([], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                        r.get::<_, String>(3)?,
+                        r.get::<_, String>(4)?,
+                    ))
+                })
+                .map_err(e)?;
+            let mut by_id: HashMap<String, searchos_domain::entity::Entity> = HashMap::new();
+            for row in rows {
+                let row = row.map_err(|er| SearchOsError::Internal(er.to_string()))?;
+                let source = parse_source(&row.3);
+                let created_at = chrono::DateTime::parse_from_rfc3339(&row.4)
+                    .map(|t| t.with_timezone(&chrono::Utc))
+                    .unwrap_or_else(|_| chrono::Utc::now());
+                let entity =
+                    by_id
+                        .entry(row.0.clone())
+                        .or_insert_with(|| searchos_domain::entity::Entity {
+                            id: searchos_domain::entity::EntityId(row.0.clone()),
+                            canonical_name: row.1.clone(),
+                            aliases: Vec::new(),
+                            source,
+                            created_at,
+                        });
+                entity.aliases.push(row.2);
+            }
+            let mut out: Vec<_> = by_id.into_values().collect();
+            out.sort_by(|a, b| a.id.cmp(&b.id));
+            Ok(out)
+        })
+    }
+
+    pub fn alias_count(&self) -> Result<usize, SearchOsError> {
+        self.store.with_conn(|c| {
+            let n: i64 = c
+                .query_row("SELECT count(*) FROM entity_aliases", [], |r| r.get(0))
+                .map_err(e)?;
+            Ok(n.max(0) as usize)
+        })
+    }
+}
+
+fn source_label(source: searchos_domain::entity::EntitySource) -> &'static str {
+    match source {
+        searchos_domain::entity::EntitySource::Operator => "operator",
+        searchos_domain::entity::EntitySource::Heuristic => "heuristic",
+    }
+}
+
+fn parse_source(label: &str) -> searchos_domain::entity::EntitySource {
+    if label == "operator" {
+        searchos_domain::entity::EntitySource::Operator
+    } else {
+        searchos_domain::entity::EntitySource::Heuristic
+    }
+}
+
 /// Search task persistence.
 pub struct TaskRepo<'a> {
     store: &'a SqliteStore,

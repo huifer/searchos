@@ -180,6 +180,9 @@ pub struct SearchOsRuntime {
     pub replay: Arc<searchos_application::replay::ReplayService>,
     /// RFC-071: bounded deep-search runner over the session workspace.
     pub research: Arc<searchos_application::research::ResearchService>,
+    /// RFC-058: entity alias read model + durable registration store.
+    pub entity_registry: Arc<searchos_application::entity::EntityRegistry>,
+    pub entity_store: Arc<dyn searchos_application::entity::EntityStore>,
     /// RFC-034: live policy state (hot reload / rollback).
     pub policy_state: Arc<searchos_application::policy::PolicyState>,
 }
@@ -808,6 +811,13 @@ impl SearchOsRuntime {
                 .map_err(|e| SearchOsError::Internal(format!("register provider source: {e}")))?;
         }
 
+        // RFC-058: rebuild the entity read model from SQLite at startup.
+        let entity_store: Arc<dyn searchos_application::entity::EntityStore> =
+            Arc::new(SqliteEntityStore {
+                store: Arc::clone(&sqlite),
+            });
+        let entity_registry = Arc::new(searchos_application::entity::EntityRegistry::new());
+        entity_registry.rebuild(entity_store.entities().await?);
         let deps = Arc::new(searchos_application::search_service::SearchDependencies {
             profiles: searchos_policy::ProfileRegistry::builtin(),
             quality: quality_policy.clone(),
@@ -843,6 +853,9 @@ impl SearchOsRuntime {
                 store: Arc::clone(&sqlite),
             })),
             policy_state: Some(Arc::clone(&policy_state)),
+            entity_lookup: Some(
+                Arc::clone(&entity_registry) as Arc<dyn searchos_application::entity::EntityLookup>
+            ),
             negative_cache: Arc::clone(&negative_cache),
             expansion_mode: config.intelligence.query_expansion_mode.clone(),
             semantic_dedup: config.search.semantic_dedup,
@@ -900,6 +913,26 @@ impl SearchOsRuntime {
             .with_pii_redaction(config.ingest.redact_pii)
             .with_job_port(ingest_jobs),
         );
+
+        // RFC-058: durable entity alias store backed by SQLite.
+        struct SqliteEntityStore {
+            store: Arc<SqliteStore>,
+        }
+
+        #[async_trait::async_trait]
+        impl searchos_application::entity::EntityStore for SqliteEntityStore {
+            async fn register(
+                &self,
+                entity: &searchos_domain::entity::Entity,
+            ) -> Result<Vec<String>, SearchOsError> {
+                repos::EntityRepo::new(&self.store).register(entity)
+            }
+            async fn entities(
+                &self,
+            ) -> Result<Vec<searchos_domain::entity::Entity>, SearchOsError> {
+                repos::EntityRepo::new(&self.store).list_entities()
+            }
+        }
 
         // Memory service backed by sqlite, using the configured embedding
         // provider/model label and a local deterministic embedder (G-05).
@@ -1033,6 +1066,8 @@ impl SearchOsRuntime {
             search_deps,
             replay,
             research,
+            entity_registry,
+            entity_store,
             policy_state,
         });
 
@@ -1459,6 +1494,17 @@ impl SearchOsRuntime {
             .set(kind, row.version, &row.payload_json)?;
         self.invalidate_caches().await;
         Ok(())
+    }
+
+    /// RFC-058: registers an entity durably, then publishes to the read
+    /// model. Alias conflicts (first owner wins) are returned, not thrown.
+    pub async fn register_entity(
+        &self,
+        entity: &searchos_domain::entity::Entity,
+    ) -> Result<Vec<String>, SearchOsError> {
+        let conflicts = self.entity_store.register(entity).await?;
+        self.entity_registry.publish(entity);
+        Ok(conflicts)
     }
 
     /// Re-indexes a document's current version into the full-text index.

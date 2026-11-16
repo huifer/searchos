@@ -219,6 +219,8 @@ pub struct SearchDependencies {
     pub validity: Option<std::sync::Arc<dyn crate::validity::EvidenceValidityPort>>,
     /// RFC-034: live policy state. `None` keeps the build-time policies.
     pub policy_state: Option<crate::policy::SharedPolicyState>,
+    /// RFC-058: entity alias lookup for result annotation.
+    pub entity_lookup: Option<std::sync::Arc<dyn crate::entity::EntityLookup>>,
     /// RFC-031 D10: negative-result cache for terminal external failures.
     /// A zero-TTL cache effectively disables the feature.
     pub negative_cache: Arc<ExactQueryCache>,
@@ -1634,6 +1636,7 @@ fn local_results_and_evidence(
             published_at: None,
             source: "local".into(),
             highlight: c.highlight.clone(),
+            entity_id: None,
         });
         evidence.push(Evidence {
             id: searchos_domain::ids::EvidenceId::generate(),
@@ -2337,6 +2340,7 @@ async fn run_pipeline(
                     published_at: None,
                     source: "local_partial".into(),
                     highlight: c.highlight.clone(),
+                    entity_id: None,
                 });
             }
             warnings.push(format!("rejected: {}", reason.code()));
@@ -2705,6 +2709,11 @@ async fn run_pipeline(
     if let Some(store) = &deps.session_store {
         let path = decision.path_name().to_string();
         record_session_turn(store, &req, &mut response, &path, &verdict.coverage_gaps);
+    }
+    // RFC-058: annotate served results with stable entity ids from the
+    // alias read model (registered aliases only; no guessed identities).
+    if let Some(lookup) = deps.entity_lookup.as_ref() {
+        crate::entity::annotate_results(lookup.as_ref(), &mut response.results);
     }
     // Shared transport result cap (Part 30 INV-30-19).
     response.results.truncate(max_results);
@@ -3165,6 +3174,7 @@ impl SearchServiceImplStub {
                     published_at: entry.published_at,
                     source: provider.id().to_string(),
                     highlight: None,
+                    entity_id: None,
                 });
                 evidence.push(Evidence {
                     id: searchos_domain::ids::EvidenceId::generate(),
@@ -3501,6 +3511,7 @@ impl SearchServiceImplStub {
                     published_at: candidate.published_at,
                     source: source_name.clone(),
                     highlight: None,
+                    entity_id: None,
                 });
                 evidence.push(Evidence {
                     id: searchos_domain::ids::EvidenceId::generate(),
@@ -3630,6 +3641,7 @@ mod completion_tests {
                     published_at: None,
                     source: "local".into(),
                     highlight: None,
+                    entity_id: None,
                 })
                 .collect()
         };
@@ -3755,6 +3767,7 @@ mod completion_tests {
                     published_at: None,
                     source: provider.into(),
                     highlight: None,
+                    entity_id: None,
                 })
                 .collect(),
         }

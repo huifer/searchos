@@ -78,6 +78,11 @@ pub struct SearchResultItem {
     /// Query-matched passage with `<b>…</b>` markers, when available.
     #[serde(default)]
     pub highlight: Option<String>,
+    /// RFC-058: stable entity identity when a REGISTERED alias matched this
+    /// result's title / URL / content. `None` when no alias matched — the
+    /// system never invents an entity from text alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entity_id: Option<String>,
 }
 
 /// Explicit outcome of a search task (RFC-002 2.8, RFC-004 v1.1 6.12).

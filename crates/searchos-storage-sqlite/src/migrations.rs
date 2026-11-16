@@ -797,6 +797,24 @@ CREATE INDEX IF NOT EXISTS idx_policy_versions_active
 ALTER TABLE decision_traces ADD COLUMN cost_adaptive_json TEXT;
 "#,
     },
+    // v13 - entity resolution aliases (RFC-058). Released migrations stay
+    // immutable.
+    Migration {
+        version: 13,
+        name: "entity_aliases",
+        sql: r#"
+-- Alias -> stable entity identity. One alias maps to ONE entity; operator
+-- registrations win over heuristic ones (enforced in the repository).
+CREATE TABLE IF NOT EXISTS entity_aliases (
+    alias TEXT PRIMARY KEY,
+    entity_id TEXT NOT NULL,
+    canonical_name TEXT NOT NULL,
+    source TEXT NOT NULL,          -- operator | heuristic
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_entity_aliases_entity ON entity_aliases(entity_id);
+"#,
+    },
 ];
 
 /// Applies pending migrations to a connection. Each version is atomic: SQL
