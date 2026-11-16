@@ -165,6 +165,37 @@ pub struct SearchResponse {
     /// relations (a single-source answer has nothing to graph).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evidence_graph: Option<EvidenceGraphBlock>,
+    /// RFC-071 v2: evidence this research workspace accumulated in EARLIER
+    /// turns and carried into this one (validated; never part of `results`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_evidence: Option<WorkspaceEvidenceBlock>,
+}
+
+/// Evidence a research workspace carried into this turn (RFC-071 v2).
+///
+/// Only evidence NOT already present in `results` is listed, and local
+/// documents are re-validated (deleted / re-versioned entries are dropped
+/// and counted, never re-served as fresh knowledge).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct WorkspaceEvidenceBlock {
+    pub items: Vec<WorkspaceEvidenceItem>,
+    /// Carried entries whose local document no longer exists at the cached
+    /// version (dropped, never served).
+    pub invalidated: usize,
+    /// Workspace entries considered (before filtering).
+    pub considered: usize,
+}
+
+/// One carried workspace evidence entry.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorkspaceEvidenceItem {
+    pub url: String,
+    pub title: Option<String>,
+    pub source: String,
+    pub score: f32,
+    /// Trace of the turn that originally served it.
+    pub trace_id: String,
+    pub recorded_at: String,
 }
 
 /// A relation between two pieces of evidence (RFC-038).

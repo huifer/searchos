@@ -1313,16 +1313,30 @@ fn record_session_turn(
         return;
     };
     store.create_or_get(session_id, req.workspace_id.as_str());
+    let provenance_by_url: std::collections::HashMap<&str, &Evidence> = response
+        .provenance
+        .iter()
+        .map(|p| (p.url.as_str(), p))
+        .collect();
     let evidence: Vec<crate::session::WorkspaceEvidence> = response
         .results
         .iter()
-        .map(|r| crate::session::WorkspaceEvidence {
-            url: r.url.clone(),
-            title: r.title.clone(),
-            source: r.source.clone(),
-            score: r.score,
-            trace_id: response.trace_id.to_string(),
-            recorded_at: Utc::now().to_rfc3339(),
+        .map(|r| {
+            let provenance = provenance_by_url.get(r.url.as_str());
+            crate::session::WorkspaceEvidence {
+                url: r.url.clone(),
+                title: r.title.clone(),
+                source: r.source.clone(),
+                score: r.score,
+                trace_id: response.trace_id.to_string(),
+                recorded_at: Utc::now().to_rfc3339(),
+                document_id: provenance
+                    .and_then(|p| p.provenance.document_id.as_ref())
+                    .map(|d| d.to_string()),
+                document_version_id: provenance
+                    .and_then(|p| p.document_version_id.as_ref())
+                    .map(|v| v.to_string()),
+            }
         })
         .collect();
     let turn = crate::session::SessionTurn {
@@ -1347,6 +1361,88 @@ fn record_session_turn(
             .map(|g| g.question.clone())
             .collect();
     }
+}
+
+/// RFC-071 v2: builds the carried workspace-evidence block for a session
+/// continuation. Entries already in this turn's results are omitted; LOCAL
+/// entries are re-validated against the durable store, so a deleted or
+/// re-versioned document is dropped and COUNTED instead of re-served.
+async fn carry_workspace_evidence(
+    deps: &Arc<SearchDependencies>,
+    req: &SearchRequest,
+    results: &[searchos_domain::response::SearchResultItem],
+) -> Option<searchos_domain::response::WorkspaceEvidenceBlock> {
+    let store = deps.session_store.as_ref()?;
+    let session_id = req.session_id.as_deref()?;
+    let session = store.get(session_id)?;
+    if session.evidence.is_empty() {
+        return None;
+    }
+    let current: std::collections::HashSet<&str> = results.iter().map(|r| r.url.as_str()).collect();
+    let mut considered = 0usize;
+    let mut items: Vec<searchos_domain::response::WorkspaceEvidenceItem> = Vec::new();
+    // Local identity per URL, snapshotted once (no borrows into the store).
+    let mut local_identity: std::collections::HashMap<String, (String, String)> =
+        std::collections::HashMap::new();
+    for entry in &session.evidence {
+        if current.contains(entry.url.as_str()) {
+            continue;
+        }
+        if let (Some(document_id), Some(version_id)) =
+            (entry.document_id.clone(), entry.document_version_id.clone())
+        {
+            local_identity.insert(entry.url.clone(), (document_id, version_id));
+        }
+        considered += 1;
+        items.push(searchos_domain::response::WorkspaceEvidenceItem {
+            url: entry.url.clone(),
+            title: entry.title.clone(),
+            source: entry.source.clone(),
+            score: entry.score,
+            trace_id: entry.trace_id.clone(),
+            recorded_at: entry.recorded_at.clone(),
+        });
+        if items.len() >= 20 {
+            break;
+        }
+    }
+    if items.is_empty() {
+        return None;
+    }
+    // Validate local identities when a validity port is wired.
+    let mut invalidated = 0usize;
+    if let Some(port) = deps.validity.as_ref() {
+        let mut valid: Vec<searchos_domain::response::WorkspaceEvidenceItem> =
+            Vec::with_capacity(items.len());
+        for item in items {
+            let valid_entry = match local_identity.get(&item.url) {
+                Some((document_id, version_id)) => {
+                    let doc = searchos_domain::ids::DocumentId::new(document_id.clone());
+                    match port.current_versions(std::slice::from_ref(&doc)).await {
+                        Ok(current_versions) => current_versions
+                            .get(&doc)
+                            .map(|v| v.as_ref().map(|v| v.to_string()) == Some(version_id.clone()))
+                            .unwrap_or(true),
+                        // Fail-open: an unavailable port must not disable
+                        // the workspace view.
+                        Err(_) => true,
+                    }
+                }
+                None => true,
+            };
+            if valid_entry {
+                valid.push(item);
+            } else {
+                invalidated += 1;
+            }
+        }
+        items = valid;
+    }
+    Some(searchos_domain::response::WorkspaceEvidenceBlock {
+        items,
+        invalidated,
+        considered,
+    })
 }
 
 /// Best-effort analytics event; never fails the search request.
@@ -1389,6 +1485,7 @@ fn singleflight_timeout_response(
         warnings,
         task_id,
         SearchStatus::InsufficientEvidence,
+        None,
         None,
     )
 }
@@ -1704,11 +1801,15 @@ impl SearchService for SearchServiceImpl {
                     resp.replayed = true;
                     // RFC-071: a cache-served turn still advances the
                     // research workspace (the session is bookkeeping, not a
-                    // retrieval shortcut).
+                    // retrieval shortcut) — and carries the workspace's
+                    // earlier evidence, exactly like a computed turn.
                     if let Some(store) = self.deps.session_store.as_ref() {
                         let path = resp.decision.path.clone();
                         let gaps = resp.coverage_gaps.clone();
                         record_session_turn(store, &req, &mut resp, &path, &gaps);
+                        let carried =
+                            carry_workspace_evidence(&self.deps, &req, &resp.results).await;
+                        resp.workspace_evidence = carried;
                     }
                     let payload = serde_json::to_value(&resp)
                         .map_err(|e| SearchOsError::Internal(e.to_string()))?;
@@ -2239,6 +2340,10 @@ async fn run_pipeline(
                     },
                 )
                 .await?;
+            // RFC-071 v2: even a rejected turn carries the workspace's
+            // earlier evidence — a follow-up still needs to see what the
+            // research task already found.
+            let carried = carry_workspace_evidence(&deps, &req, &results).await;
             let response = build_response(
                 &req,
                 &decision,
@@ -2254,6 +2359,7 @@ async fn run_pipeline(
                 &task_id,
                 status,
                 None,
+                carried,
             );
             return serde_json::to_value(&response)
                 .map_err(|e| SearchOsError::Internal(e.to_string()));
@@ -2539,6 +2645,10 @@ async fn run_pipeline(
         deps.traces.record(trace.clone()).await?;
     }
 
+    // RFC-071 v2: carry the research workspace's earlier evidence into this
+    // turn (validated; never part of `results`).
+    let workspace_evidence = carry_workspace_evidence(&deps, &req, &results).await;
+
     // RFC-038: the graph comes from what the merge observed — dedup folds
     // and syndication groups. An empty relation set yields `None`.
     let graph = {
@@ -2564,6 +2674,7 @@ async fn run_pipeline(
         &task_id,
         status,
         graph,
+        workspace_evidence,
     );
     // Agent-facing contract: expose the open requirements so a caller can
     // decide between a targeted follow-up query and giving up (RFC-005 5.6).
@@ -2609,6 +2720,7 @@ fn build_response(
     task_id: &TaskId,
     search_status: SearchStatus,
     evidence_graph: Option<searchos_domain::response::EvidenceGraphBlock>,
+    workspace_evidence: Option<searchos_domain::response::WorkspaceEvidenceBlock>,
 ) -> SearchResponse {
     SearchResponse {
         query: req.query.clone(),
@@ -2640,6 +2752,7 @@ fn build_response(
         focus_requirements: Vec::new(),
         context: assemble_context_block(req, &results),
         evidence_graph,
+        workspace_evidence,
     }
 }
 
@@ -3103,10 +3216,6 @@ impl SearchServiceImplStub {
         let mut calls = state.calls;
         let mut spent_micros = state.spent_micros;
         let max_results = clamp_max_results(req.max_results) as usize;
-        eprintln!(
-            "DEBUG execute_external planned={:?}",
-            planned.iter().map(|p| &p.query).collect::<Vec<_>>()
-        );
 
         // Shared failure path: records the failed provider_attempt event
         // (Part 30 INV-30-06) and carries the spend already written to the

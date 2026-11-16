@@ -53,6 +53,14 @@ pub struct WorkspaceEvidence {
     /// Turn trace that served this evidence.
     pub trace_id: String,
     pub recorded_at: String,
+    /// RFC-071 v2: the LOCAL document identity when the evidence came from
+    /// the knowledge base. A follow-up turn re-validates this pair before
+    /// carrying the evidence forward (a deleted or re-versioned document is
+    /// dropped, never re-served).
+    #[serde(default)]
+    pub document_id: Option<String>,
+    #[serde(default)]
+    pub document_version_id: Option<String>,
 }
 
 /// A multi-turn research session.

@@ -161,6 +161,7 @@ impl searchos_application::search_service::SearchService for StubSearch {
             focus_requirements: req.focus_requirements.clone(),
             context: None,
             evidence_graph: None,
+            workspace_evidence: None,
         })
     }
 
@@ -249,35 +250,124 @@ async fn the_runner_stops_when_the_total_budget_is_spent() {
 }
 
 #[tokio::test]
-async fn workspace_survives_a_runtime_restart() {
+async fn continuation_carries_prior_evidence_not_in_current_results() {
     let dir = tempfile::tempdir().unwrap();
-    {
-        let rt = runtime_on(dir.path()).await;
-        seed(
-            &rt,
-            "notes/persist",
-            "Persistent research workspace evidence note.",
-        )
-        .await;
-        let req = research_request(
-            "persistent research workspace evidence",
-            "general",
-            SearchMode::LocalFirst,
-            "default",
-            100_000,
-            2,
-        )
-        .unwrap();
-        rt.research
-            .deep_search(req, "research_gate_persist", 1)
-            .await
-            .unwrap();
-    }
     let rt = runtime_on(dir.path()).await;
-    let workspace = rt.session_store.get("research_gate_persist").unwrap();
-    assert_eq!(workspace.turns.len(), 1);
+    seed(
+        &rt,
+        "notes/alpha",
+        "Alpha research note about the carry gate evidence.",
+    )
+    .await;
+    seed(
+        &rt,
+        "notes/beta",
+        "Beta research note about workspace inspection gates.",
+    )
+    .await;
+
+    let svc = rt.application.search_service.clone();
+
+    // Turn one: alpha question, alpha evidence enters the workspace.
+    let mut req = research_request(
+        "Aurora sentinel notes carry gate",
+        "general",
+        SearchMode::LocalFirst,
+        "default",
+        100_000,
+        2,
+    )
+    .unwrap();
+    req.session_id = Some("carry_gate_one".into());
+    let first = svc.search(req.clone()).await.unwrap();
     assert!(
-        !workspace.evidence.is_empty(),
-        "accumulated evidence persisted with the session"
+        rt.session_store.get("carry_gate_one").is_some(),
+        "turn one created the workspace session"
     );
+    assert!(!first.results.is_empty(), "round one serves the alpha note");
+    assert!(
+        first.workspace_evidence.is_none(),
+        "the first turn has no EARLIER evidence to carry"
+    );
+
+    // Turn two: a BETA question (fresh request id). Its results exclude
+    // alpha, so the carried block must surface round one's alpha evidence.
+    let mut req2 = req.clone();
+    req2 = req2.with_request_id("carry_turn_two");
+    req2.query = "Quarantine zephyr protocol instructions".into();
+    let second = svc.search(req2).await.unwrap();
+    let block = second
+        .workspace_evidence
+        .as_ref()
+        .expect("a continuation turn carries the workspace");
+    assert!(
+        block.items.iter().any(|i| i.url.contains("notes/alpha")),
+        "round one's evidence is carried: {block:?}"
+    );
+    assert_eq!(block.invalidated, 0);
+    // Exclusion of the CURRENT turn's results is asserted by the harness in
+    // `carry_workspace_evidence`; the load-bearing property here is that an
+    // EARLIER turn's evidence reaches the continuation.
+    let current: std::collections::HashSet<&str> =
+        second.results.iter().map(|r| r.url.as_str()).collect();
+    assert!(
+        block
+            .items
+            .iter()
+            .all(|i| !current.contains(i.url.as_str())),
+        "a carried entry never duplicates this turn's results"
+    );
+}
+
+#[tokio::test]
+async fn workspace_evidence_drops_invalidated_documents() {
+    let dir = tempfile::tempdir().unwrap();
+    let rt = runtime_on(dir.path()).await;
+    seed(
+        &rt,
+        "notes/audit",
+        "The audit trail records what a deletion propagated across stores.",
+    )
+    .await;
+    let svc = rt.application.search_service.clone();
+
+    let mut req = research_request(
+        "audit trail records propagation",
+        "general",
+        SearchMode::LocalFirst,
+        "default",
+        100_000,
+        2,
+    )
+    .unwrap();
+    req.session_id = Some("carry_gate_two".into());
+    let first = svc.search(req.clone()).await.unwrap();
+    let doc = first
+        .provenance
+        .iter()
+        .find_map(|p| p.provenance.document_id.clone())
+        .expect("local evidence carries a document id");
+
+    // A second process deletes the document behind the session's back
+    // (the RFC-077 cross-process drift scenario).
+    let store = searchos_storage_sqlite::store::SqliteStore::open(
+        dir.path().join("data").join("searchos.db"),
+    )
+    .unwrap();
+    searchos_storage_sqlite::repos::DocumentRepo::new(&store)
+        .delete(&doc)
+        .unwrap();
+    rt.process_outbox(256).await.unwrap();
+
+    // The continuation turn must DROP the invalidated entry, not re-serve it:
+    // items empty, invalidated counted, block still present. A FRESH request
+    // id is required — replaying the original id is a contractual
+    // idempotency replay that faithfully returns the old payload.
+    let second = svc
+        .search(req.with_request_id("carry_audit_second"))
+        .await
+        .unwrap();
+    let block = second.workspace_evidence.as_ref().expect("block carried");
+    assert_eq!(block.invalidated, 1);
+    assert!(block.items.is_empty());
 }

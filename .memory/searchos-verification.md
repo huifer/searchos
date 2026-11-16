@@ -375,6 +375,18 @@ The SearchOS implementation (`~/git_repo/searchos`) is verified by these command
   `per_kind_policy_allows_memory_and_blocks_documents`. Full suite **780
   passed / 0 failed**; clippy/fmt/route scan green.
 
+- **RFC-071 v2 cross-turn evidence reuse (2026-11-16):** `workspace_evidence`
+  block on `SearchResponse` carries EARLIER session evidence (excludes URLs
+  in current results, cap 20); `WorkspaceEvidence` gained
+  document_id/document_version_id; `carry_workspace_evidence` re-validates
+  local docs via `EvidenceValidityPort` (deleted/re-versioned => dropped +
+  counted; fail-open on port error). Gotchas: the carry helper must be
+  called from ALL turn-shaped response paths (pipeline tail, exact-cache
+  hit, Reject early return) — each was missed once; and a test reusing the
+  original request_id gets an IDEMPOTENCY REPLAY (no carry by contract), so
+  continuations need a fresh request id. Full suite **781 passed / 0
+  failed**; clippy/fmt/route scan green.
+
 **Known environment notes:**
 - LanceDB requires `protoc` at build time (`brew install protobuf`).
 - Live network tests (fetch of https://example.com) tolerate sandbox timeouts by design.

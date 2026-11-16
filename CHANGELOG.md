@@ -125,6 +125,17 @@ multi-arch images, and attaches the matching section of this file.
   `ingest_redacts_secrets_before_object_write`,
   `redaction_can_be_disabled_explicitly` and
   `ingest_time_secret_redaction_is_wired_through_config`.
+- **Cross-turn evidence reuse (RFC-071 v2).** A session continuation now
+  carries the research workspace's EARLIER evidence on the response
+  (`workspace_evidence` block): entries already in this turn's `results` are
+  omitted, local documents are re-validated against the durable store (a
+  deleted or re-versioned document is dropped and COUNTED, never re-served),
+  and the block is capped at 20 entries. The helper is called from every
+  response path that can represent a turn — pipeline tail, exact-cache hit,
+  and the Reject early return — so a follow-up after a failure still sees
+  what the task already found. `WorkspaceEvidence` records the document
+  identity needed for validation; gates cover carry/exclusion and
+  invalidation.
 - **Evidence graph on the response (RFC-038 slice).** `SearchResponse` gains
   an optional `evidence_graph` block built from what the evidence merge
   ACTUALLY observed: `duplicate_of` edges (a raw variant URL points at its
