@@ -184,6 +184,12 @@ pub struct SearchConstraints {
     pub freshness: FreshnessRequirement,
     pub minimum_coverage: f32,
     pub minimum_quality: f32,
+    /// RFC-057: evaluate freshness AS OF this instant instead of "now".
+    /// `None` = wall-clock (default). A past as-of never makes a FUTURE
+    /// document fresh: candidates fetched after the as-of point are dropped
+    /// from the historical view (no time travel to knowledge not yet had).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub as_of: Option<chrono::DateTime<chrono::Utc>>,
     pub required_domains: Vec<String>,
     pub excluded_domains: Vec<String>,
     pub language: Option<String>,
@@ -195,6 +201,7 @@ impl Default for SearchConstraints {
             freshness: FreshnessRequirement::Recent,
             minimum_coverage: 0.6,
             minimum_quality: 0.6,
+            as_of: None,
             required_domains: Vec::new(),
             excluded_domains: Vec::new(),
             language: None,

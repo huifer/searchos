@@ -125,6 +125,16 @@ multi-arch images, and attaches the matching section of this file.
   `ingest_redacts_secrets_before_object_write`,
   `redaction_can_be_disabled_explicitly` and
   `ingest_time_secret_redaction_is_wired_through_config`.
+- **Historical as-of views (RFC-057 v1).** `SearchRequest.constraints.as_of`
+  (RFC3339, optional) moves the freshness clock to a caller-declared instant:
+  documents fetched AFTER that point are excluded (no time travel to
+  knowledge not yet had), while a document that was fresh back then is
+  served. The instant is part of the freshness label, cache key and
+  fingerprint, so a historical view never reuses a wall-clock answer. HTTP
+  `as_of` and CLI `--as_of` reject malformed input with a validation error.
+  Gates: `as_of_view_excludes_future_documents_and_preserves_historical_freshness`,
+  `as_of_is_part_of_the_cache_key`, and the HTTP gate
+  `as_of_rejects_malformed_rfc3339`.
 - **Cross-turn evidence reuse (RFC-071 v2).** A session continuation now
   carries the research workspace's EARLIER evidence on the response
   (`workspace_evidence` block): entries already in this turn's `results` are

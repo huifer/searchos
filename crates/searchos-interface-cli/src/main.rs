@@ -105,6 +105,10 @@ enum Command {
         /// Client idempotency key (replaying it must not re-bill a search)
         #[arg(long)]
         request_id: Option<String>,
+        /// RFC-057: evaluate freshness as of this RFC3339 instant
+        /// (historical view; later documents are excluded)
+        #[arg(long)]
+        as_of: Option<String>,
         /// Assemble an Agent-facing context block under this token budget
         /// (RFC-067/068). The block is deduplicated, keeps every citation
         /// even when content must shrink, and reports truncation honestly.
@@ -847,6 +851,7 @@ async fn run(cli: Cli) -> Result<(), SearchOsError> {
             max_results,
             request_id,
             max_context_tokens,
+            as_of,
         } => {
             let rt = runtime(cli_ref).await?;
             let mode = parse_mode(mode)?;
@@ -879,6 +884,13 @@ async fn run(cli: Cli) -> Result<(), SearchOsError> {
             }
             if let Some(rid) = request_id {
                 req = req.with_request_id(rid.clone());
+            }
+            if let Some(value) = as_of.as_deref() {
+                req.constraints.as_of = Some(
+                    chrono::DateTime::parse_from_rfc3339(value)
+                        .map_err(|e| SearchOsError::validation("as_of", e.to_string()))?
+                        .with_timezone(&chrono::Utc),
+                );
             }
             if let Some(max_tokens) = max_context_tokens {
                 let budget = searchos_domain::context::ContextBudget {

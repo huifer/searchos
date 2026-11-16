@@ -1350,6 +1350,13 @@ components:
         max_results: { type: integer, minimum: 1 }
         max_external_queries: { type: integer, minimum: 0 }
         max_total_cost: { type: number, format: double }
+        as_of:
+          type: string
+          format: date-time
+          description: >
+            RFC-057: judge freshness as of this instant instead of wall-clock
+            now. Documents fetched after the instant are excluded from the
+            historical view; invalid RFC3339 is a client error.
         max_acquisition_rounds:
           type: integer
           minimum: 1

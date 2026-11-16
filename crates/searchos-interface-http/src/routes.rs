@@ -762,6 +762,10 @@ pub struct SearchDto {
     /// Optional output cap, applied after the quality gate.
     #[serde(default)]
     pub max_results: Option<u32>,
+    /// RFC-057: historical view instant (RFC3339). Freshness is judged as
+    /// of this moment; documents fetched later are excluded.
+    #[serde(default)]
+    pub as_of: Option<String>,
     /// Agent session id: turns are recorded so a follow-up can target the
     /// requirements the previous turn left open.
     #[serde(default)]
@@ -847,6 +851,18 @@ async fn search_plan(
         SearchRequest::new(dto.query, profile, mode, ws).map_err(|e| ApiError::from_domain(&e))?;
     if let Some(focus) = dto.focus_requirements.as_ref() {
         req.focus_requirements = focus.clone();
+    }
+    if let Some(as_of) = dto.as_of.as_deref() {
+        let parsed = chrono::DateTime::parse_from_rfc3339(as_of)
+            .map(|t| t.with_timezone(&chrono::Utc))
+            .map_err(|_| {
+                ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "VALIDATION_FAILED",
+                    "invalid as_of",
+                )
+            })?;
+        req.constraints.as_of = Some(parsed);
     }
     let report = state
         .runtime
@@ -1012,6 +1028,18 @@ async fn search(
     }
     if let Some(cost) = dto.max_total_cost {
         req.budget.max_total_cost_micros = (cost * 1_000_000.0).round() as i64;
+    }
+    if let Some(as_of) = dto.as_of.as_deref() {
+        let parsed = chrono::DateTime::parse_from_rfc3339(as_of)
+            .map(|t| t.with_timezone(&chrono::Utc))
+            .map_err(|_| {
+                ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "VALIDATION_FAILED",
+                    "invalid as_of",
+                )
+            })?;
+        req.constraints.as_of = Some(parsed);
     }
     if let Some(rid) = dto.request_id.as_deref() {
         req = req.with_request_id(rid);
@@ -3173,6 +3201,30 @@ mod tests {
             .unwrap()
             .iter()
             .all(|s| s["enabled"] == true));
+    }
+
+    #[tokio::test]
+    async fn as_of_rejects_malformed_rfc3339() {
+        let (st, _d) = state().await;
+        let app = router(st);
+        use tower::ServiceExt;
+        for uri in ["/search", "/search/plan"] {
+            let resp = app
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri(uri)
+                        .header("content-type", "application/json")
+                        .body(axum::body::Body::from(
+                            serde_json::json!({"query": "q", "as_of": "not-a-date"}).to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status().as_u16(), 400, "{uri} must reject a bad as_of");
+        }
     }
 
     #[tokio::test]

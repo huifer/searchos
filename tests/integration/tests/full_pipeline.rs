@@ -2179,3 +2179,90 @@ async fn response_carries_an_evidence_graph_only_when_relations_exist() {
     .await;
     assert!(plain.evidence_graph.is_none());
 }
+
+/// RFC-057: an as-of instant judges freshness at a HISTORICAL point. A
+/// document fetched after that point is not part of the view, and a stale
+/// document that was fresh back then is served.
+#[tokio::test]
+async fn as_of_view_excludes_future_documents_and_preserves_historical_freshness() {
+    use searchos_domain::ids::{ChunkId, DocumentId, DocumentVersionId};
+
+    async fn seed(
+        rt: &Arc<searchos_core::SearchOsRuntime>,
+        chunk: &str,
+        url: &str,
+        fetched_at: chrono::DateTime<chrono::Utc>,
+    ) {
+        rt.fulltext
+            .index(searchos_domain::retrieval::IndexedDocument {
+                chunk_id: ChunkId::new(chunk),
+                document_id: DocumentId::new(chunk),
+                version_id: DocumentVersionId::new(chunk),
+                title: Some("historical note".into()),
+                body: "historical temporal knowledge note body".into(),
+                url: url.into(),
+                language: Some("en".into()),
+                workspace_id: "*".into(),
+                fetched_at,
+            })
+            .await
+            .unwrap();
+        rt.fulltext.commit().await.unwrap();
+    }
+
+    let mut cfg = SearchOsConfig::default();
+    let dir = tempfile::tempdir().unwrap();
+    cfg.app.data_dir = dir.path().to_path_buf();
+    let rt = searchos_core::SearchOsRuntime::init(cfg).await.unwrap();
+    let old = chrono::Utc::now() - chrono::Duration::days(10);
+    let recent = chrono::Utc::now();
+    seed(&rt, "old", "https://history.dev/old", old).await;
+    seed(&rt, "future", "https://history.dev/future", recent).await;
+
+    let past = old + chrono::Duration::hours(1);
+    let mut req = request("historical temporal knowledge note", SearchMode::LocalOnly);
+    req.constraints.freshness = searchos_domain::request::FreshnessRequirement::Any;
+    req.constraints.as_of = Some(past);
+    let historical = rt.application.search_service.search(req).await.unwrap();
+    let urls: Vec<&str> = historical.results.iter().map(|r| r.url.as_str()).collect();
+    assert!(
+        urls.contains(&"https://history.dev/old"),
+        "the document that existed at the as-of point is served: {urls:?}"
+    );
+    assert!(
+        !urls.contains(&"https://history.dev/future"),
+        "a document fetched AFTER the as-of point is not in the historical view: {urls:?}"
+    );
+
+    // Default (no as-of) is the wall-clock view and DOES include both.
+    let mut now_req = request("historical temporal knowledge note", SearchMode::LocalOnly);
+    now_req.constraints.freshness = searchos_domain::request::FreshnessRequirement::Any;
+    let current = rt.application.search_service.search(now_req).await.unwrap();
+    assert!(current
+        .results
+        .iter()
+        .any(|r| r.url.contains("history.dev/future")));
+}
+
+#[tokio::test]
+async fn as_of_is_part_of_the_cache_key() {
+    let mut cfg = SearchOsConfig::default();
+    let dir = tempfile::tempdir().unwrap();
+    cfg.app.data_dir = dir.path().to_path_buf();
+    let rt = searchos_core::SearchOsRuntime::init(cfg).await.unwrap();
+    let svc = rt.application.search_service.clone();
+
+    let mut req = request("temporal cache key probe", SearchMode::LocalOnly);
+    req.constraints.as_of = Some(chrono::Utc::now() - chrono::Duration::days(1));
+    let first = svc.search(req.clone()).await.unwrap();
+    assert!(!first.replayed);
+
+    let mut other = req.clone();
+    other = other.with_request_id("asof_other_view");
+    other.constraints.as_of = Some(chrono::Utc::now() - chrono::Duration::days(2));
+    let second = svc.search(other).await.unwrap();
+    assert!(
+        !second.replayed,
+        "different as-of instants never share a cached answer"
+    );
+}

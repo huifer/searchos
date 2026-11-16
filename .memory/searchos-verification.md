@@ -387,6 +387,15 @@ The SearchOS implementation (`~/git_repo/searchos`) is verified by these command
   continuations need a fresh request id. Full suite **781 passed / 0
   failed**; clippy/fmt/route scan green.
 
+- **RFC-057 as-of slice (2026-11-16):** `SearchConstraints.as_of:
+  Option<DateTime<Utc>>` (serde default); `freshness_now(req)` replaces
+  Utc::now at ALL freshness decision points (index `fetched_after` cutoff,
+  local candidate age); future-dated candidates (fetched_at > as_of) are
+  excluded. as_of enters `effective_freshness_label` (therefore cache key +
+  fingerprint) — historical views never share cached answers. HTTP/CLI
+  parse RFC3339 strictly (bad input = validation error). Full suite **784
+  passed / 0 failed** (85 suites); clippy/fmt/route scan green.
+
 **Known environment notes:**
 - LanceDB requires `protoc` at build time (`brew install protobuf`).
 - Live network tests (fetch of https://example.com) tolerate sandbox timeouts by design.

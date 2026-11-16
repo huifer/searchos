@@ -1046,11 +1046,27 @@ fn source_reliability_of(url: &str) -> searchos_domain::evidence::ReliabilityLev
 /// Stable cache / semantic-compatibility label for the effective freshness
 /// requirement (request constraint + profile default).
 fn effective_freshness_label(req: &SearchRequest, profile: &SearchProfile) -> String {
-    format!(
-        "{}|{}",
-        req.constraints.freshness.cache_label(),
-        profile.freshness.cache_label()
-    )
+    // RFC-057: a historical view must never share a cache entry with a
+    // wall-clock view (or with a different as-of instant).
+    match req.constraints.as_of {
+        Some(as_of) => format!(
+            "{}|{}|asof:{}",
+            req.constraints.freshness.cache_label(),
+            profile.freshness.cache_label(),
+            as_of.to_rfc3339()
+        ),
+        None => format!(
+            "{}|{}",
+            req.constraints.freshness.cache_label(),
+            profile.freshness.cache_label()
+        ),
+    }
+}
+
+/// The instant freshness is judged at: the caller's as-of point when given,
+/// otherwise wall-clock now (RFC-057).
+fn freshness_now(req: &SearchRequest) -> chrono::DateTime<chrono::Utc> {
+    req.constraints.as_of.unwrap_or_else(chrono::Utc::now)
 }
 
 /// Seven-dimensional semantic reuse gate (RFC-007 7.4, G-02).
@@ -1194,11 +1210,11 @@ async fn retrieve_local_candidates(
     // filtering decides what is servable (Part 30 INV-30-01).
     query.include_stale = true;
     let fetched_after = match req.constraints.freshness {
-        FreshnessRequirement::Strict => Some(Utc::now() - chrono::Duration::days(1)),
-        FreshnessRequirement::Recent => Some(Utc::now() - chrono::Duration::days(30)),
-        FreshnessRequirement::MaximumAgeSeconds(seconds) => {
-            Some(Utc::now() - chrono::Duration::seconds(seconds.min(i64::MAX as u64) as i64))
-        }
+        FreshnessRequirement::Strict => Some(freshness_now(req) - chrono::Duration::days(1)),
+        FreshnessRequirement::Recent => Some(freshness_now(req) - chrono::Duration::days(30)),
+        FreshnessRequirement::MaximumAgeSeconds(seconds) => Some(
+            freshness_now(req) - chrono::Duration::seconds(seconds.min(i64::MAX as u64) as i64),
+        ),
         FreshnessRequirement::Any => None,
     };
     query.fetched_after = fetched_after;
@@ -2041,15 +2057,18 @@ async fn run_pipeline(
     )
     .await?;
     let freshness_policy = deps.effective_freshness();
+    let now = freshness_now(&req);
     let evals: Vec<LocalCandidateEval> = all_hits
         .iter()
         .map(|c| {
             let category = searchos_policy::classify_content(&c.url, c.title.as_deref());
-            let age = (Utc::now() - c.fetched_at).num_seconds().max(0);
+            let age = (now - c.fetched_at).num_seconds().max(0);
             LocalCandidateEval {
                 candidate: c.clone(),
                 relevance: normalize_candidate_score(c),
-                freshness_ok: freshness_policy.is_fresh(category, age),
+                // A document fetched AFTER the as-of point did not exist yet
+                // in that historical view (RFC-057).
+                freshness_ok: c.fetched_at <= now && freshness_policy.is_fresh(category, age),
                 source_ok: source_policy.allows(&c.url),
             }
         })
