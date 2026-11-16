@@ -366,6 +366,15 @@ The SearchOS implementation (`~/git_repo/searchos`) is verified by these command
   it was compiling); a stale `cargo test --all-targets` from another session
   had to be killed.
 
+- **RFC-087 fine-grained egress slice (2026-11-16):** `EgressRules::
+  {documents, memory, sessions}` + `may_send(url)` (per-kind, fail-closed
+  for unknown local schemes; public web never gated by the master).
+  Config `privacy.egress_documents/memory/sessions: Option<bool>` —
+  `None` inherits `privacy.egress_remote_rerank`; one blocked kind blocks
+  the whole remote rerank call. Gate:
+  `per_kind_policy_allows_memory_and_blocks_documents`. Full suite **780
+  passed / 0 failed**; clippy/fmt/route scan green.
+
 **Known environment notes:**
 - LanceDB requires `protoc` at build time (`brew install protobuf`).
 - Live network tests (fetch of https://example.com) tolerate sandbox timeouts by design.

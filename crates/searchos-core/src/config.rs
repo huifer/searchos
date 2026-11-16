@@ -492,8 +492,16 @@ impl Default for IngestConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PrivacyConfig {
-    /// Whether workspace-owned content may be sent to the remote reranker.
+    /// Master switch: whether workspace-owned content may be sent to the
+    /// remote reranker at all (default: never).
     pub egress_remote_rerank: bool,
+    /// Fine-grained overrides for workspace-owned KINDS. `None` inherits the
+    /// master switch (legacy behaviour), an explicit `false` blocks the kind
+    /// even when the master switch is on. Only consulted when the master
+    /// switch is `true`.
+    pub egress_documents: Option<bool>,
+    pub egress_memory: Option<bool>,
+    pub egress_sessions: Option<bool>,
 }
 
 /// Memory section.
@@ -772,6 +780,9 @@ pub const ALL_CONFIG_FIELDS: &[&str] = &[
     "ingest.redact_secrets",
     "ingest.redact_pii",
     "privacy.egress_remote_rerank",
+    "privacy.egress_documents",
+    "privacy.egress_memory",
+    "privacy.egress_sessions",
     "memory.enabled",
     "memory.retention_days",
     "memory.embedding.provider",
@@ -884,6 +895,9 @@ pub const CONSUMED_CONFIG_FIELDS: &[&str] = &[
     "ingest.redact_secrets",
     "ingest.redact_pii",
     "privacy.egress_remote_rerank",
+    "privacy.egress_documents",
+    "privacy.egress_memory",
+    "privacy.egress_sessions",
     "memory.enabled",
     "memory.retention_days",
     "memory.embedding.provider",

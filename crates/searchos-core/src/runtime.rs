@@ -596,8 +596,24 @@ impl SearchOsRuntime {
                     timeout_seconds: config.intelligence.reranker_timeout_seconds,
                     top_n: config.intelligence.reranker_top_n,
                     // RFC-087: workspace-owned content stays local unless the
-                    // operator explicitly allows remote reranking of it.
+                    // operator explicitly allows remote reranking of it, and
+                    // then only the KINDS they allowed (per-kind overrides
+                    // inherit the master switch when unset).
                     allow_workspace_content: config.privacy.egress_remote_rerank,
+                    egress: searchos_retrieval::EgressRules {
+                        documents: config
+                            .privacy
+                            .egress_documents
+                            .unwrap_or(config.privacy.egress_remote_rerank),
+                        memory: config
+                            .privacy
+                            .egress_memory
+                            .unwrap_or(config.privacy.egress_remote_rerank),
+                        sessions: config
+                            .privacy
+                            .egress_sessions
+                            .unwrap_or(config.privacy.egress_remote_rerank),
+                    },
                 },
             );
             tracing::info!(model = %reranker.model_id(), "reranker attached");

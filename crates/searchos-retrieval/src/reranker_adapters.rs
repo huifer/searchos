@@ -122,12 +122,13 @@ pub struct RemoteRerankerConfig {
     /// Maximum candidates sent per request.
     pub top_n: usize,
     /// RFC-087 per-source egress policy: whether WORKSPACE-OWNED content
-    /// (the `searchos-*://` schemes: ingested documents, memory, session
-    /// transcripts) may be sent to the remote endpoint. Fail-closed: the
-    /// default never sends stored knowledge to an external service; public
-    /// web content is unaffected. An operator opt-in re-enables remote
-    /// reranking for workspace content.
+    /// may be sent to the remote endpoint at all. Fail-closed: the default
+    /// never sends stored knowledge to an external service; public web
+    /// content is unaffected.
     pub allow_workspace_content: bool,
+    /// RFC-087 fine-grained rules: WHICH workspace-owned kinds may egress.
+    /// Only consulted when `allow_workspace_content` is true.
+    pub egress: EgressRules,
 }
 
 impl Default for RemoteRerankerConfig {
@@ -139,6 +140,7 @@ impl Default for RemoteRerankerConfig {
             timeout_seconds: 15,
             top_n: 30,
             allow_workspace_content: false,
+            egress: EgressRules::default(),
         }
     }
 }
@@ -155,6 +157,41 @@ impl Default for RemoteRerankerConfig {
 /// public by origin and unaffected.
 pub fn is_workspace_owned(url: &str) -> bool {
     url.starts_with("searchos-")
+}
+
+/// RFC-087 fine-grained egress rules for workspace-owned content.
+///
+/// The master switch (`RemoteRerankerConfig::allow_workspace_content`)
+/// decides whether ANY workspace content may leave; these rules say WHICH
+/// kinds may. Fail-closed: every kind defaults to blocked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct EgressRules {
+    /// `searchos-local://` — ingested documents / files.
+    pub documents: bool,
+    /// `searchos-memory://` — agent memory entries.
+    pub memory: bool,
+    /// `searchos-session://` — research session transcripts.
+    pub sessions: bool,
+}
+
+impl EgressRules {
+    /// Whether one URL may egress. Public web content always may; each
+    /// workspace-owned scheme follows its own rule.
+    pub fn may_send(&self, url: &str) -> bool {
+        if let Some(rest) = url.strip_prefix("searchos-local://") {
+            let _ = rest;
+            self.documents
+        } else if url.starts_with("searchos-memory://") {
+            self.memory
+        } else if url.starts_with("searchos-session://") {
+            self.sessions
+        } else if is_workspace_owned(url) {
+            // Unknown local scheme: fail closed.
+            false
+        } else {
+            true
+        }
+    }
 }
 
 pub struct RemoteReranker {
@@ -195,13 +232,18 @@ impl Reranker for RemoteReranker {
         }
         // RFC-087 per-source egress policy (fail-closed): workspace-owned
         // content never reaches the remote endpoint unless the operator
-        // opted in. Reranking is an optimisation — skipping it preserves the
-        // fused order and the privacy guarantee together.
-        if !self.config.allow_workspace_content
-            && candidates[..candidates.len().min(self.config.top_n)]
-                .iter()
-                .any(|c| is_workspace_owned(&c.url))
-        {
+        // opted in — and then only the KINDS they allowed. Reranking is an
+        // optimisation, so skipping preserves the fused order and the
+        // privacy guarantee together.
+        let window = &candidates[..candidates.len().min(self.config.top_n)];
+        // The master switch only governs WORKSPACE-OWNED content; public web
+        // content is not gated by it. A workspace candidate is blocked when
+        // the master switch is off OR its own kind rule says no.
+        let blocked = |c: &RetrievalCandidate| {
+            is_workspace_owned(&c.url)
+                && (!self.config.allow_workspace_content || !self.config.egress.may_send(&c.url))
+        };
+        if window.iter().any(blocked) {
             searchos_observability::MetricsRegistry::global()
                 .inc_counter("privacy.egress_blocked_total");
             tracing::debug!(
@@ -413,7 +455,30 @@ mod egress_tests {
             timeout_seconds: 2,
             top_n: 8,
             allow_workspace_content,
+            // Master switch on ⇒ every kind allowed (legacy behaviour).
+            egress: EgressRules {
+                documents: allow_workspace_content,
+                memory: allow_workspace_content,
+                sessions: allow_workspace_content,
+            },
         }
+    }
+
+    #[test]
+    fn egress_rules_are_per_kind_and_fail_closed() {
+        let rules = EgressRules {
+            documents: false,
+            memory: true,
+            sessions: false,
+        };
+        assert!(!rules.may_send("searchos-local://default/notes/a"));
+        assert!(rules.may_send("searchos-memory://mem_1"));
+        assert!(!rules.may_send("searchos-session://s1/0"));
+        assert!(rules.may_send("https://public.dev/article"));
+        // Unknown local schemes fail closed.
+        assert!(!rules.may_send("searchos-unknown://x"));
+        // Fully closed default.
+        assert!(!EgressRules::default().may_send("searchos-memory://mem_1"));
     }
 
     /// Minimal HTTP/1.1 rerank endpoint that records every received
@@ -513,6 +578,56 @@ mod egress_tests {
         assert!(
             !hits.lock().unwrap().is_empty(),
             "an explicit opt-in sends the content"
+        );
+    }
+
+    #[tokio::test]
+    async fn per_kind_policy_allows_memory_and_blocks_documents() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = endpoint_of(&listener);
+        let hits = Arc::new(std::sync::Mutex::new(Vec::new()));
+        tokio::spawn(mock_rerank_endpoint(listener, Arc::clone(&hits)));
+
+        let mut cfg = config(endpoint, true);
+        cfg.egress = EgressRules {
+            documents: false,
+            memory: true,
+            sessions: false,
+        };
+        let reranker = RemoteReranker::new(cfg).unwrap();
+
+        // A document candidate blocks the WHOLE remote call.
+        let out = reranker
+            .rerank(
+                &RetrievalQuery::new("q", 5),
+                vec![
+                    candidate("searchos-memory://mem_1"),
+                    candidate("searchos-local://default/notes/private"),
+                ],
+            )
+            .await
+            .unwrap();
+        assert_eq!(out.len(), 2);
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(
+            hits.lock().unwrap().is_empty(),
+            "one blocked kind blocks the request: {:?}",
+            hits.lock().unwrap()
+        );
+
+        // A memory-only window egresses under the same rules.
+        let out = reranker
+            .rerank(
+                &RetrievalQuery::new("q", 5),
+                vec![candidate("searchos-memory://mem_1")],
+            )
+            .await
+            .unwrap();
+        assert_eq!(out.len(), 1);
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(
+            !hits.lock().unwrap().is_empty(),
+            "the allowed kind egresses"
         );
     }
 

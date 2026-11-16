@@ -224,6 +224,17 @@ multi-arch images, and attaches the matching section of this file.
   `policy_simulation_uses_a_baseline_and_applies_the_override`,
   `evaluation_aggregates_recent_replays`) and the HTTP round trip
   `replay_and_evaluation_endpoints_round_trip`.
+- **Fine-grained per-kind egress rules (RFC-087 slice).** The reranker
+  egress policy is now per KIND of workspace-owned content:
+  `EgressRules::{documents, memory, sessions}` map the three `searchos-*://`
+  schemes; `may_send` decides per URL and fails closed for unknown local
+  schemes. Config: `privacy.egress_documents/memory/sessions` accept JSON
+  `null` to inherit the master switch (`privacy.egress_remote_rerank`);
+  the master only governs WORKSPACE-OWNED content — public web content is
+  never gated by it. One blocked kind blocks the whole remote rerank call.
+  Gate: `per_kind_policy_allows_memory_and_blocks_documents` (memory
+  egresses, documents block the request even with the master on) plus
+  `egress_rules_are_per_kind_and_fail_closed`.
 - **Per-source egress enforcement (RFC-087 slice).** The remote reranker is
   now an egress boundary: workspace-owned content (`searchos-*://` schemes —
   ingested documents, memory, session transcripts) NEVER reaches the remote

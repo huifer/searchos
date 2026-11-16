@@ -15,7 +15,8 @@ pub mod vertical;
 pub use fusion::{rrf_fuse, rrf_fuse_weighted, RankedSource, RrfConfig};
 pub use rerank::{NeverReranker, Reranker, RerankerPolicy};
 pub use reranker_adapters::{
-    build_reranker, default_policy, FeatureReranker, RemoteReranker, RemoteRerankerConfig,
+    build_reranker, default_policy, is_workspace_owned, EgressRules, FeatureReranker,
+    RemoteReranker, RemoteRerankerConfig,
 };
 pub use traits::{SearchIndex, VectorIndex};
 pub use vertical::{
