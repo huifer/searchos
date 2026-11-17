@@ -13,6 +13,29 @@ multi-arch images, and attaches the matching section of this file.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-16
+
+### Changed
+
+- **Workspace version is now 0.2.0** (`Cargo.toml`, `docs/openapi.yaml`
+  `info.version`, both SDK manifests). The runtime reports it on `/health`
+  and in `searchos_build_info`; the release workflow asserts the git tag
+  matches it.
+- **SDKs refreshed to the frozen gateway contract.** The TypeScript and
+  Python clients were still at the 0.1.1 surface and were missing every
+  endpoint added since. Both now cover the whole OpenAPI path set:
+  planning (`/search/plan`, `/search/follow-up`), evidence acquisition and
+  reuse (`/evidence/*`), research workspace (`/research/*`), entities
+  (`/entities`, `/entities/resolve`), knowledge collections (`/collections*`),
+  replay / evaluation (`/replay/{trace_id}`, `/evaluation/replay`),
+  policy management (`/policies*`), the deletion audit (`/deletions`),
+  memory lifecycle (`/memory/lifecycle`), the federated source catalog
+  (`/sources`) and the raw trace path (`/trace/{trace_id}`). Request and
+  response types gained `as_of`, `cost_adaptive`, `entity_id`, the RFC-038
+  evidence graph, the RFC-071 v2 workspace-evidence block, the RFC-036
+  document insights, the RFC-087 redaction report, and a `PUT` transport in
+  the TypeScript client.
+
 ### Added
 
 - **Final RFC Master Index (RFC-001…087).** A bilingual

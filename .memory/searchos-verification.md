@@ -427,6 +427,20 @@ The SearchOS implementation (`~/git_repo/searchos`) is verified by these command
   clippy/fmt/route scan green. Doc-test compilation is very slow on this
   machine (~5 min per crate) — budget for it.
 
+- **SDK parity + 0.2.0 release prep (2026-11-16):** the workspace version
+  is now `0.2.0` (Cargo.toml + `docs/openapi.yaml` info.version + both SDK
+  manifests). The TypeScript and Python clients were STALE — they had not
+  been refreshed since 0.1.1 and were missing /search/plan, /search/follow-up,
+  /evidence/*, /research/*, /entities*, /collections*, /replay/*,
+  /evaluation/replay, /policies*, /deletions, /memory/lifecycle, /sources and
+  /trace/{id}. Both now cover every path in `docs/openapi.yaml` (68 paths).
+  Gates: `npm run typecheck && npm run build` in sdk/typescript,
+  `python3 -m compileall -q sdk/python` + an import/method-existence smoke.
+  Note: the TS client needed a `put()` transport helper and a generic
+  `put<T>` return type (`Promise<unknown>` is not assignable to
+  `Promise<Record<string, unknown>>`). Full suite **805 passed / 0 failed**
+  (86 suites) after the bump; clippy/fmt/route scan green.
+
 **Known environment notes:**
 - LanceDB requires `protoc` at build time (`brew install protobuf`).
 - Live network tests (fetch of https://example.com) tolerate sandbox timeouts by design.

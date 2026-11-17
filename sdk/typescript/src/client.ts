@@ -41,6 +41,10 @@ export interface SearchRequest {
   session_id?: string;
   /** Explicit follow-up requirements (replaces the derived decomposition). */
   focus_requirements?: string[];
+  /** RFC-057: judge freshness as of this RFC3339 instant (historical view). */
+  as_of?: string;
+  /** RFC-076: downsize the external plan to fit the budget instead of rejecting. */
+  cost_adaptive?: boolean;
 }
 
 export interface SearchResultItem {
@@ -52,6 +56,57 @@ export interface SearchResultItem {
   source: string;
   /** Query-matched passage with `<b>…</b>` markers, when available. */
   highlight?: string | null;
+  /** RFC-058: stable entity id when a registered alias matched. */
+  entity_id?: string;
+}
+
+/** RFC-038: a relation between two pieces of evidence. */
+export type EvidenceRelation = "duplicate_of" | "same_content";
+
+export interface EvidenceGraphEdge {
+  from: string;
+  to: string;
+  relation: EvidenceRelation;
+}
+
+/** RFC-038: folds and syndication relations the merge observed. */
+export interface EvidenceGraphBlock {
+  nodes: string[];
+  edges: EvidenceGraphEdge[];
+}
+
+/** RFC-071 v2: earlier workspace evidence carried into a continuation turn. */
+export interface WorkspaceEvidenceItem {
+  url: string;
+  title?: string | null;
+  source: string;
+  score: number;
+  trace_id: string;
+  recorded_at: string;
+}
+
+export interface WorkspaceEvidenceBlock {
+  items: WorkspaceEvidenceItem[];
+  invalidated: number;
+  considered: number;
+}
+
+/** RFC-036: extractive summary + keywords computed at ingest. */
+export interface DocumentInsights {
+  summary?: string | null;
+  keywords?: string[];
+}
+
+/** RFC-087: what an ingest redaction pass removed. */
+export interface RedactionHit {
+  rule: string;
+  count: number;
+}
+
+export interface RedactionReport {
+  redacted: boolean;
+  hits: RedactionHit[];
+  rules_version: string;
 }
 
 export interface QualityReport {
@@ -602,7 +657,183 @@ export class SearchOSClient {
     return source;
   }
 
+  /** Continue an agent session; reuses earlier evidence when still valid. */
+  searchFollowUp(request: SearchRequest): Promise<SearchResponse> {
+    return this.post("/search/follow-up", request) as Promise<SearchResponse>;
+  }
+
+  // -- Evidence acquisition / reuse (RFC-031) --------------------------------
+
+  evidenceAcquisitions(): Promise<Record<string, unknown>> {
+    return this.get("/evidence/acquisitions");
+  }
+
+  evidenceAcquisition(id: string): Promise<Record<string, unknown>> {
+    return this.get(`/evidence/acquisitions/${encodeURIComponent(id)}`);
+  }
+
+  evidenceReuse(): Promise<Record<string, unknown>> {
+    return this.get("/evidence/reuse");
+  }
+
+  /** Raw recorded decision trace at the canonical path. */
+  trace(traceId: string): Promise<DecisionTrace> {
+    return this.get(`/trace/${encodeURIComponent(traceId)}`) as Promise<DecisionTrace>;
+  }
+
+  // -- Planning (RFC-031/004) ------------------------------------------------
+
+  /** Plan-only: what WOULD be searched, without buying anything. */
+  searchPlan(request: SearchRequest): Promise<Record<string, unknown>> {
+    return this.post("/search/plan", request) as Promise<Record<string, unknown>>;
+  }
+
+  // -- Research workspace (RFC-071) ------------------------------------------
+
+  /** Bounded deep search; each round is a full search recorded as a turn. */
+  researchRun(body: {
+    query: string;
+    profile?: string;
+    mode?: SearchMode;
+    workspace?: string;
+    session_id?: string;
+    max_rounds?: number;
+    max_total_cost_micros?: number;
+    max_external_queries?: number;
+  }): Promise<Record<string, unknown>> {
+    return this.post("/research/run", body);
+  }
+
+  /** Inspect the research workspace (turns + accumulated evidence). */
+  getResearchWorkspace(sessionId: string): Promise<Record<string, unknown>> {
+    return this.get(`/research/${encodeURIComponent(sessionId)}`);
+  }
+
+  // -- Entities (RFC-058) ----------------------------------------------------
+
+  listEntities(): Promise<Record<string, unknown>> {
+    return this.get("/entities");
+  }
+
+  registerEntity(body: {
+    canonical_name: string;
+    aliases?: string[];
+    source?: "operator" | "heuristic";
+  }): Promise<Record<string, unknown>> {
+    return this.post("/entities", body);
+  }
+
+  resolveEntity(text: string): Promise<Record<string, unknown>> {
+    return this.post("/entities/resolve", { text });
+  }
+
+  // -- Collections (RFC-030) -------------------------------------------------
+
+  listCollections(workspaceId?: string): Promise<Record<string, unknown>> {
+    return this.get("/collections", workspaceId ? { workspace_id: workspaceId } : undefined);
+  }
+
+  createCollection(body: {
+    name: string;
+    workspace_id?: string;
+    description?: string;
+  }): Promise<Record<string, unknown>> {
+    return this.post("/collections", body);
+  }
+
+  addCollectionDocument(collectionId: string, documentId: string): Promise<Record<string, unknown>> {
+    return this.post(
+      `/collections/${encodeURIComponent(collectionId)}/documents`,
+      { document_id: documentId },
+    );
+  }
+
+  removeCollectionDocument(collectionId: string, documentId: string): Promise<void> {
+    return this.delete(
+      `/collections/${encodeURIComponent(collectionId)}/documents/${encodeURIComponent(documentId)}`,
+    ) as Promise<void>;
+  }
+
+  collectionDocuments(collectionId: string): Promise<{ documents: string[] }> {
+    return this.get(`/collections/${encodeURIComponent(collectionId)}/documents`) as Promise<{
+      documents: string[];
+    }>;
+  }
+
+  // -- Replay / simulation / evaluation (RFC-040/075/086) --------------------
+
+  /** Offline replay of a recorded decision; optional what-if policy. */
+  replayTrace(
+    traceId: string,
+    body: { policy?: Record<string, unknown> } = {},
+  ): Promise<Record<string, unknown>> {
+    return this.post(`/replay/${encodeURIComponent(traceId)}`, body);
+  }
+
+  /** Batch evaluation over recent traces. */
+  evaluateReplays(body: {
+    limit?: number;
+    workspace?: string;
+    policy?: Record<string, unknown>;
+  } = {}): Promise<Record<string, unknown>> {
+    return this.post("/evaluation/replay", body);
+  }
+
+  // -- Deletion audit (RFC-087) ----------------------------------------------
+
+  listDeletions(
+    query: { document_id?: string; workspace_id?: string; limit?: number } = {},
+  ): Promise<{ deletions: Record<string, unknown>[] }> {
+    return this.get("/deletions", query) as Promise<{ deletions: Record<string, unknown>[] }>;
+  }
+
+  // -- Policies (RFC-034) ----------------------------------------------------
+
+  listPolicies(): Promise<{ policies: unknown[]; live: Record<string, unknown> }> {
+    return this.get("/policies") as Promise<{ policies: unknown[]; live: Record<string, unknown> }>;
+  }
+
+  policyVersions(kind: "quality" | "freshness" | "source"): Promise<{
+    kind: string;
+    versions: Record<string, unknown>[];
+  }> {
+    return this.get(`/policies/${encodeURIComponent(kind)}/versions`);
+  }
+
+  submitPolicy(
+    kind: "quality" | "freshness" | "source",
+    body: { policy: Record<string, unknown>; notes?: string },
+  ): Promise<Record<string, unknown>> {
+    return this.put(`/policies/${encodeURIComponent(kind)}`, body) as Promise<
+      Record<string, unknown>
+    >;
+  }
+
+  rollbackPolicy(
+    kind: "quality" | "freshness" | "source",
+    version: number,
+  ): Promise<Record<string, unknown>> {
+    return this.post(`/policies/${encodeURIComponent(kind)}/rollback`, { version });
+  }
+
+  // -- Memory lifecycle (RFC-070) --------------------------------------------
+
+  memoryLifecycle(apply = false): Promise<Record<string, unknown>> {
+    return this.post("/memory/lifecycle", { apply });
+  }
+
+  // -- Federated source catalog (RFC-063) ------------------------------------
+
+  sources(): Promise<Record<string, unknown>> {
+    return this.get("/sources");
+  }
+
   // -- Transport ------------------------------------------------------------
+
+
+  private put<T = unknown>(path: string, body: unknown): Promise<T> {
+    return this.request("PUT", path, { body: JSON.stringify(body) }) as Promise<T>;
+  }
 
   private async request<T>(
     method: string,

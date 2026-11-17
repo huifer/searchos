@@ -255,6 +255,135 @@ class SearchOSClient:
         """Prometheus text exposition format 0.0.4."""
         return self._request("GET", "/metrics", parse="text")
 
+    def search_follow_up(self, request: dict[str, Any]) -> dict[str, Any]:
+        """Continue an agent session; reuses earlier evidence when still valid."""
+        return self._post("/search/follow-up", request)
+
+    # -- Evidence acquisition / reuse (RFC-031) --------------------------------
+
+    def evidence_acquisitions(self) -> dict[str, Any]:
+        return self._get("/evidence/acquisitions")
+
+    def evidence_acquisition(self, acquisition_id: str) -> dict[str, Any]:
+        return self._get(f"/evidence/acquisitions/{acquisition_id}")
+
+    def evidence_reuse(self) -> dict[str, Any]:
+        return self._get("/evidence/reuse")
+
+    def trace(self, trace_id: str) -> dict[str, Any]:
+        """Raw recorded decision trace at the canonical path."""
+        return self._get(f"/trace/{trace_id}")
+
+    # -- Planning (RFC-031/004) ------------------------------------------------
+
+    def search_plan(self, request: dict[str, Any]) -> dict[str, Any]:
+        """Plan-only: what WOULD be searched, without buying anything."""
+        return self._post("/search/plan", request)
+
+    # -- Research workspace (RFC-071) ------------------------------------------
+
+    def research_run(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Bounded deep search; each round is a full search recorded as a turn."""
+        return self._post("/research/run", body)
+
+    def get_research_workspace(self, session_id: str) -> dict[str, Any]:
+        return self._get(f"/research/{session_id}")
+
+    # -- Entities (RFC-058) ----------------------------------------------------
+
+    def list_entities(self) -> list[dict[str, Any]]:
+        return self._get("/entities").get("entities", [])
+
+    def register_entity(self, body: dict[str, Any]) -> dict[str, Any]:
+        return self._post("/entities", body)
+
+    def resolve_entity(self, text: str) -> dict[str, Any] | None:
+        return self._post("/entities/resolve", {"text": text})
+
+    # -- Collections (RFC-030) -------------------------------------------------
+
+    def list_collections(self, workspace_id: str | None = None) -> list[dict[str, Any]]:
+        query = {"workspace_id": workspace_id} if workspace_id else None
+        return self._get("/collections", query).get("collections", [])
+
+    def create_collection(self, body: dict[str, Any]) -> dict[str, Any]:
+        return self._post("/collections", body)
+
+    def add_collection_document(self, collection_id: str, document_id: str) -> dict[str, Any]:
+        return self._post(
+            f"/collections/{collection_id}/documents", {"document_id": document_id}
+        )
+
+    def remove_collection_document(self, collection_id: str, document_id: str) -> None:
+        self._delete(f"/collections/{collection_id}/documents/{document_id}")
+
+    def collection_documents(self, collection_id: str) -> list[str]:
+        return self._get(f"/collections/{collection_id}/documents").get("documents", [])
+
+    # -- Replay / simulation / evaluation (RFC-040/075/086) --------------------
+
+    def replay_trace(
+        self, trace_id: str, policy: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {"policy": policy} if policy else {}
+        return self._post(f"/replay/{trace_id}", body)
+
+    def evaluate_replays(
+        self,
+        *,
+        limit: int = 20,
+        workspace_id: str | None = None,
+        policy: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {"limit": limit}
+        if workspace_id:
+            body["workspace"] = workspace_id
+        if policy:
+            body["policy"] = policy
+        return self._post("/evaluation/replay", body)
+
+    # -- Deletion audit (RFC-087) ----------------------------------------------
+
+    def list_deletions(
+        self,
+        *,
+        document_id: str | None = None,
+        workspace_id: str | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        query: dict[str, Any] = {"limit": limit}
+        if document_id:
+            query["document_id"] = document_id
+        if workspace_id:
+            query["workspace_id"] = workspace_id
+        return self._get("/deletions", query).get("deletions", [])
+
+    # -- Policies (RFC-034) ----------------------------------------------------
+
+    def list_policies(self) -> dict[str, Any]:
+        return self._get("/policies")
+
+    def policy_versions(self, kind: str) -> list[dict[str, Any]]:
+        return self._get(f"/policies/{kind}/versions").get("versions", [])
+
+    def submit_policy(self, kind: str, body: dict[str, Any]) -> dict[str, Any]:
+        return self._put(f"/policies/{kind}", body)
+
+    def rollback_policy(self, kind: str, version: int) -> dict[str, Any]:
+        return self._post(f"/policies/{kind}/rollback", {"version": version})
+
+    # -- Memory lifecycle (RFC-070) --------------------------------------------
+
+    def memory_lifecycle(self, apply: bool = False) -> dict[str, Any]:
+        return self._post("/memory/lifecycle", {"apply": apply})
+
+    # -- Federated source catalog (RFC-063) ------------------------------------
+
+    def sources(self) -> dict[str, Any]:
+        return self._get("/sources")
+
+    # -- Analytics (RFC-026/027/028) ------------------------------------------
+
     # -- Analytics (RFC-026/027/028) ------------------------------------------
 
     def dashboard_overview(
@@ -295,6 +424,23 @@ class SearchOSClient:
         return json.loads(text)
 
     # -- Transport ------------------------------------------------------------
+
+
+    def _get(self, path: str, query: dict[str, Any] | None = None) -> dict[str, Any]:
+        return self._request("GET", path, query=query)
+
+    def _post(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
+        payload = json.dumps(body).encode()
+        text = self._request("POST", path, body=payload, content_type="application/json")
+        return json.loads(text)
+
+    def _put(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
+        payload = json.dumps(body).encode()
+        text = self._request("PUT", path, body=payload, content_type="application/json")
+        return json.loads(text)
+
+    def _delete(self, path: str) -> None:
+        self._request("DELETE", path)
 
     def _url(self, path: str) -> str:
         base = self.base_url.rstrip("/")

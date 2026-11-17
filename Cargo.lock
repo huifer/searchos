@@ -5483,7 +5483,7 @@ dependencies = [
 
 [[package]]
 name = "searchos-application"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -5515,7 +5515,7 @@ dependencies = [
 
 [[package]]
 name = "searchos-cache"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "hex",
@@ -5529,7 +5529,7 @@ dependencies = [
 
 [[package]]
 name = "searchos-compatibility-tests"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "axum",
  "searchos-core",
@@ -5547,7 +5547,7 @@ dependencies = [
 
 [[package]]
 name = "searchos-context"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5555,7 +5555,7 @@ dependencies = [
 
 [[package]]
 name = "searchos-core"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -5594,7 +5594,7 @@ dependencies = [
 
 [[package]]
 name = "searchos-cost"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "searchos-domain",
@@ -5605,7 +5605,7 @@ dependencies = [
 
 [[package]]
 name = "searchos-crawler"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "hex",
  "regex",
@@ -5624,7 +5624,7 @@ dependencies = [
 
 [[package]]
 name = "searchos-decision"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -5638,7 +5638,7 @@ dependencies = [
 
 [[package]]
 name = "searchos-document"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "hex",
@@ -5651,7 +5651,7 @@ dependencies = [
 
 [[package]]
 name = "searchos-domain"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "hex",
@@ -5664,7 +5664,7 @@ dependencies = [
 
 [[package]]
 name = "searchos-e2e-tests"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "libc",
  "serde_json",
@@ -5673,7 +5673,7 @@ dependencies = [
 
 [[package]]
 name = "searchos-evaluation"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "searchos-cost",
@@ -5686,7 +5686,7 @@ dependencies = [
 
 [[package]]
 name = "searchos-extension"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "searchos-crawler",
@@ -5701,7 +5701,7 @@ dependencies = [
 
 [[package]]
 name = "searchos-federated"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -5717,7 +5717,7 @@ dependencies = [
 
 [[package]]
 name = "searchos-fetch"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "hex",
  "regex",
@@ -5735,7 +5735,7 @@ dependencies = [
 
 [[package]]
 name = "searchos-index-remote"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -5754,7 +5754,7 @@ dependencies = [
 
 [[package]]
 name = "searchos-index-tantivy"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -5769,7 +5769,7 @@ dependencies = [
 
 [[package]]
 name = "searchos-integration-tests"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -5805,7 +5805,7 @@ dependencies = [
 
 [[package]]
 name = "searchos-interface-cli"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "clap",
@@ -5838,7 +5838,7 @@ dependencies = [
 
 [[package]]
 name = "searchos-interface-http"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "axum",
  "chrono",
@@ -5862,7 +5862,7 @@ dependencies = [
 
 [[package]]
 name = "searchos-interface-mcp"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "searchos-application",
  "searchos-core",
@@ -5879,7 +5879,7 @@ dependencies = [
 
 [[package]]
 name = "searchos-memory"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -5889,7 +5889,7 @@ dependencies = [
 
 [[package]]
 name = "searchos-observability"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "opentelemetry",
@@ -5905,7 +5905,7 @@ dependencies = [
 
 [[package]]
 name = "searchos-performance-tests"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "searchos-core",
@@ -5918,7 +5918,7 @@ dependencies = [
 
 [[package]]
 name = "searchos-planner"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -5931,7 +5931,7 @@ dependencies = [
 
 [[package]]
 name = "searchos-policy"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "searchos-domain",
  "serde",
@@ -5940,7 +5940,7 @@ dependencies = [
 
 [[package]]
 name = "searchos-provider"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -5957,7 +5957,7 @@ dependencies = [
 
 [[package]]
 name = "searchos-query"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "hex",
  "regex",
@@ -5969,7 +5969,7 @@ dependencies = [
 
 [[package]]
 name = "searchos-retrieval"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -5984,7 +5984,7 @@ dependencies = [
 
 [[package]]
 name = "searchos-storage-fs"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "hex",
@@ -5995,7 +5995,7 @@ dependencies = [
 
 [[package]]
 name = "searchos-storage-sqlite"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "rusqlite",
@@ -6012,7 +6012,7 @@ dependencies = [
 
 [[package]]
 name = "searchos-vector-lancedb"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",
