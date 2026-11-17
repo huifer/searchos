@@ -130,6 +130,9 @@ jobs:
         run: cargo test -p searchos-interface-http --lib openapi_spec_matches_the_route_table
       - name: Route table resolves
         run: cargo test -p searchos-interface-http --lib every_registered_route_resolves
+      - name: Route conflict scan
+        run: |
+          SRC_DIR=crates/searchos-interface-http/src bash scripts/scan-routes.sh
 
   sdk:
     runs-on: ubuntu-latest

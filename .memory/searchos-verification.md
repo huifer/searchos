@@ -456,6 +456,17 @@ The SearchOS implementation (`~/git_repo/searchos`) is verified by these command
   Master Index Gap Analysis", and a `startswith` on the shorter form silently
   skips one. Docs are bilingual (EN block, then 中文 block) — keep that.
 
+- **Release hardening (2026-11-16, after 0.2.0):** the route-conflict
+  scanner is VENDORED as `scripts/scan-routes.sh` and wired into the CI
+  `openapi` job (`SRC_DIR=crates/searchos-interface-http/src bash
+  scripts/scan-routes.sh`) — it used to be a local-only gate that only ran
+  from `~/.agents/skills/axum-route-conflict/scripts/`. `docs/development/README.md`
+  now carries a bilingual release checklist (version bump points: Cargo.toml,
+  openapi info.version, both SDK manifests; CHANGELOG section rule; SDK
+  must cover every new OpenAPI path) and a concurrency guide recording the two
+  real foreign-session incidents. No Rust code changed in this pass, so the
+  cargo gates were not re-run (the 805-test result still stands).
+
 **Known environment notes:**
 - LanceDB requires `protoc` at build time (`brew install protobuf`).
 - Live network tests (fetch of https://example.com) tolerate sandbox timeouts by design.

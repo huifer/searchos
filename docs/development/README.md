@@ -69,6 +69,64 @@ cargo test -p searchos-integration-tests            # offline acceptance
 Baselines A/B/C and the non-inferiority gate live in `searchos-evaluation`
 (RFC-015 15.4/15.6): cost reduction only counts when quality is non-inferior.
 
+## Release checklist
+
+The release workflow (`.github/workflows/release.yml`) fires on `v*` tags and
+asserts that the tag matches the workspace `version`. Cutting a release is
+therefore a checklist, not a ceremony:
+
+1. **Version** — bump `version` in `Cargo.toml` (it propagates to every crate,
+   `/health`, and `searchos_build_info`), and mirror it in
+   `docs/openapi.yaml` (`info.version`), `sdk/typescript/package.json` and
+   `sdk/python/pyproject.toml`.
+2. **CHANGELOG** — move the accumulated `## [Unreleased]` entries under a
+   `## [x.y.z] - YYYY-MM-DD` heading. The release body is that section.
+3. **SDKs** — the clients mirror `docs/openapi.yaml` by hand. Every new path
+   needs a typed method in both (`sdk/typescript/src/client.ts`,
+   `sdk/python/searchos/client.py`), otherwise the SDK is lying about the
+   contract.
+4. **Gates** — all of these must be green before tagging:
+
+   ```text
+   cargo test --workspace --locked
+   cargo clippy --workspace --all-targets -- -D warnings
+   cargo fmt --all -- --check
+   SRC_DIR=crates/searchos-interface-http/src \
+     bash ~/.agents/skills/axum-route-conflict/scripts/scan-routes.sh
+   cd sdk/typescript && npm ci && npm run typecheck && npm run build
+   python3 -m compileall -q sdk/python
+   ```
+
+5. **Tag** — `git tag v<x.y.z>` and push. The workflow builds the binary with
+   SHA-256 checksums, the multi-arch gateway/console images (published to
+   GHCR when `REGISTRY_TOKEN` is set), and creates the GitHub release.
+
+The rollback path (image tag rollback + backup restore for schema
+migrations) is in [`docs/deployment.md`](../deployment.md) §10. Migrations are
+append-only, so an older binary refuses a newer backup.
+
+## Working in this repo concurrently
+
+Two agents (or an agent and a human) editing the same checkout WILL collide:
+git sees one working tree, and an overwrite is not always attributable. Two
+real incidents happened in this repo:
+
+- a foreign process replaced `crates/searchos-federated/src/fusion.rs` with a
+  different implementation, breaking the committed `fuse_ranks` callers;
+- a foreign process rewrote `crates/searchos-application/src/session_source.rs`
+  and inserted a duplicate runtime dependency block.
+
+Both were recovered by diffing against `HEAD` and replaying only the intended
+line. Rules that follow from that:
+
+- **Never discard** a working-tree change you did not make — stash it, patch
+  it aside, or commit it with a note. `git checkout -- .` destroys someone
+  else's work.
+- Before a long build, check `ps` for another `cargo`/`rustc` running in this
+  repo: two cargo processes fight over the target-dir lock and both stall.
+- Keep each stage in its own commit with named gates, so a conflict is a
+  merge of two small diffs rather than a rewrite.
+
 ## 中文
 
 # 开发指南
@@ -137,3 +195,53 @@ cargo test -p searchos-integration-tests            # 离线验收
 
 基线 A/B/C 与非劣性门禁在 `searchos-evaluation` 中（RFC-015 15.4/15.6）：
 只有在质量非劣时，降本才算数。
+
+## 发布清单
+
+发布工作流（`.github/workflows/release.yml`）在 `v*` tag 上触发，并断言 tag 与
+workspace 的 `version` 一致。因此发版是一份清单，而不是仪式：
+
+1. **版本** —— 在 `Cargo.toml` 里改 `version`（它会传播到所有 crate、`/health` 与
+   `searchos_build_info`），并同步 `docs/openapi.yaml`（`info.version`）、
+   `sdk/typescript/package.json`、`sdk/python/pyproject.toml`。
+2. **CHANGELOG** —— 把累积的 `## [Unreleased]` 条目移到 `## [x.y.z] - YYYY-MM-DD`
+   标题下。发布正文就是该节。
+3. **SDK** —— 客户端是手工镜像 `docs/openapi.yaml` 的。新增路径必须在两个客户端里
+   各有一个带类型的方法（`sdk/typescript/src/client.ts`、
+   `sdk/python/searchos/client.py`），否则 SDK 就在对契约撒谎。
+4. **门禁** —— 打 tag 前下列全部必须为绿：
+
+   ```text
+   cargo test --workspace --locked
+   cargo clippy --workspace --all-targets -- -D warnings
+   cargo fmt --all -- --check
+   SRC_DIR=crates/searchos-interface-http/src \
+     bash ~/.agents/skills/axum-route-conflict/scripts/scan-routes.sh
+   cd sdk/typescript && npm ci && npm run typecheck && npm run build
+   python3 -m compileall -q sdk/python
+   ```
+
+5. **打 tag** —— `git tag v<x.y.z>` 并推送。工作流会构建带 SHA-256 校验和的二进制、
+   多架构 gateway/console 镜像（配置 `REGISTRY_TOKEN` 时推送到 GHCR），并创建
+   GitHub Release。
+
+回滚路径（镜像 tag 回滚 + schema 迁移的备份恢复）见
+[`docs/deployment.md`](../deployment.md) §10。迁移只追加，因此旧二进制会拒绝新备份。
+
+## 在本仓库并发协作
+
+两个 agent（或一个 agent 与一个人）同时改同一个 checkout 必然冲突：git 只看到一份
+工作树，且覆盖往往无法归因。本仓库发生过两次真实事故：
+
+- 外部进程把 `crates/searchos-federated/src/fusion.rs` 换成了另一份实现，
+  破坏了已提交的 `fuse_ranks` 调用方；
+- 外部进程重写了 `crates/searchos-application/src/session_source.rs`，
+  并插入了重复的 runtime 依赖块。
+
+两次都是通过与 `HEAD` 对比、只重放那一行意图改动恢复的。由此得到的规则：
+
+- **绝不丢弃**不是自己改动的工作树变更 —— 存进 stash、另存补丁，或带说明提交。
+  `git checkout -- .` 会毁掉别人的工作。
+- 长构建之前先看 `ps` 里有没有另一个 `cargo`/`rustc` 在本仓库跑：两个 cargo 进程会
+  争 target-dir 锁，双方都会卡住。
+- 每个阶段单独提交并带命名门禁，这样冲突是两个小 diff 的合并，而不是重写。

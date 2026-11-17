@@ -25,6 +25,19 @@ multi-arch images, and attaches the matching section of this file.
   to it. The API reference and CLI reference were refreshed with every
   endpoint and command group added since 0.1.1.
 
+### Added
+
+- **Route-conflict gate now runs in CI.** The static scanner is vendored as
+  `scripts/scan-routes.sh` and runs in the `openapi` job on every pull
+  request, so a conflicting Axum route cannot merge on a machine that never
+  ran the local gate. It complements (never replaces) the semantic route-table
+  parity tests.
+- **Release checklist and concurrency guide** in `docs/development/README.md`:
+  the version-bump points, the CHANGELOG rule, the SDK-parity rule, the full
+  gate list and the tag flow — plus the two real concurrent-session incidents
+  in this repo and the rules that follow from them (never discard a working
+  tree change you did not make; check `ps` before a long build).
+
 ### Changed
 
 - **Workspace version is now 0.2.0** (`Cargo.toml`, `docs/openapi.yaml`
