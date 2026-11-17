@@ -15,6 +15,16 @@ multi-arch images, and attaches the matching section of this file.
 
 ## [0.2.0] - 2026-11-16
 
+### Added
+
+- **RFC coverage matrix (`docs/rfc-coverage.md`).** One authoritative,
+  bilingual status table for the whole frozen catalogue (RFC-001…087):
+  Delivered / Partial / Gap / Reject per RFC, with the repo evidence and the
+  named remaining gap. It supersedes the scattered status notes; the gap
+  analysis stays as the detailed evidence log for RFC-062…087 and now links
+  to it. The API reference and CLI reference were refreshed with every
+  endpoint and command group added since 0.1.1.
+
 ### Changed
 
 - **Workspace version is now 0.2.0** (`Cargo.toml`, `docs/openapi.yaml`

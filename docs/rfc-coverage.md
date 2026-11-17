@@ -1,0 +1,186 @@
+# RFC Coverage Matrix (RFC-001…087)
+
+> Single authoritative status table for the frozen RFC catalogue.
+> 一个权威的 RFC 覆盖状态表。
+
+**As of:** 2026-11-16 · **Workspace version:** 0.2.0 · **Verified suite:** 805 tests / 0 failed
+
+This table answers one question per RFC: *is the capability in the repository
+today, and if so, how far?* It supersedes the scattered status notes in
+[`gap-analysis-master-index.md`](gap-analysis-master-index.md) §4 (which remains
+the detailed evidence log for RFC-062…087) and the historical planning tables
+in [`feature-roadmap.md`](feature-roadmap.md) / [`roadmap.md`](roadmap.md).
+
+**Legend**
+
+| Status | Meaning |
+|---|---|
+| **Delivered** | Implemented and gated by named tests; the v1 scope of the RFC is in the repo. |
+| **Partial** | Something real exists, but narrower than the RFC's full scope. The gap is named in the row. |
+| **Gap** | Not implemented. |
+| **Reject** | Explicit v1 non-goal (a frozen scope decision, not missing work). |
+
+**Numbering notes.** Three collisions are recorded, never silently rewritten:
+planned **029** (Research Workspace) and planned **031** (Freshness Scheduler)
+collide with the shipped `rfc-029-local-data-ingestion.md` and
+`rfc-031-external-evidence-promotion.md`; the shipped files keep their
+numbers. The planned 087 was Federated Search in an earlier draft — it was
+renamed to `rfc-062-federated-search-architecture.md`, and 087 became Privacy
+per turn #81.
+
+---
+
+## English
+
+| RFC | Capability | Status | Evidence / remaining gap |
+|---|---|---|---|
+| 001–025 | Legacy Foundation Baseline (product architecture → deployment) | **Delivered** | `docs/rfc/rfc-001…016` + annexes 17–24; the whole workspace, CLI, gateway, MCP and extension seams shipped in v0.1.0. |
+| 026 | Visualization & Analytics Architecture | **Delivered** | `crates/searchos-observability`, `docs/analytics` read models, console `/analytics`. |
+| 027 | Analytics Data Model & Aggregation | **Delivered** | migrations v3 `analytics_events` + `analytics_read_models`; `AnalyticsRepo::rebuild` / `query_dataset`. |
+| 028 | Dashboard API & Frontend Integration | **Delivered** | `/api/v1/dashboard/*` over the Read Model; Next.js console in `web/`. |
+| 029 | Local Data Ingestion (shipped file) | **Delivered** | `IngestService`, `POST /ingest{,/file,/batch}`, `GET /ingest/jobs/:id`, CLI `ingest`. The *planned* "Research Workspace" scope moved to 071. |
+| 030 | Knowledge Management | **Delivered (v1)** | Document lifecycle (create/version/reindex/soft-delete) plus workspace-scoped **collections** (deterministic ids, live member counts, HTTP + CLI). Gap: taxonomy/tag hierarchies beyond flat collections. |
+| 031 | External Evidence Promotion (shipped file) | **Delivered** | promotion state machine, robots/fetch-failure skip reasons, per-task caps, reuse accounting, `GET /evidence/*`. The *planned* "Freshness Scheduler" scope is partially covered by 057 + freshness profiles. |
+| 032 | Source Trust | **Partial** | content communities + original-publisher detection (074), per-source reliability and latency (080) exist. Gap: publisher-level trust scoring. |
+| 033 | Online Feedback | **Gap** | no user-feedback ingestion loop. |
+| 034 | Policy Management | **Delivered (v1)** | versioned append-only policies, live pointer, rollback; `GET/PUT /policies*`, CLI `policy`. |
+| 035 | Search Watch | **Gap** | no scheduled watcher/alerts over search quality. |
+| 036 | Document Intelligence | **Delivered (v1)** | deterministic extractive summary + keywords computed at ingest, persisted per version (migration v14), surfaced by `document inspect` and `GET /documents/:id`. Extractive by design — no generated text. |
+| 037 | Multilingual Search | **Partial** | CJK bigrams in the analyzer, Chinese seed corpus + graded CJK ranking gate. Gap: cross-lingual embedding/reranking. |
+| 038 | Evidence Graph | **Delivered (v1)** | `duplicate_of` / `same_content` edges on the response, built from the merge. |
+| 039 | Provider Intelligence | **Partial** | key rotation (ADR-029), health, outcome-driven circuit breaker, live p50/p95. Gap: provider selection by quality signal. |
+| 040 | Search Replay | **Delivered (v1)** | `POST /replay/{trace_id}` replays a recorded decision offline with an optional what-if policy. |
+| 041 | Identity & RBAC | **Reject** | managed multi-tenant RBAC/SSO is an explicit v1 non-goal; the workspace token is the only identity. |
+| 042 | Usage, Rate Limiting & Billing | **Partial** | rate limiting and the cost ledger exist. Gap: money billing / invoicing. |
+| 043 | Backup & Disaster Recovery | **Delivered** | `backup create|restore` (`VACUUM INTO`, checksum manifest, refuses tampered backups) + CI drill that once caught two real bugs. |
+| 044 | Health & Operations | **Delivered** | `/health`, `/system/status`, `doctor`, `/metrics`, graceful shutdown. |
+| 045 | Import, Export & Portability | **Delivered** | ingest paths, `export` (secrets never exported), OpenAPI + SDKs. |
+| 046 | Result Normalization | **Delivered** | canonical URL implementation, `merge_evidence` normalization and conflict retention. |
+| 047 | Ranking Engine | **Delivered** | weighted RRF fusion, title boost, fuzzy fallback, feature + remote rerankers, vertical routing. |
+| 048 | Vertical Search | **Delivered (v1)** | `RetrievalVertical` / `VerticalRouter` with declared weights (RFC-065 slice). |
+| 049 | Structured Extraction | **Partial** | content extraction and HTML sanitization exist. Gap: schema-shaped structured extraction. |
+| 050 | Source Discovery | **Partial** | source registry + `GET /sources` catalog exist. Gap: automatic source discovery. |
+| 051 | Crawl Frontier | **Partial** | crawler selection, robots/Crawl-delay, failure isolation. Gap: frontier scheduling across hosts. |
+| 052 | Browser Rendering | **Reject** | browser engine is an explicit v1 non-goal. |
+| 053 | Content Extraction | **Delivered** | `FetchService` extraction pipeline, HTML sanitization, Tavily-shaped `/extract`. |
+| 054 | Task Orchestration | **Partial** | bounded research rounds, background outbox worker, budget reserve→settle. Gap: general job scheduling. |
+| 055 | Cancellation & Deadline | **Delivered** | absolute request deadlines, per-source timeout caps, cooperative cancellation, MCP `notifications/cancelled` acknowledged. |
+| 056 | Partial Streaming | **Partial** | SSE dashboard event stream exists. Gap: per-result token streaming. |
+| 057 | Temporal Knowledge | **Delivered (v1)** | `as_of` historical views: freshness judged at an instant, future documents excluded. |
+| 058 | Entity Resolution | **Delivered (v1)** | entity alias registry, `POST /entities/resolve`, `entity_id` on results. |
+| 059 | Contradiction Detection | **Partial** | conflicting claims are retained and force `QualityStatus::Conflict`. Gap: a contradiction graph over claims. |
+| 060 | Agent Registry | **Partial** | `agent_id` is a first-class dimension in analytics and traces. Gap: a registry of agents. |
+| 061 | SDK | **Delivered** | TypeScript + Python clients covering every OpenAPI path, refreshed to 0.2.0. |
+| 062 | Federated Search Architecture | **Delivered (v1)** | `SearchSource` kernel, planner with auditable rejection chain, executor with per-source deadline/isolation, `execute` mode with service-side billing, `GET /sources`. |
+| 063 | Source Registry | **Delivered (v1)** | scoped registry, precedence resolution, live reliability + latency profiles, circuit breaker. |
+| 064 | Unified Resource Model | **Delivered (v1)** | `SearchResource` with 11 resource types, stable identity, fail-closed `PermissionRef`, egress default off. |
+| 065 | Hybrid Retrieval (FTS + BM25 + KNN) | **Delivered (v1)** | Tantivy (CJK bigrams, literal-term, title boost, fuzzy) + LanceDB written by the outbox, weighted RRF, vertical routing. Gap: specialized knowledge-graph / code verticals. |
+| 066 | Trust-aware Result Fusion | **Delivered (v1)** | `rrf_fuse_weighted` + kernel-generic `fuse_ranks`; reliability-weighted cross-source ordering; syndication dedup. |
+| 067 | Context Assembly | **Delivered** | `crates/searchos-context/`; `SearchRequest.context_budget` → `SearchResponse.context`. |
+| 068 | Token Budget Management | **Delivered** | `ContextBudget` validated at every transport edge; invalid budgets are client errors. |
+| 069 | Agent Session Memory | **Delivered (v1)** | `agent_sessions` (migration v7) survives restarts; session transcripts are a federated source. |
+| 070 | Memory Lifecycle | **Delivered (v1)** | retention-driven expiry, consolidation by normalized-text fingerprint, dry-run by default (`searchos memory lifecycle --apply`). |
+| 071 | Deep Search Engine | **Delivered (v1)** | research workspace with bounded rounds, durable evidence, validity-gated carry-over (`workspace_evidence`), `POST /research/*`, CLI `research`. Gap: scheduled research tasks. |
+| 072 | Query Expansion | **Delivered (v1)** | synonym + sub-question expansion with an explicit mode; never exceeds the budget. Gap: semantic query rewriting. |
+| 073 | Evidence Coverage | **Delivered** | `RequirementStatus`, `GapAnalyzer`, `coverage_gaps`, `focus_requirements`, graded qrels. |
+| 074 | Source Independence | **Delivered (v1)** | content-community counting, original-publisher identification, cross-URL same-content collapse. |
+| 075 | Search Policy Simulation | **Delivered (v1)** | offline replay with what-if policies. |
+| 076 | Adaptive Search Planner | **Delivered (v1)** | decision state machine + stage trace; source-aware decisions; cost-adaptive plan downsizing. |
+| 077 | Search Cache Intelligence | **Delivered (v1)** | exact/canonical/semantic caches with mode+freshness keys and a 0.92 similarity gate; hit-time evidence validity across processes. |
+| 078 | Cost Attribution | **Delivered** | full cost ledger, reserve→execute→settle, reconciliation, savings views. |
+| 079 | Search Benchmark | **Delivered** | 500-question dataset, CJK corpus, CI eval gate, MRR / nDCG@5 / Recall@5. |
+| 080 | Provider Fallback & Routing | **Partial (v1 slice)** | multi-key rotation, failure isolation, outcome-driven circuit breaker, per-source latency budget. Gap: adaptive cost/quality-aware routing. |
+| 081 | Extension SDK | **Partial** | versioned extension registry, manifest discovery, quarantine. Gap: external-process extensions (frozen "Both" decision). |
+| 082 | Crawler Extension System | **Partial** | per-site crawler extensions with isolation. |
+| 083 | Plugin Isolation | **Partial** | fault isolation for native extensions. Gap: sandboxed external plugins. |
+| 084 | Distributed Search Runtime | **Reject** | frozen *Staged* decision — single node first, seams reserved only. |
+| 085 | Multi-node Coordination | **Reject** | same frozen decision. |
+| 086 | Search Intelligence Evaluation | **Delivered (v1)** | batch replay evaluation + CI gates over keyword coverage, ranking metrics and p95 latency. |
+| 087 | Privacy-aware Ingestion & Egress | **Delivered (v1)** | workspace isolation, token→workspace binding, redacted config export, fail-closed egress with per-kind overrides, ingest-time redaction with an audit report, append-only deletion-propagation audit (`GET /deletions`). |
+| — | LLM answer generation | **Reject** | non-goal by decision: SearchOS serves evidence, not generated answers. |
+
+---
+
+## 中文
+
+| RFC | 能力 | 状态 | 证据 / 剩余差距 |
+|---|---|---|---|
+| 001–025 | 遗留基础基线（产品架构 → 部署） | **Delivered** | `docs/rfc/rfc-001…016` + 附件 17–24；整个 workspace、CLI、网关、MCP 与扩展接缝已在 v0.1.0 交付。 |
+| 026 | 可视化与分析架构 | **Delivered** | `crates/searchos-observability`、分析读模型、控制台 `/analytics`。 |
+| 027 | 分析数据模型与聚合 | **Delivered** | migration v3 `analytics_events` + `analytics_read_models`；`AnalyticsRepo::rebuild` / `query_dataset`。 |
+| 028 | 看板 API 与前端集成 | **Delivered** | `/api/v1/dashboard/*` 基于读模型；`web/` 下的 Next.js 控制台。 |
+| 029 | 本地数据导入（已交付文件） | **Delivered** | `IngestService`、`POST /ingest{,/file,/batch}`、`GET /ingest/jobs/:id`、CLI `ingest`。*规划中的*「Research Workspace」范围已并入 071。 |
+| 030 | 知识管理 | **Delivered (v1)** | 文档生命周期（创建/版本/重建索引/软删除）+ 工作区**知识集合**（确定性 id、存活成员计数、HTTP + CLI）。差距：集合之上的标签/层级分类。 |
+| 031 | 外部证据沉淀（已交付文件） | **Delivered** | 沉淀状态机、robots/抓取失败跳过原因、单任务上限、复用统计、`GET /evidence/*`。*规划中的*「Freshness Scheduler」范围由 057 + 新鲜度画像部分覆盖。 |
+| 032 | 来源信任 | **Partial** | 已有内容社群与原始发布者判定（074）、按来源的可靠性与延迟（080）。差距：发布方级别的信任评分。 |
+| 033 | 在线反馈 | **Gap** | 没有用户反馈回收回路。 |
+| 034 | 策略管理 | **Delivered (v1)** | 版本化只追加策略、生效指针、回滚；`GET/PUT /policies*`、CLI `policy`。 |
+| 035 | 检索监控订阅 | **Gap** | 没有针对检索质量的定时看门狗/告警。 |
+| 036 | 文档智能 | **Delivered (v1)** | 摄取时计算确定性抽取式摘要 + 关键词，随版本持久化（migration v14），`document inspect` 与 `GET /documents/:id` 可见。刻意只做抽取式——不生成文本。 |
+| 037 | 多语言检索 | **Partial** | 分析器含 CJK bigram，中文种子语料 + 中文分级排序门禁。差距：跨语言 embedding / rerank。 |
+| 038 | 证据图 | **Delivered (v1)** | 响应上的 `duplicate_of` / `same_content` 边，由合并结果构建。 |
+| 039 | Provider 智能 | **Partial** | 多 key 轮换（ADR-029）、健康检查、结果驱动的熔断、实时 p50/p95。差距：按质量信号选 provider。 |
+| 040 | 检索重放 | **Delivered (v1)** | `POST /replay/{trace_id}` 离线重放已记录决策，可带假设策略。 |
+| 041 | 身份与 RBAC | **Reject** | 托管多租户 RBAC/SSO 是明确的 v1 非目标；工作区 token 是唯一身份。 |
+| 042 | 用量、限流与计费 | **Partial** | 限流与成本账本已有。差距：金额计费/开票。 |
+| 043 | 备份与灾难恢复 | **Delivered** | `backup create|restore`（`VACUUM INTO`、校验清单、拒绝被篡改备份）+ CI 演练（曾借此发现两个真实 bug）。 |
+| 044 | 健康与运维 | **Delivered** | `/health`、`/system/status`、`doctor`、`/metrics`、优雅停机。 |
+| 045 | 导入、导出与可移植 | **Delivered** | 导入路径、`export`（绝不导出密钥）、OpenAPI + SDK。 |
+| 046 | 结果归一化 | **Delivered** | 统一 canonical URL 实现、`merge_evidence` 归一化与冲突保留。 |
+| 047 | 排序引擎 | **Delivered** | 加权 RRF 融合、标题加权、模糊回退、特征 + 远程 reranker、垂直路由。 |
+| 048 | 垂直检索 | **Delivered (v1)** | `RetrievalVertical` / `VerticalRouter` + 声明权重（RFC-065 切片）。 |
+| 049 | 结构化抽取 | **Partial** | 内容抽取与 HTML 清洗已有。差距：按 schema 的结构化抽取。 |
+| 050 | 来源发现 | **Partial** | 来源注册表 + `GET /sources` 目录已有。差距：自动发现来源。 |
+| 051 | 爬取前沿 | **Partial** | 爬虫选择、robots/Crawl-delay、失败隔离已有。差距：跨主机的调度前沿。 |
+| 052 | 浏览器渲染 | **Reject** | 浏览器引擎是明确的 v1 非目标。 |
+| 053 | 内容抽取 | **Delivered** | `FetchService` 抽取管线、HTML 清洗、Tavily 形状的 `/extract`。 |
+| 054 | 任务编排 | **Partial** | 有界研究轮次、后台 outbox worker、预算 reserve→settle 已有。差距：通用作业调度。 |
+| 055 | 取消与截止时间 | **Delivered** | 绝对请求截止时间、按来源的超时上限、协作式取消、MCP `notifications/cancelled` 已被确认。 |
+| 056 | 部分流式 | **Partial** | 看板 SSE 事件流已有。差距：按结果/按 token 的流式返回。 |
+| 057 | 时态知识 | **Delivered (v1)** | `as_of` 历史视图：在某一时刻判定新鲜度，未来文档被排除。 |
+| 058 | 实体消解 | **Delivered (v1)** | 实体别名注册表、`POST /entities/resolve`、结果上的 `entity_id`。 |
+| 059 | 矛盾检测 | **Partial** | 冲突声明被保留并强制 `QualityStatus::Conflict`。差距：声明之上的矛盾图。 |
+| 060 | Agent 注册表 | **Partial** | `agent_id` 是分析与 trace 的一等维度。差距：真正的 agent 注册表。 |
+| 061 | SDK | **Delivered** | TypeScript + Python 客户端覆盖全部 OpenAPI 路径，已刷新到 0.2.0。 |
+| 062 | 联邦检索架构 | **Delivered (v1)** | `SearchSource` 内核、带审计拒绝链的 planner、带按来源截止时间/隔离的 executor、`execute` 模式在服务端计费、`GET /sources`。 |
+| 063 | 来源注册表 | **Delivered (v1)** | 作用域注册表、优先级解析、实时可靠性 + 延迟画像、熔断器。 |
+| 064 | 统一资源模型 | **Delivered (v1)** | `SearchResource` 含 11 种资源类型、稳定身份、失败即拒绝的 `PermissionRef`、默认关闭的外发。 |
+| 065 | 混合检索（FTS + BM25 + KNN） | **Delivered (v1)** | Tantivy（CJK bigram、字面词、标题加权、模糊）+ 由 outbox 写入的 LanceDB、加权 RRF、垂直路由。差距：知识图谱/代码等专用垂直。 |
+| 066 | 信任感知融合 | **Delivered (v1)** | `rrf_fuse_weighted` + 内核通用 `fuse_ranks`；按可靠性的跨来源排序；同文去重。 |
+| 067 | 上下文装配 | **Delivered** | `crates/searchos-context/`；`SearchRequest.context_budget` → `SearchResponse.context`。 |
+| 068 | Token 预算管理 | **Delivered** | `ContextBudget` 在每个传输边界校验；非法预算视为客户端错误。 |
+| 069 | Agent 会话记忆 | **Delivered (v1)** | `agent_sessions`（migration v7）跨重启存活；会话转录是联邦来源。 |
+| 070 | 记忆生命周期 | **Delivered (v1)** | 保留期驱动的过期、按归一化文本指纹的合并、默认 dry-run（`searchos memory lifecycle --apply`）。 |
+| 071 | 深度检索引擎 | **Delivered (v1)** | 研究工作区：有界轮次、持久证据、带有效性校验的证据承接（`workspace_evidence`）、`POST /research/*`、CLI `research`。差距：定时研究任务。 |
+| 072 | 查询扩展 | **Delivered (v1)** | 同义词 + 子问题扩展，显式模式，绝不超预算。差距：语义改写。 |
+| 073 | 证据覆盖 | **Delivered** | `RequirementStatus`、`GapAnalyzer`、`coverage_gaps`、`focus_requirements`、分级 qrels。 |
+| 074 | 来源独立性 | **Delivered (v1)** | 内容社群计数、原始发布者判定、跨 URL 同文折叠。 |
+| 075 | 策略模拟 | **Delivered (v1)** | 带假设策略的离线重放。 |
+| 076 | 自适应检索规划 | **Delivered (v1)** | 决策状态机 + 阶段 trace；来源感知的决策；成本自适应的计划缩减。 |
+| 077 | 检索缓存智能 | **Delivered (v1)** | 精确/canonical/语义缓存，键含模式与新鲜度，0.92 相似度门槛；跨进程的命中时证据有效性校验。 |
+| 078 | 成本归因 | **Delivered** | 完整成本账本、reserve→execute→settle、对账、节省视图。 |
+| 079 | 检索基准 | **Delivered** | 500 题数据集、中文语料、CI 评估门禁、MRR / nDCG@5 / Recall@5。 |
+| 080 | Provider 回退与路由 | **Partial (v1 切片)** | 多 key 轮换、失败隔离、结果驱动熔断、按来源延迟预算。差距：按成本/质量的自适应路由。 |
+| 081 | 扩展 SDK | **Partial** | 版本化扩展注册表、manifest 发现、隔离。差距：外部进程扩展（冻结的「Both」决策）。 |
+| 082 | 爬虫扩展系统 | **Partial** | 带隔离的按站点爬虫扩展。 |
+| 083 | 插件隔离 | **Partial** | 原生扩展的故障隔离。差距：沙箱化的外部插件。 |
+| 084 | 分布式检索运行时 | **Reject** | 冻结的 *Staged* 决策——先单节点，只预留接缝。 |
+| 085 | 多节点协同 | **Reject** | 同上冻结决策。 |
+| 086 | 检索智能评估 | **Delivered (v1)** | 批量重放评估 + CI 门禁（关键词覆盖、排序指标、p95 延迟）。 |
+| 087 | 隐私感知的导入与外发 | **Delivered (v1)** | 工作区隔离、token→工作区绑定、脱敏配置导出、失败即拒绝的按类外发覆盖、导入期脱敏与审计报告、只追加的删除传播审计（`GET /deletions`）。 |
+| — | LLM 生成答案 | **Reject** | 明确的非目标：SearchOS 提供证据，而不是生成答案。 |
+
+---
+
+## Gaps that remain, by size
+
+Ordered by how much they would close a real user-visible hole:
+
+1. **035 Search Watch** — the only completely missing *operational* capability.
+2. **033 Online Feedback** — the only completely missing *learning* capability.
+3. **080 adaptive routing** — the router picks a source by reliability, not by expected
+   quality per unit cost.
+4. **037 cross-lingual retrieval** — CJK works, cross-lingual queries do not.
+5. **049 structured extraction** — extraction returns prose, not schema-shaped records.
+
+Everything marked **Reject** is a frozen decision, not a backlog item.

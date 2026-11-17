@@ -53,6 +53,33 @@ searchos memory search "Rust web framework" [--workspace default] [--top-k 5]
 searchos memory stats
 ```
 
+## Policy / collections / entities / research
+
+```text
+searchos policy list                                # versioned policies + the live one
+searchos policy versions <quality|freshness|source>
+searchos policy submit <quality|freshness|source> --policy <json>
+searchos policy rollback <quality|freshness|source> --version <n>
+searchos collection list [--workspace default]
+searchos collection create "Reading List" [--workspace default] [--description "..."]
+searchos collection add <collection-id> <document-id>
+searchos collection remove <collection-id> <document-id>
+searchos collection documents <collection-id>
+searchos entity list
+searchos entity register "Canonical Name" [--alias "Alias"] [--source operator|heuristic]
+searchos entity resolve "free text to resolve"
+searchos research run "deep question" [--workspace default] [--rounds 3] [--max-cost 0.05]
+searchos research show <session-id>
+```
+
+`policy` is versioned and append-only: a rollback moves the LIVE pointer
+back to an earlier version, it never deletes history. `collection` is a
+curation view over documents — membership never changes what retrieval can
+see, and soft-deleted documents are hidden from member lists while their
+membership row is kept. `entity` is an alias registry: `resolve` maps free
+text to a stable entity id. `research` runs bounded rounds; every round is a
+full search recorded as a turn of the research session.
+
 ## Providers / profiles / cost / trace
 
 ```text
@@ -180,6 +207,30 @@ searchos memory remember --title "..." --content "..." [--workspace default]
 searchos memory search "Rust web framework" [--workspace default] [--top-k 5]
 searchos memory stats
 ```
+
+## 策略 / 集合 / 实体 / 深度研究
+
+```text
+searchos policy list                                # 版本化策略 + 当前生效版本
+searchos policy versions <quality|freshness|source>
+searchos policy submit <quality|freshness|source> --policy <json>
+searchos policy rollback <quality|freshness|source> --version <n>
+searchos collection list [--workspace default]
+searchos collection create "Reading List" [--workspace default] [--description "..."]
+searchos collection add <collection-id> <document-id>
+searchos collection remove <collection-id> <document-id>
+searchos collection documents <collection-id>
+searchos entity list
+searchos entity register "Canonical Name" [--alias "Alias"] [--source operator|heuristic]
+searchos entity resolve "待解析的自由文本"
+searchos research run "深度问题" [--workspace default] [--rounds 3] [--max-cost 0.05]
+searchos research show <session-id>
+```
+
+`policy` 只追加版本：回滚只是把生效指针指回旧版本，历史永不删除。`collection`
+是文档的策展视图——成员关系不改变检索可见性，软删除文档从成员列表隐藏但保留成员行。
+`entity` 是别名注册表：`resolve` 把自由文本映射到稳定实体 id。`research` 执行有界轮次，
+每一轮都是一次完整搜索，并记录为研究会话的一个 turn。
 
 ## Provider / Profile / 成本 / Trace
 

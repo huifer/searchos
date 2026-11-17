@@ -36,6 +36,27 @@
 | GET | `/evidence/acquisitions`, `/evidence/acquisitions/:id` | RFC-031 external acquisitions + per-item promotion state |
 | GET | `/evidence/reuse` | RFC-031 compound report (reuse events per acquisition) |
 | POST | `/documents/search` | Persisted document lookup |
+| POST | `/search/plan` | Plan-only: what would be searched, without buying anything (RFC-004/031) |
+| POST | `/search/follow-up` | Continue an agent session; earlier evidence is reused when still valid (RFC-071 v2) |
+| POST | `/research/run` | Bounded deep search; each round is a full search recorded as a turn (RFC-071) |
+| GET | `/research/:session_id` | Research workspace: turns + accumulated evidence (RFC-071) |
+| GET | `/entities` | Registered entities and aliases (RFC-058) |
+| POST | `/entities` | Register an entity + aliases (RFC-058) |
+| POST | `/entities/resolve` | Map free text to a stable entity id (RFC-058) |
+| GET | `/collections` | Knowledge collections with live member counts (RFC-030) |
+| POST | `/collections` | Create (or fetch) a named collection (RFC-030) |
+| GET | `/collections/:id/documents` | Live document ids in a collection (RFC-030) |
+| POST | `/collections/:id/documents` | Add a document to a collection (RFC-030) |
+| DELETE | `/collections/:id/documents/:document_id` | Remove a document from a collection (RFC-030) |
+| POST | `/replay/:trace_id` | Offline replay of a recorded decision; optional what-if policy (RFC-040) |
+| POST | `/evaluation/replay` | Batch evaluation over recent traces (RFC-086) |
+| GET | `/policies` | Versioned policies + the live one (RFC-034) |
+| GET | `/policies/:kind/versions` | Policy version history (RFC-034) |
+| PUT | `/policies/:kind` | Submit a new policy version (RFC-034) |
+| POST | `/policies/:kind/rollback` | Move the live pointer back to an earlier version (RFC-034) |
+| GET | `/deletions` | Deletion audit trail (RFC-087) |
+| POST | `/memory/lifecycle` | Report (or apply) memory lifecycle actions (RFC-070) |
+| GET | `/sources` | Federated source catalog with reliability + latency (RFC-063) |
 | GET | `/health` | Status + index consistency |
 | GET | `/metrics` | Prometheus text exposition 0.0.4 (same auth as the rest) |
 
@@ -311,6 +332,27 @@ return `404` and are absent from `docs/openapi.yaml`).
 | GET | `/evidence/acquisitions`、`/evidence/acquisitions/:id` | RFC-031 外部获取与逐条沉淀状态 |
 | GET | `/evidence/reuse` | RFC-031 复利报告（每次获取带来的复用） |
 | POST | `/documents/search` | 持久化文档查找 |
+| POST | `/search/plan` | 仅规划：将会搜什么，不产生任何购买（RFC-004/031） |
+| POST | `/search/follow-up` | 继续 agent 会话；早期证据在仍然有效时被复用（RFC-071 v2） |
+| POST | `/research/run` | 有界深度检索；每一轮都是一次完整搜索并记为 turn（RFC-071） |
+| GET | `/research/:session_id` | 研究工作区：轮次 + 累积证据（RFC-071） |
+| GET | `/entities` | 已注册实体与别名（RFC-058） |
+| POST | `/entities` | 注册实体与别名（RFC-058） |
+| POST | `/entities/resolve` | 把自由文本映射为稳定实体 id（RFC-058） |
+| GET | `/collections` | 知识集合及其存活成员计数（RFC-030） |
+| POST | `/collections` | 创建（或复用）具名集合（RFC-030） |
+| GET | `/collections/:id/documents` | 集合内存活文档 id（RFC-030） |
+| POST | `/collections/:id/documents` | 向集合加入文档（RFC-030） |
+| DELETE | `/collections/:id/documents/:document_id` | 从集合移除文档（RFC-030） |
+| POST | `/replay/:trace_id` | 离线重放已记录的决策，可带假设策略（RFC-040） |
+| POST | `/evaluation/replay` | 对近期 trace 做批量评估（RFC-086） |
+| GET | `/policies` | 版本化策略 + 当前生效版本（RFC-034） |
+| GET | `/policies/:kind/versions` | 策略版本历史（RFC-034） |
+| PUT | `/policies/:kind` | 提交新的策略版本（RFC-034） |
+| POST | `/policies/:kind/rollback` | 把生效指针回退到早期版本（RFC-034） |
+| GET | `/deletions` | 删除审计轨迹（RFC-087） |
+| POST | `/memory/lifecycle` | 报告（或执行）记忆生命周期动作（RFC-070） |
+| GET | `/sources` | 联邦来源目录，含可靠性与延迟（RFC-063） |
 | GET | `/health` | 状态 + 索引一致性 |
 | GET | `/metrics` | Prometheus text exposition 0.0.4（鉴权方式与其他端点相同） |
 

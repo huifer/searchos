@@ -56,6 +56,13 @@ Also: RFC-001…016 titles **do** exist here (`docs/rfc/README.md`), and 017–0
 
 ### 4. Capability gap map against the final numbering
 
+> The per-capability evidence log for RFC-062…087 lives here. The **authoritative
+> status table for the whole catalogue (RFC-001…087) is
+> [`docs/rfc-coverage.md`](rfc-coverage.md)** — read that one for "is it in the
+> repo today".
+> 本节是 RFC-062…087 的逐能力证据日志；**全目录（RFC-001…087）的权威状态表见
+> [`docs/rfc-coverage.md`](rfc-coverage.md)**。
+
 Legend: **Have** = implemented & tested · **Partial** = exists but narrower than the final spec · **Gap** = absent · **Reject** = explicit non-goal.
 
 | Final RFC | Requirement | Status | Repo evidence | Action |

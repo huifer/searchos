@@ -441,6 +441,21 @@ The SearchOS implementation (`~/git_repo/searchos`) is verified by these command
   `Promise<Record<string, unknown>>`). Full suite **805 passed / 0 failed**
   (86 suites) after the bump; clippy/fmt/route scan green.
 
+- **Doc consistency pass + RFC coverage matrix (2026-11-16):** new
+  `docs/rfc-coverage.md` is the AUTHORITATIVE status table for the whole
+  catalogue (RFC-001…087, Delivered/Partial/Gap/Reject + evidence + remaining
+  gap, bilingual). `docs/gap-analysis-master-index.md` §4 stays the detailed
+  evidence log for 062…087 and now points at the matrix; `docs/index.md`
+  links it and its stale "063/064/… 为规划中" sentence was corrected.
+  `docs/api/http.md` endpoint table and `docs/api/cli.md` command reference
+  were refreshed with the 21 endpoint groups and 4 command groups added since
+  0.1.1 (research / entities / collections / replay / evaluation / policies /
+  deletions / memory lifecycle / sources / plan / follow-up / evidence).
+  Gotcha: when editing docs by line prefix, match the WHOLE bullet text —
+  `docs/index.md` has both "Final Master Index Gap Analysis" and "Final RFC
+  Master Index Gap Analysis", and a `startswith` on the shorter form silently
+  skips one. Docs are bilingual (EN block, then 中文 block) — keep that.
+
 **Known environment notes:**
 - LanceDB requires `protoc` at build time (`brew install protobuf`).
 - Live network tests (fetch of https://example.com) tolerate sandbox timeouts by design.
