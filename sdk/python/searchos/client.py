@@ -274,6 +274,15 @@ class SearchOSClient:
         """Raw recorded decision trace at the canonical path."""
         return self._get(f"/trace/{trace_id}")
 
+    # -- Search Watch (RFC-035) -----------------------------------------------
+
+    def watch_run(self) -> dict[str, Any]:
+        """Run every applicable check and append one snapshot."""
+        return self._post("/watch/run", {})
+
+    def watch_snapshots(self, limit: int = 20) -> list[dict[str, Any]]:
+        return self._get("/watch/snapshots", {"limit": limit}).get("snapshots", [])
+
     # -- Planning (RFC-031/004) ------------------------------------------------
 
     def search_plan(self, request: dict[str, Any]) -> dict[str, Any]:

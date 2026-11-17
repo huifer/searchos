@@ -487,6 +487,23 @@ The SearchOS implementation (`~/git_repo/searchos`) is verified by these command
   use a comparison query so the analysis derives one; `FederatedSearchPlan`
   can no longer derive `Eq` (the score carries floats).
 
+- **RFC-035 Search Watch (2026-11-16):** `searchos-application/src/watch.rs`
+  defines `WatchService`, `WatchThresholds`, `WatchDataset`, `WatchStatus`
+  (Pass<Skipped<Degraded<Regressed, worst-wins), `WatchSnapshotStore` port,
+  and pure `compare()`. Migration v16 `watch_snapshots`; `WatchRepo` in
+  storage-sqlite; core `SqliteWatchStore` implements the port. Config
+  `watch.*` (workspace_id, min_quality_pass_rate, max_search_failure_rate,
+  max_quality_pass_rate_drop, min_sample=5, dataset_path/limit/min_*);
+  runtime exposes `application.watch_service`. CLI `watch run|history`,
+  HTTP `POST /watch/run`, `GET /watch/snapshots`; OpenAPI WatchReport; both
+  SDKs updated. Gotchas: `AnalyticsQueryService::overview()` returns the
+  `{data, meta}` DASHBOARD ENVELOPE — read through `data` or every metric
+  silently reads zero; a second runtime on the same data dir hits the
+  Tantivy index lock unless the first runtime is dropped first; integration
+  test crate has no `futures` dep (make the helper async, don't use
+  `futures::executor::block_on`). Gates: 4 application unit tests + 5
+  integration gates in `tests/integration/tests/search_watch.rs`.
+
 **Known environment notes:**
 - LanceDB requires `protoc` at build time (`brew install protobuf`).
 - Live network tests (fetch of https://example.com) tolerate sandbox timeouts by design.

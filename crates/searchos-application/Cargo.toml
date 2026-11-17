@@ -33,6 +33,7 @@ searchos-memory = { workspace = true }
 searchos-provider = { workspace = true }
 searchos-document = { workspace = true }
 searchos-observability = { workspace = true }
+searchos-evaluation = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }

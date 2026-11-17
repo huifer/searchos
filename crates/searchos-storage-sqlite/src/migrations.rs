@@ -849,6 +849,25 @@ CREATE TABLE IF NOT EXISTS collection_documents (
 CREATE INDEX IF NOT EXISTS idx_collection_docs_document ON collection_documents(document_id);
 "#,
     },
+    // v16 - RFC-035 search watch snapshots. Append-only audit log: a run
+    // records exactly what it observed, never a rewritten verdict.
+    Migration {
+        version: 16,
+        name: "watch_snapshots",
+        sql: r#"
+CREATE TABLE IF NOT EXISTS watch_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    report_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_watch_snapshots_created
+    ON watch_snapshots(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_watch_snapshots_ws
+    ON watch_snapshots(workspace_id, created_at DESC);
+"#,
+    },
 ];
 
 /// Applies pending migrations to a connection. Each version is atomic: SQL

@@ -27,6 +27,17 @@ multi-arch images, and attaches the matching section of this file.
 
 ### Added
 
+- **Search Watch (RFC-035).** A deterministic quality watchdog over the same
+  Analytics Read Model the console reads. Optional thresholds for quality
+  pass rate, failed-search ratio and pass-rate regression, plus an optional
+  labelled-dataset ranking check via the existing evaluator. Unavailable
+  signals are `skipped` — never fabricated as passes; a trend only fires
+  when BOTH snapshots have `min_sample` observations; a regression is a
+  RESULT, not an HTTP error; and a report whose snapshot cannot be written
+  says so explicitly. Append-only snapshots (migration v16) are available via
+  `searchos watch run|history` and `POST /watch/run`, `GET /watch/snapshots`.
+  Scheduling and notification channels are deliberately out of v1 scope —
+  run it from cron/CI.
 - **Cost-adaptive source selection (RFC-080).** `federation.selection =
   cost_adaptive` orders equally local and equally authoritative sources by
   EXPECTED QUALITY PER UNIT COST — the live success-rate EMA blended with

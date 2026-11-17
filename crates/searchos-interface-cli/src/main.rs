@@ -218,6 +218,11 @@ enum Command {
         #[command(subcommand)]
         cmd: EvalCmd,
     },
+    /// Deterministic search-quality watchdog (RFC-035)
+    Watch {
+        #[command(subcommand)]
+        cmd: WatchCmd,
+    },
     /// Cost ledger operations
     Cost {
         #[command(subcommand)]
@@ -506,6 +511,18 @@ enum StatsCmd {
 enum ConfigCmd {
     /// Validate the effective configuration (exit 2 on errors)
     Validate,
+}
+
+#[derive(Subcommand)]
+enum WatchCmd {
+    /// Run every applicable check and append one snapshot
+    Run,
+    /// Show the most recent snapshots
+    History {
+        /// Maximum snapshots to show
+        #[arg(long, default_value_t = 20)]
+        limit: u32,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1547,6 +1564,36 @@ async fn run(cli: Cli) -> Result<(), SearchOsError> {
                 None => println!("{json}"),
             }
             Ok(())
+        }
+        Command::Watch { cmd } => {
+            let cli_ref = &cli;
+            let rt = runtime(cli_ref).await?;
+            let watch =
+                rt.application.watch_service.as_ref().ok_or_else(|| {
+                    SearchOsError::Internal("watch service is not wired".to_string())
+                })?;
+            match cmd {
+                WatchCmd::Run => {
+                    let report = watch
+                        .run()
+                        .await
+                        .map_err(|e| SearchOsError::Internal(format!("watch run: {e}")))?;
+                    let value = serde_json::to_value(&report)
+                        .map_err(|e| SearchOsError::Internal(e.to_string()))?;
+                    print(&value, format);
+                    Ok(())
+                }
+                WatchCmd::History { limit } => {
+                    let reports = watch
+                        .history(*limit)
+                        .await
+                        .map_err(|e| SearchOsError::Internal(format!("watch history: {e}")))?;
+                    let value = serde_json::to_value(reports)
+                        .map_err(|e| SearchOsError::Internal(e.to_string()))?;
+                    print(&value, format);
+                    Ok(())
+                }
+            }
         }
         Command::Eval { cmd } => match cmd {
             EvalCmd::Run {

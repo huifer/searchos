@@ -681,6 +681,20 @@ export class SearchOSClient {
     return this.get(`/trace/${encodeURIComponent(traceId)}`) as Promise<DecisionTrace>;
   }
 
+  // -- Search Watch (RFC-035) -----------------------------------------------
+
+  /** Run every applicable check and append one snapshot. */
+  watchRun(): Promise<Record<string, unknown>> {
+    return this.post("/watch/run", {});
+  }
+
+  /** Append-only snapshot history, newest first. */
+  watchSnapshots(limit = 20): Promise<{ snapshots: Record<string, unknown>[] }> {
+    return this.get("/watch/snapshots", { limit }) as Promise<{
+      snapshots: Record<string, unknown>[];
+    }>;
+  }
+
   // -- Planning (RFC-031/004) ------------------------------------------------
 
   /** Plan-only: what WOULD be searched, without buying anything. */

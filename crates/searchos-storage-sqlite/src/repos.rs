@@ -5697,3 +5697,50 @@ impl<'a> SourceCatalogRepo<'a> {
         })
     }
 }
+
+/// RFC-035: append-only search-watch snapshots. One row per run; the JSON
+/// payload is the report that was produced, so a review can see exactly what
+/// was observed at that time (no rewriting a verdict after the fact).
+pub struct WatchRepo<'a> {
+    pub store: &'a SqliteStore,
+}
+
+impl<'a> WatchRepo<'a> {
+    pub fn new(store: &'a SqliteStore) -> Self {
+        Self { store }
+    }
+
+    pub fn append(
+        &self,
+        created_at: &str,
+        workspace_id: &str,
+        status: &str,
+        report_json: &str,
+    ) -> Result<i64, SearchOsError> {
+        self.store.with_conn(|c| {
+            c.execute(
+                "INSERT INTO watch_snapshots (created_at, workspace_id, status, report_json)
+                 VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![created_at, workspace_id, status, report_json],
+            )
+            .map_err(e)?;
+            Ok(c.last_insert_rowid())
+        })
+    }
+
+    /// Returns `(id, report_json)` newest first.
+    pub fn list(&self, limit: u32) -> Result<Vec<(i64, String)>, SearchOsError> {
+        let limit = limit.clamp(1, 500) as i64;
+        self.store.with_conn(|c| {
+            let mut stmt = c
+                .prepare("SELECT id, report_json FROM watch_snapshots ORDER BY id DESC LIMIT ?1")
+                .map_err(e)?;
+            let rows = stmt
+                .query_map([limit], |r| {
+                    Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+                })
+                .map_err(e)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(e)
+        })
+    }
+}

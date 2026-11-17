@@ -101,6 +101,15 @@ indexes:
   rebuild_on_start: false
   verify_on_start: true
 
+watch:                       # RFC-035: unset thresholds are skipped, not passed
+  workspace_id: default
+  min_quality_pass_rate: null   # e.g. 0.9 — quality-gate pass rate floor
+  max_search_failure_rate: null # e.g. 0.05 — failed / total searches
+  max_quality_pass_rate_drop: null # e.g. 0.1 — vs previous snapshot
+  min_sample: 5                 # observations needed before a trend fires
+  dataset_path: null            # optional labelled JSONL for ranking checks
+  dataset_limit: 20
+
 federation:                  # RFC-062 / RFC-080
   strategy: legacy           # legacy | plan_only | execute
   selection: reliability_first   # reliability_first | cost_adaptive

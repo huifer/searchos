@@ -63,6 +63,51 @@ impl searchos_application::validity::EvidenceValidityPort for SqliteEvidenceVali
     }
 }
 
+/// RFC-035: the SQLite projection of the append-only watch snapshot log.
+struct SqliteWatchStore {
+    store: Arc<SqliteStore>,
+}
+
+#[async_trait::async_trait]
+impl searchos_application::watch::WatchSnapshotStore for SqliteWatchStore {
+    async fn append(
+        &self,
+        report: &searchos_application::watch::WatchReport,
+    ) -> Result<(), String> {
+        let json = serde_json::to_string(report).map_err(|e| e.to_string())?;
+        repos::WatchRepo::new(&self.store)
+            .append(
+                &report.ran_at.to_rfc3339(),
+                &report.workspace_id,
+                report.status.as_str(),
+                &json,
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    async fn latest(&self) -> Result<Option<searchos_application::watch::WatchReport>, String> {
+        Ok(self.list(1).await?.into_iter().next())
+    }
+
+    async fn list(
+        &self,
+        limit: u32,
+    ) -> Result<Vec<searchos_application::watch::WatchReport>, String> {
+        let rows = repos::WatchRepo::new(&self.store)
+            .list(limit)
+            .map_err(|e| e.to_string())?;
+        let mut reports = Vec::with_capacity(rows.len());
+        for (id, json) in rows {
+            match serde_json::from_str::<searchos_application::watch::WatchReport>(&json) {
+                Ok(report) => reports.push(report),
+                Err(err) => tracing::warn!(id, %err, "skipping corrupt watch snapshot row"),
+            }
+        }
+        Ok(reports)
+    }
+}
+
 impl searchos_application::session::SessionPersistence for SqliteSessionPersistence {
     fn load_all(&self) -> Result<Vec<searchos_application::session::SearchSession>, SearchOsError> {
         let mut out = Vec::new();
@@ -1025,6 +1070,22 @@ impl SearchOsRuntime {
             let _ = analytics_service.refresh().await;
         }
 
+        // RFC-035: deterministic quality watchdog over the same Read Model
+        // the console reads. Thresholds come from config; an unset check is
+        // reported as skipped, never as a silent pass.
+        let watch_store: Option<Arc<dyn searchos_application::watch::WatchSnapshotStore>> =
+            Some(Arc::new(SqliteWatchStore {
+                store: Arc::clone(&sqlite),
+            }));
+        let watch_service = Arc::new(searchos_application::watch::WatchService::new(
+            Arc::clone(&analytics_service),
+            Arc::clone(&search_service),
+            watch_store,
+            config.watch.workspace_id.clone(),
+            config.watch.thresholds(),
+            config.watch.dataset(),
+        ));
+
         let application = Arc::new(SearchOsApplication {
             search_service,
             fetch_service,
@@ -1032,6 +1093,7 @@ impl SearchOsRuntime {
             memory_service: memory_service_facade,
             cost_service,
             analytics_service,
+            watch_service: Some(watch_service),
         });
 
         let runtime = Arc::new(Self {

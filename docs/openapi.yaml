@@ -1098,6 +1098,44 @@ paths:
               schema: { $ref: '#/components/schemas/SourceCatalog' }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
+  /watch/run:
+    post:
+      tags: [Search]
+      summary: Run the search-quality watchdog (RFC-035)
+      description: >-
+        Reads the Analytics Read Model, applies configured thresholds and a
+        trend check against the previous snapshot, optionally evaluates a
+        labelled dataset, and appends the report to the snapshot log. An
+        unavailable signal is `skipped`, never a pass. A regression is a
+        RESULT (HTTP 200), not an error.
+      responses:
+        '200':
+          description: Watch report.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WatchReport' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /watch/snapshots:
+    get:
+      tags: [Search]
+      summary: List search-watch snapshots, newest first (RFC-035)
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 20, minimum: 1, maximum: 500 }
+      responses:
+        '200':
+          description: Append-only snapshot history.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  snapshots:
+                    type: array
+                    items: { $ref: '#/components/schemas/WatchReport' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
   /profiles:
     get:
       tags: [Search]
@@ -1653,6 +1691,41 @@ components:
             not, so the ordering decision can be reviewed after the fact.
 
         currency: { type: string }
+    WatchReport:
+      type: object
+      description: >-
+        RFC-035 watchdog result. `status` is worst-wins across `checks`.
+        A check with status `skipped` means the signal was unavailable, not
+        that it passed.
+      required: [id, ran_at, workspace_id, status, checks]
+      properties:
+        id: { type: string }
+        ran_at: { type: string, format: date-time }
+        workspace_id: { type: string }
+        status: { type: string, enum: [pass, skipped, degraded, regressed] }
+        checks:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              kind:
+                type: string
+                enum: [quality_floor, failure_rate, quality_regression, ranking]
+              status: { type: string, enum: [pass, skipped, degraded, regressed] }
+              observed: { type: number, format: double, nullable: true }
+              threshold: { type: number, format: double, nullable: true }
+              detail: { type: string }
+        signals:
+          type: object
+          nullable: true
+          properties:
+            total_searches: { type: integer }
+            failed_searches: { type: integer }
+            quality_pass_rate: { type: number }
+            quality_denominator: { type: integer }
+        ranking: { type: object, nullable: true }
+        persistence_error: { type: string, nullable: true }
     SourceSelectionScore:
       type: object
       description: >-

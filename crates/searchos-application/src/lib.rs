@@ -25,6 +25,7 @@ pub mod session;
 pub mod session_source;
 pub mod singleflight;
 pub mod validity;
+pub mod watch;
 
 pub use analytics::{AnalyticsQuery, AnalyticsQueryService};
 pub use fetch_service::{FetchService, FetchServiceImpl};
@@ -57,6 +58,8 @@ pub struct SearchOsApplication {
     /// RFC-026: single Analytics Query Service behind the Dashboard API.
     /// The frontend never reads operational tables directly.
     pub analytics_service: Arc<dyn analytics::AnalyticsQueryService>,
+    /// RFC-035: deterministic quality watchdog over the Read Model.
+    pub watch_service: Option<Arc<watch::WatchService>>,
 }
 
 /// Memory use case (thin facade over MemoryService with namespace guard).

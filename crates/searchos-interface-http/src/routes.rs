@@ -461,6 +461,9 @@ pub fn api_route_table() -> Vec<RouteSpec> {
         RouteSpec::new("GET", "/system/status", get(system_status)),
         // RFC-063: the federated source catalog (read-only observability).
         RouteSpec::new("GET", "/sources", get(list_sources)),
+        // RFC-035: deterministic quality watchdog (run + append-only history).
+        RouteSpec::new("POST", "/watch/run", post(watch_run)),
+        RouteSpec::new("GET", "/watch/snapshots", get(watch_snapshots)),
         RouteSpec::new("GET", "/profiles", get(list_profiles)),
         RouteSpec::new("GET", "/profiles/{id}", get(get_profile)),
         // RFC-031 external evidence promotion (read-only observability).
@@ -1985,6 +1988,59 @@ async fn list_traces(
 
 /// `GET /system/status` — one aggregated read-only view for the console
 /// (equivalent to `searchos doctor`, RFC-019 19.5).
+async fn watch_run(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    state.authorize(&headers)?;
+    let watch = state
+        .runtime
+        .application
+        .watch_service
+        .as_ref()
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "watch service is not wired",
+            )
+        })?;
+    let report = watch
+        .run()
+        .await
+        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()))?;
+    Ok(Json(serde_json::to_value(report).unwrap_or_default()))
+}
+
+async fn watch_snapshots(
+    State(state): State<AppState>,
+    Query(query): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    state.authorize(&headers)?;
+    let watch = state
+        .runtime
+        .application
+        .watch_service
+        .as_ref()
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "watch service is not wired",
+            )
+        })?;
+    let limit = query
+        .get("limit")
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(20);
+    let snapshots = watch
+        .history(limit)
+        .await
+        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()))?;
+    Ok(Json(serde_json::json!({ "snapshots": snapshots })))
+}
+
 async fn system_status(
     State(state): State<AppState>,
     headers: HeaderMap,

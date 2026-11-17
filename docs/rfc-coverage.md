@@ -44,7 +44,7 @@ per turn #81.
 | 032 | Source Trust | **Partial** | content communities + original-publisher detection (074), per-source reliability and latency (080) exist. Gap: publisher-level trust scoring. |
 | 033 | Online Feedback | **Gap** | no user-feedback ingestion loop. |
 | 034 | Policy Management | **Delivered (v1)** | versioned append-only policies, live pointer, rollback; `GET/PUT /policies*`, CLI `policy`. |
-| 035 | Search Watch | **Gap** | no scheduled watcher/alerts over search quality. |
+| 035 | Search Watch | **Delivered (v1)** | deterministic quality watchdog over the Analytics Read Model: optional quality/failure/trend thresholds, an optional labelled-dataset ranking check, append-only snapshots (migration v16), `searchos watch run|history`, `POST /watch/run`, `GET /watch/snapshots`. An unavailable signal is `skipped` (never a pass), a trend only fires when BOTH snapshots have `min_sample` observations, and a regression is a result — not an HTTP error. Gap: no scheduler/dispatch (run it from cron/CI) and no notification channels. |
 | 036 | Document Intelligence | **Delivered (v1)** | deterministic extractive summary + keywords computed at ingest, persisted per version (migration v14), surfaced by `document inspect` and `GET /documents/:id`. Extractive by design — no generated text. |
 | 037 | Multilingual Search | **Partial** | CJK bigrams in the analyzer, Chinese seed corpus + graded CJK ranking gate. Gap: cross-lingual embedding/reranking. |
 | 038 | Evidence Graph | **Delivered (v1)** | `duplicate_of` / `same_content` edges on the response, built from the merge. |
@@ -115,7 +115,7 @@ per turn #81.
 | 032 | 来源信任 | **Partial** | 已有内容社群与原始发布者判定（074）、按来源的可靠性与延迟（080）。差距：发布方级别的信任评分。 |
 | 033 | 在线反馈 | **Gap** | 没有用户反馈回收回路。 |
 | 034 | 策略管理 | **Delivered (v1)** | 版本化只追加策略、生效指针、回滚；`GET/PUT /policies*`、CLI `policy`。 |
-| 035 | 检索监控订阅 | **Gap** | 没有针对检索质量的定时看门狗/告警。 |
+| 035 | 检索监控订阅 | **Delivered (v1)** | 基于分析读模型的确定性质量看门狗：可选的质量/失败率/趋势阈值、可选标注数据集排序检查、只追加快照（migration v16）、`searchos watch run|history`、`POST /watch/run`、`GET /watch/snapshots`。信号不可用即为 `skipped`（绝不当作通过），趋势只有在前后两次快照都达到 `min_sample` 时才触发，退化是结果而不是 HTTP 错误。差距：不含调度器/分发（由 cron/CI 触发）和通知渠道。 |
 | 036 | 文档智能 | **Delivered (v1)** | 摄取时计算确定性抽取式摘要 + 关键词，随版本持久化（migration v14），`document inspect` 与 `GET /documents/:id` 可见。刻意只做抽取式——不生成文本。 |
 | 037 | 多语言检索 | **Partial** | 分析器含 CJK bigram，中文种子语料 + 中文分级排序门禁。差距：跨语言 embedding / rerank。 |
 | 038 | 证据图 | **Delivered (v1)** | 响应上的 `duplicate_of` / `same_content` 边，由合并结果构建。 |
@@ -176,11 +176,13 @@ per turn #81.
 
 Ordered by how much they would close a real user-visible hole:
 
-1. **035 Search Watch** — the only completely missing *operational* capability.
-2. **033 Online Feedback** — the only completely missing *learning* capability.
-3. **080 outcome-based quality learning** — cost-adaptive routing scores a source by its
+1. **033 Online Feedback** — the only completely missing *learning* capability.
+2. **080 outcome-based quality learning** — cost-adaptive routing scores a source by its
    observed success rate and declared metadata trust, not by how good its results
    actually were for this query.
+3. **035 watch dispatch** — the watchdog measures and records honestly, but a
+   scheduler and notification channels are deliberately out of v1 scope (run it
+   from cron/CI).
 4. **037 cross-lingual retrieval** — CJK works, cross-lingual queries do not.
 5. **049 structured extraction** — extraction returns prose, not schema-shaped records.
 

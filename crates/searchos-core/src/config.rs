@@ -28,6 +28,71 @@ pub struct SearchOsConfig {
     pub providers: ProvidersConfig,
     /// RFC-062 (final Master Index, group D): federated search wiring.
     pub federation: FederationConfig,
+    /// RFC-035: deterministic search-quality watchdog.
+    pub watch: WatchConfig,
+}
+
+/// RFC-035: thresholds are OPTIONAL. An unset check is reported as skipped,
+/// never given an invented default that could pass silently.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WatchConfig {
+    /// Workspace the watch inspects in the Analytics Read Model.
+    pub workspace_id: String,
+    /// Minimum acceptable quality-gate pass rate (0..=1).
+    pub min_quality_pass_rate: Option<f64>,
+    /// Maximum acceptable failed/total search ratio (0..=1).
+    pub max_search_failure_rate: Option<f64>,
+    /// Maximum ALLOWED drop in pass rate against the previous snapshot.
+    pub max_quality_pass_rate_drop: Option<f64>,
+    /// Both snapshots need this many observations before a trend fires.
+    pub min_sample: u64,
+    /// Optional evaluated-dataset ranking check.
+    pub dataset_path: Option<String>,
+    pub dataset_limit: usize,
+    pub min_mrr: f64,
+    pub min_ndcg: f64,
+    pub min_recall: f64,
+}
+
+impl Default for WatchConfig {
+    fn default() -> Self {
+        Self {
+            workspace_id: "default".into(),
+            min_quality_pass_rate: None,
+            max_search_failure_rate: None,
+            max_quality_pass_rate_drop: None,
+            min_sample: 5,
+            dataset_path: None,
+            dataset_limit: 20,
+            min_mrr: 0.0,
+            min_ndcg: 0.0,
+            min_recall: 0.0,
+        }
+    }
+}
+
+impl WatchConfig {
+    pub fn thresholds(&self) -> searchos_application::watch::WatchThresholds {
+        searchos_application::watch::WatchThresholds {
+            min_quality_pass_rate: self.min_quality_pass_rate,
+            max_search_failure_rate: self.max_search_failure_rate,
+            max_quality_pass_rate_drop: self.max_quality_pass_rate_drop,
+            min_sample: self.min_sample,
+        }
+    }
+
+    pub fn dataset(&self) -> Option<searchos_application::watch::WatchDataset> {
+        self.dataset_path
+            .as_ref()
+            .map(|path| searchos_application::watch::WatchDataset {
+                path: path.clone(),
+                limit: self.dataset_limit,
+                min_mrr: self.min_mrr,
+                min_ndcg: self.min_ndcg,
+                min_recall: self.min_recall,
+            })
+    }
 }
 
 /// RFC-062: how the federated source kernel participates in execution.
@@ -290,6 +355,7 @@ impl Default for SearchOsConfig {
             crawler: CrawlerConfig::default(),
             extensions: ExtensionsConfig::default(),
             federation: FederationConfig::default(),
+            watch: WatchConfig::default(),
             security: SecurityConfig::default(),
             observability: ObservabilityConfig::default(),
             providers: ProvidersConfig::default(),
@@ -804,6 +870,16 @@ pub const ALL_CONFIG_FIELDS: &[&str] = &[
     "federation.source_timeout_ms",
     "federation.max_sources",
     "federation.selection",
+    "watch.workspace_id",
+    "watch.min_quality_pass_rate",
+    "watch.max_search_failure_rate",
+    "watch.max_quality_pass_rate_drop",
+    "watch.min_sample",
+    "watch.dataset_path",
+    "watch.dataset_limit",
+    "watch.min_mrr",
+    "watch.min_ndcg",
+    "watch.min_recall",
     "intelligence.query_expansion",
     "intelligence.query_expansion_mode",
     "intelligence.reranking",
@@ -920,6 +996,16 @@ pub const CONSUMED_CONFIG_FIELDS: &[&str] = &[
     "federation.source_timeout_ms",
     "federation.max_sources",
     "federation.selection",
+    "watch.workspace_id",
+    "watch.min_quality_pass_rate",
+    "watch.max_search_failure_rate",
+    "watch.max_quality_pass_rate_drop",
+    "watch.min_sample",
+    "watch.dataset_path",
+    "watch.dataset_limit",
+    "watch.min_mrr",
+    "watch.min_ndcg",
+    "watch.min_recall",
     "intelligence.query_expansion",
     "intelligence.query_expansion_mode",
     "intelligence.reranking",
@@ -1026,6 +1112,18 @@ impl SearchOsConfig {
         }
         if self.federation.max_parallel_sources == 0 {
             errors.push("federation.max_parallel_sources must be > 0".into());
+        }
+        if let Err(err) = self.watch.thresholds().validate() {
+            errors.push(err.to_string());
+        }
+        for (name, value) in [
+            ("watch.min_mrr", self.watch.min_mrr),
+            ("watch.min_ndcg", self.watch.min_ndcg),
+            ("watch.min_recall", self.watch.min_recall),
+        ] {
+            if !(0.0..=1.0).contains(&value) || !value.is_finite() {
+                errors.push(format!("{name} must be between 0 and 1"));
+            }
         }
         match self.federation.selection.as_str() {
             "reliability_first" | "cost_adaptive" => {}
