@@ -815,6 +815,16 @@ CREATE TABLE IF NOT EXISTS entity_aliases (
 CREATE INDEX IF NOT EXISTS idx_entity_aliases_entity ON entity_aliases(entity_id);
 "#,
     },
+    // v14 - document intelligence fields (RFC-036). Append-only; released
+    // migrations above stay immutable.
+    Migration {
+        version: 14,
+        name: "document_intelligence",
+        sql: r#"
+ALTER TABLE document_versions ADD COLUMN summary TEXT;
+ALTER TABLE document_versions ADD COLUMN keywords_json TEXT;
+"#,
+    },
 ];
 
 /// Applies pending migrations to a connection. Each version is atomic: SQL

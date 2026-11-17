@@ -69,6 +69,11 @@ pub struct RecordedSearchTask {
     pub status: String,
 }
 
+fn parse_keywords(raw: Option<String>) -> Vec<String> {
+    raw.and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
 /// Entity alias persistence (RFC-058). Append-only in practice: an existing
 /// alias keeps its first owner; operator entities may add aliases, never
 /// re-point them.
@@ -936,8 +941,8 @@ impl<'a> DocumentRepo<'a> {
 
             // New version.
             tx.execute(
-                "INSERT OR IGNORE INTO document_versions (id, document_id, content_hash, raw_content_ref, markdown_ref, published_at, fetched_at, extractor_version, crawler_version, created_at)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+                "INSERT OR IGNORE INTO document_versions (id, document_id, content_hash, raw_content_ref, markdown_ref, published_at, fetched_at, extractor_version, crawler_version, created_at, summary, keywords_json)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
                 params![
                     version.id.as_str(),
                     document.id.as_str(),
@@ -949,6 +954,8 @@ impl<'a> DocumentRepo<'a> {
                     version.extractor_version,
                     version.crawler_version,
                     now(),
+                    version.summary,
+                    serde_json::to_string(&version.keywords).ok(),
                 ],
             )
             .map_err(e)?;
@@ -1082,7 +1089,7 @@ impl<'a> DocumentRepo<'a> {
         };
         self.store.with_conn(|c| {
             c.query_row(
-                "SELECT id, document_id, content_hash, raw_content_ref, markdown_ref, published_at, fetched_at, extractor_version, crawler_version FROM document_versions WHERE id = ?1",
+                "SELECT id, document_id, content_hash, raw_content_ref, markdown_ref, published_at, fetched_at, extractor_version, crawler_version, summary, keywords_json FROM document_versions WHERE id = ?1",
                 params![vid.as_str()],
                 |r| {
                     Ok(DocumentVersion {
@@ -1095,6 +1102,8 @@ impl<'a> DocumentRepo<'a> {
                         fetched_at: parse_time(&r.get::<_, String>(6)?),
                         extractor_version: r.get(7)?,
                         crawler_version: r.get(8)?,
+                        summary: r.get(9)?,
+                        keywords: parse_keywords(r.get::<_, Option<String>>(10)?),
                     })
                 },
             )
@@ -1382,7 +1391,8 @@ impl<'a> DocumentRepo<'a> {
             let mut stmt = c
                 .prepare(
                     "SELECT id, document_id, content_hash, raw_content_ref, markdown_ref,
-                            published_at, fetched_at, extractor_version, crawler_version
+                            published_at, fetched_at, extractor_version, crawler_version,
+                            summary, keywords_json
                      FROM document_versions WHERE document_id = ?1
                      ORDER BY created_at DESC, id DESC",
                 )
@@ -1399,6 +1409,8 @@ impl<'a> DocumentRepo<'a> {
                         fetched_at: parse_time(&r.get::<_, String>(6)?),
                         extractor_version: r.get::<_, String>(7)?,
                         crawler_version: r.get::<_, Option<String>>(8)?,
+                        summary: r.get(9)?,
+                        keywords: parse_keywords(r.get::<_, Option<String>>(10)?),
                     })
                 })
                 .map_err(e)?;
@@ -2704,6 +2716,8 @@ mod tests {
             published_at: None,
             extractor_version: searchos_document::EXTRACTOR_VERSION.into(),
             crawler_version: None,
+            summary: None,
+            keywords: Vec::new(),
         };
         let chunks = chunk_text(content, &ChunkingConfig::default())
             .into_iter()

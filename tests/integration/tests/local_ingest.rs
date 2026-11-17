@@ -659,3 +659,79 @@ async fn deletion_propagation_is_audited() {
         "deleted knowledge is not served"
     );
 }
+
+/// RFC-036 v1: ingest computes an extractive summary and keywords from the
+/// stored text, persists them with the version, and survives a rebuild.
+#[tokio::test]
+async fn ingest_stores_document_intelligence() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = SearchOsConfig::default();
+    cfg.app.data_dir = dir.path().to_path_buf();
+    let rt = searchos_core::SearchOsRuntime::init(cfg).await.unwrap();
+
+    let mut req = IngestRequest::new(WorkspaceId::new("default"));
+    req.source_key = Some("notes/intelligence".into());
+    let doc = rt
+        .application
+        .ingest_service
+        .ingest_text(
+            req,
+            "SearchOS extracts an extractive summary at ingest time. The summary is verbatim source text. Keywords are tokens observed in the document.",
+        )
+        .await
+        .unwrap();
+
+    let version = searchos_storage_sqlite::repos::DocumentRepo::new(&rt.sqlite)
+        .get_current_version(&doc.document_id)
+        .unwrap()
+        .expect("current version persisted");
+    assert!(
+        version.summary.is_some(),
+        "a sentence-rich document gets a summary"
+    );
+    let summary = version.summary.unwrap();
+    assert!(
+        summary.contains("SearchOS extracts an extractive summary at ingest time."),
+        "the summary is verbatim: {summary}"
+    );
+    assert!(
+        version.keywords.iter().any(|k| k == "searchos"),
+        "observed keywords are stored: {:?}",
+        version.keywords
+    );
+    assert!(
+        !version.keywords.iter().any(|k| k == "the" || k == "and"),
+        "stopwords are excluded"
+    );
+
+    // A rebuild preserves the derived fields (they live on the version row).
+    rt.rebuild_index().await.unwrap();
+    let after = searchos_storage_sqlite::repos::DocumentRepo::new(&rt.sqlite)
+        .get_current_version(&doc.document_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(after.summary, Some(summary));
+    assert_eq!(after.keywords, version.keywords);
+}
+
+#[tokio::test]
+async fn short_documents_have_honest_empty_insights() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = SearchOsConfig::default();
+    cfg.app.data_dir = dir.path().to_path_buf();
+    let rt = searchos_core::SearchOsRuntime::init(cfg).await.unwrap();
+    let mut req = IngestRequest::new(WorkspaceId::new("default"));
+    req.source_key = Some("notes/tiny".into());
+    let doc = rt
+        .application
+        .ingest_service
+        .ingest_text(req, "ok")
+        .await
+        .unwrap();
+    let version = searchos_storage_sqlite::repos::DocumentRepo::new(&rt.sqlite)
+        .get_current_version(&doc.document_id)
+        .unwrap()
+        .unwrap();
+    assert!(version.summary.is_none());
+    assert!(version.keywords.is_empty());
+}

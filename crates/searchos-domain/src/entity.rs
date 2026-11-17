@@ -165,7 +165,6 @@ fn contains_alias(text: &str, alias: &str) -> bool {
     if alias.is_empty() {
         return false;
     }
-    let bytes = text.as_bytes();
     let alias_bytes = alias.as_bytes();
     let mut start = 0usize;
     while let Some(found) = text[start..].find(alias) {

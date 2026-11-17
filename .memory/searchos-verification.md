@@ -405,6 +405,17 @@ The SearchOS implementation (`~/git_repo/searchos`) is verified by these command
   HTTP `/entities*` + CLI `entity`. Full suite **794 passed / 0 failed**
   (86 suites); clippy/fmt/route scan green.
 
+- **RFC-036 document intelligence v1 (2026-11-16):** `searchos_document::
+  intelligence::{analyze, extract_summary, extract_keywords}` — verbatim
+  extractive summary (selected sentences in original order; a multi-sentence
+  summary is NOT one contiguous source substring), stopword-filtered
+  keywords with CJK bigrams; computed in BOTH ingest and fetch paths;
+  migration v14 adds `document_versions.summary/keywords_json`; additive
+  `DocumentVersion::{summary, keywords}` (all literals patched with serde
+  defaults). Full suite **800 passed / 0 failed** (86 suites);
+  clippy/fmt/route scan green. Note: full test runs can take >20 minutes on
+  this machine — use background + polling.
+
 **Known environment notes:**
 - LanceDB requires `protoc` at build time (`brew install protobuf`).
 - Live network tests (fetch of https://example.com) tolerate sandbox timeouts by design.

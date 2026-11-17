@@ -125,6 +125,14 @@ multi-arch images, and attaches the matching section of this file.
   `ingest_redacts_secrets_before_object_write`,
   `redaction_can_be_disabled_explicitly` and
   `ingest_time_secret_redaction_is_wired_through_config`.
+- **Document intelligence v1 (RFC-036).** Ingest and fetch compute a
+  deterministic, EXTRACTIVE summary (verbatim source sentences, never a
+  paraphrase) plus observed keywords (stopwords excluded, CJK bigrams),
+  store them with the document version (migration **v14**, append-only), and
+  surface them through `document inspect` / `GET /documents/:id` / OpenAPI.
+  Tiny documents honestly report no summary / no keywords. Gates: four
+  domain tests plus `ingest_stores_document_intelligence` (verbatim summary,
+  keywords, survive rebuild) and `short_documents_have_honest_empty_insights`.
 - **Entity resolution v1 (RFC-058).** A durable alias registry maps
   registered aliases (canonical name included) to stable FNV-derived
   `EntityId`s; the first registration keeps an alias and conflicts are

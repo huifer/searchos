@@ -103,6 +103,12 @@ pub struct DocumentVersion {
     pub published_at: Option<DateTime<Utc>>,
     pub extractor_version: String,
     pub crawler_version: Option<String>,
+    /// RFC-036 v1: extractive summary (verbatim sentences) and keywords
+    /// computed at ingest. Additive with serde defaults.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keywords: Vec<String>,
 }
 
 /// A chunk produced from a document version (RFC-006 6.2, Part 17 17.8).

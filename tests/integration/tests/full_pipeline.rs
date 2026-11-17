@@ -273,6 +273,8 @@ async fn index_rebuild_restores_corpus() {
         published_at: None,
         extractor_version: "test".into(),
         crawler_version: None,
+        summary: None,
+        keywords: Vec::new(),
     };
     let chunked = searchos_document::chunk_text(content, &Default::default());
     let chunks = chunked

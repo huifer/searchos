@@ -8,6 +8,7 @@
 pub mod canonical;
 pub mod chunk;
 pub mod hash;
+pub mod intelligence;
 pub mod lifecycle;
 pub mod outbox;
 

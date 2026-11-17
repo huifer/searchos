@@ -729,6 +729,8 @@ async fn rebuild_preserves_workspace_language_age_and_title() {
         published_at: None,
         extractor_version: "test".into(),
         crawler_version: None,
+        summary: None,
+        keywords: Vec::new(),
     };
     let chunks = searchos_document::chunk_text("Tokio 中文 async runtime", &Default::default());
     let domain_chunks: Vec<_> = chunks
@@ -817,6 +819,8 @@ async fn rebuild_is_net_neutral_for_queries() {
         published_at: None,
         extractor_version: "test".into(),
         crawler_version: None,
+        summary: None,
+        keywords: Vec::new(),
     };
     let chunks = searchos_document::chunk_text("quokka habitat neutral", &Default::default());
     let domain_chunks: Vec<_> = chunks

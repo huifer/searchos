@@ -366,6 +366,10 @@ impl IngestServiceImpl {
             },
         };
 
+        // RFC-036 v1: deterministic extractive intelligence computed from
+        // the SAME normalized text that is stored / indexed. No LLM, no
+        // paraphrase — summary sentences are verbatim source text.
+        let insights = searchos_document::intelligence::analyze(&text);
         let version = DocumentVersion {
             id: DocumentVersionId::generate(),
             document_id: doc.id.clone(),
@@ -376,6 +380,8 @@ impl IngestServiceImpl {
             published_at: None,
             extractor_version: searchos_document::EXTRACTOR_VERSION.into(),
             crawler_version: None,
+            summary: insights.summary,
+            keywords: insights.keywords,
         };
 
         let chunks = searchos_document::chunk_text(&text, &Default::default());

@@ -369,6 +369,9 @@ impl FetchService for FetchServiceImpl {
             published_at: None,
             extractor_version: searchos_document::EXTRACTOR_VERSION.into(),
             crawler_version: Some(searchos_document::GENERIC_CRAWLER_VERSION.into()),
+            // RFC-036: same extractive intelligence on the fetched web path.
+            summary: searchos_document::intelligence::analyze(&extracted.text).summary,
+            keywords: searchos_document::intelligence::analyze(&extracted.text).keywords,
         };
 
         let chunks = searchos_document::chunk_text(&extracted.text, &Default::default());

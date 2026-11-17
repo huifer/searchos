@@ -1908,6 +1908,13 @@ components:
         fetched_at: { type: string }
         extractor_version: { type: string }
         crawler_version: { type: string, nullable: true }
+        summary:
+          type: string
+          nullable: true
+          description: Verbatim extractive summary computed at ingest (RFC-036).
+        keywords:
+          type: array
+          items: { type: string }
     MemoryHit:
       type: object
       properties:
