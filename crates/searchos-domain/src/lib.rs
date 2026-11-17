@@ -8,6 +8,7 @@
 //! Dependency rule (RFC-002 2.5): **domain does not depend on infrastructure.**
 //! Only serde/chrono/uuid/sha2 are used for serialization, time and hashing.
 
+pub mod collection;
 pub mod context;
 pub mod cost;
 pub mod decision;
@@ -24,6 +25,7 @@ pub mod request;
 pub mod response;
 pub mod retrieval;
 
+pub use collection::{Collection, CollectionId, CollectionSummary};
 pub use context::{ContextBlockSummary, ContextBudget, ContextDrop, ContextSnippet, ContextStatus};
 pub use cost::{
     CostAttemptStatus, CostEvent, CostOperation, CostQuery, CostSummary, Money, ReuseCostViews,

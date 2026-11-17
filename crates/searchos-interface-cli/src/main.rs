@@ -179,6 +179,11 @@ enum Command {
         #[command(subcommand)]
         cmd: PolicyCmd,
     },
+    /// Knowledge collections (RFC-030)
+    Collection {
+        #[command(subcommand)]
+        cmd: CollectionCmd,
+    },
     /// Entity alias registry (RFC-058)
     Entity {
         #[command(subcommand)]
@@ -352,6 +357,46 @@ enum ProviderCmd {
     },
     /// Per-provider circuit state and rate-limit status
     Health,
+}
+
+#[derive(Subcommand)]
+enum CollectionCmd {
+    /// List collections in a workspace
+    List {
+        /// Workspace that owns the collections
+        #[arg(long, default_value = "default")]
+        workspace: String,
+    },
+    /// Create (or fetch) a named collection
+    Create {
+        /// Collection name
+        name: String,
+        /// Workspace that owns the collection
+        #[arg(long, default_value = "default")]
+        workspace: String,
+        /// Optional description
+        #[arg(long)]
+        description: Option<String>,
+    },
+    /// Add a document to a collection
+    Add {
+        /// Collection id (from `collection list`)
+        collection: String,
+        /// Document id (from `document list`)
+        document: String,
+    },
+    /// Remove a document from a collection
+    Remove {
+        /// Collection id
+        collection: String,
+        /// Document id to remove from the collection
+        document: String,
+    },
+    /// List live document ids in a collection
+    Documents {
+        /// Collection id
+        collection: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1342,6 +1387,70 @@ async fn run(cli: Cli) -> Result<(), SearchOsError> {
                     text,
                 );
                 print(&serde_json::to_value(matched).unwrap_or_default(), format);
+                Ok(())
+            }
+        },
+        Command::Collection { cmd } => match cmd {
+            CollectionCmd::List { workspace } => {
+                let rt = runtime(cli_ref).await?;
+                let rows = repos::CollectionRepo::new(&rt.sqlite).list(Some(workspace))?;
+                print(&serde_json::to_value(rows).unwrap_or_default(), format);
+                Ok(())
+            }
+            CollectionCmd::Create {
+                name,
+                workspace,
+                description,
+            } => {
+                let rt = runtime(cli_ref).await?;
+                let collection = searchos_domain::collection::Collection::new(
+                    &WorkspaceId::new(workspace),
+                    name,
+                    description.clone(),
+                );
+                let saved = repos::CollectionRepo::new(&rt.sqlite).ensure(&collection)?;
+                print(&serde_json::to_value(saved).unwrap_or_default(), format);
+                Ok(())
+            }
+            CollectionCmd::Add {
+                collection,
+                document,
+            } => {
+                let rt = runtime(cli_ref).await?;
+                repos::CollectionRepo::new(&rt.sqlite).add_document(
+                    &searchos_domain::collection::CollectionId(collection.clone()),
+                    &searchos_domain::ids::DocumentId::new(document.clone()),
+                )?;
+                print(
+                    &serde_json::json!({ "added": document, "collection": collection }),
+                    format,
+                );
+                Ok(())
+            }
+            CollectionCmd::Remove {
+                collection,
+                document,
+            } => {
+                let rt = runtime(cli_ref).await?;
+                repos::CollectionRepo::new(&rt.sqlite).remove_document(
+                    &searchos_domain::collection::CollectionId(collection.clone()),
+                    &searchos_domain::ids::DocumentId::new(document.clone()),
+                )?;
+                print(
+                    &serde_json::json!({ "removed": document, "collection": collection }),
+                    format,
+                );
+                Ok(())
+            }
+            CollectionCmd::Documents { collection } => {
+                let rt = runtime(cli_ref).await?;
+                let docs = repos::CollectionRepo::new(&rt.sqlite).documents(
+                    &searchos_domain::collection::CollectionId(collection.clone()),
+                )?;
+                print(
+                    &serde_json::json!({ "collection": collection, "documents": docs }),
+                    format,
+                );
                 Ok(())
             }
         },

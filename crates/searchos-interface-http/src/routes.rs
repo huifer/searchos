@@ -403,6 +403,24 @@ pub fn api_route_table() -> Vec<RouteSpec> {
         RouteSpec::new("POST", "/replay/{trace_id}", post(replay_trace)),
         // RFC-086: batch replay evaluation.
         RouteSpec::new("POST", "/evaluation/replay", post(evaluate_replays)),
+        // RFC-030: knowledge collections (workspace-scoped groupings).
+        RouteSpec::new("GET", "/collections", get(list_collections)),
+        RouteSpec::new("POST", "/collections", post(create_collection)),
+        RouteSpec::new(
+            "POST",
+            "/collections/{id}/documents",
+            post(add_collection_document),
+        ),
+        RouteSpec::new(
+            "DELETE",
+            "/collections/{id}/documents/{document_id}",
+            delete(remove_collection_document),
+        ),
+        RouteSpec::new(
+            "GET",
+            "/collections/{id}/documents",
+            get(collection_documents),
+        ),
         // RFC-058: entity alias registry (read + register + resolve).
         RouteSpec::new("GET", "/entities", get(list_entities)),
         RouteSpec::new("POST", "/entities", post(register_entity)),
@@ -2231,6 +2249,132 @@ async fn evaluate_replays(
     })?))
 }
 
+/// RFC-030: list workspace-scoped collections with LIVE document counts.
+async fn list_collections(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    state.authorize(&headers)?;
+    let workspace = params.get("workspace_id").map(|s| s.as_str());
+    if let Some(ws) = workspace {
+        state.authorize_workspace(&headers, ws)?;
+    }
+    let rows = searchos_storage_sqlite::repos::CollectionRepo::new(&state.runtime.sqlite)
+        .list(workspace)
+        .map_err(|e| ApiError::from_domain(&e))?;
+    Ok(Json(serde_json::json!({ "collections": rows })))
+}
+
+/// RFC-030: create (or fetch) a named collection in one workspace.
+async fn create_collection(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    state.authorize(&headers)?;
+    let name = body.get("name").and_then(|v| v.as_str()).ok_or_else(|| {
+        ApiError::new(StatusCode::BAD_REQUEST, "VALIDATION_FAILED", "missing name")
+    })?;
+    let workspace = body
+        .get("workspace_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("default");
+    state.authorize_workspace(&headers, workspace)?;
+    let collection = searchos_domain::collection::Collection::new(
+        &WorkspaceId::new(workspace),
+        name,
+        body.get("description")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+    );
+    let repo = searchos_storage_sqlite::repos::CollectionRepo::new(&state.runtime.sqlite);
+    let collection = repo
+        .ensure(&collection)
+        .map_err(|e| ApiError::from_domain(&e))?;
+    Ok(Json(serde_json::json!({ "collection": collection })))
+}
+
+/// RFC-030: add an existing document to a collection (membership only).
+async fn add_collection_document(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    state.authorize(&headers)?;
+    let document_id = body
+        .get("document_id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "VALIDATION_FAILED",
+                "missing document_id",
+            )
+        })?;
+    let repo = searchos_storage_sqlite::repos::CollectionRepo::new(&state.runtime.sqlite);
+    let collection_id = searchos_domain::collection::CollectionId(id.clone());
+    let exists = repo
+        .list(None)
+        .map_err(|e| ApiError::from_domain(&e))?
+        .into_iter()
+        .any(|c| c.collection.id == collection_id);
+    if !exists {
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            "UNKNOWN_COLLECTION",
+            id,
+        ));
+    }
+    let doc = searchos_domain::ids::DocumentId::new(document_id);
+    let doc_exists = searchos_storage_sqlite::repos::DocumentRepo::new(&state.runtime.sqlite)
+        .get(&doc)
+        .map_err(|e| ApiError::from_domain(&e))?
+        .is_some();
+    if !doc_exists {
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            "UNKNOWN_DOCUMENT",
+            document_id,
+        ));
+    }
+    repo.add_document(&collection_id, &doc)
+        .map_err(|e| ApiError::from_domain(&e))?;
+    Ok(Json(
+        serde_json::json!({ "added": document_id, "collection_id": id }),
+    ))
+}
+
+async fn remove_collection_document(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Path((id, document_id)): axum::extract::Path<(String, String)>,
+) -> Result<StatusCode, ApiError> {
+    state.authorize(&headers)?;
+    searchos_storage_sqlite::repos::CollectionRepo::new(&state.runtime.sqlite)
+        .remove_document(
+            &searchos_domain::collection::CollectionId(id),
+            &searchos_domain::ids::DocumentId::new(&document_id),
+        )
+        .map_err(|e| ApiError::from_domain(&e))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn collection_documents(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    state.authorize(&headers)?;
+    let documents = searchos_storage_sqlite::repos::CollectionRepo::new(&state.runtime.sqlite)
+        .documents(&searchos_domain::collection::CollectionId(id.clone()))
+        .map_err(|e| ApiError::from_domain(&e))?;
+    Ok(Json(
+        serde_json::json!({ "collection_id": id, "documents": documents }),
+    ))
+}
+
 /// RFC-058: the current alias read model.
 async fn list_entities(
     State(state): State<AppState>,
@@ -3299,6 +3443,97 @@ mod tests {
             .unwrap()
             .iter()
             .all(|s| s["enabled"] == true));
+    }
+
+    #[tokio::test]
+    async fn collection_endpoints_create_add_and_list() {
+        let (st, _d) = state().await;
+        // Seed a document through the runtime so membership has a real target.
+        st.runtime
+            .application
+            .ingest_service
+            .ingest_text(
+                searchos_application::ingest_service::IngestRequest::new(WorkspaceId::new(
+                    "default",
+                )),
+                "A document placed into the HTTP collection gate.",
+            )
+            .await
+            .unwrap();
+        let doc_id = searchos_storage_sqlite::repos::DocumentRepo::new(&st.runtime.sqlite)
+            .list_summaries(10, None, None, None)
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap()
+            .id;
+        let app = router(st);
+
+        use tower::ServiceExt;
+        let call = |app: axum::Router, method: &str, uri: &str, body: serde_json::Value| {
+            let (method, uri) = (method.to_string(), uri.to_string());
+            async move {
+                let resp = app
+                    .oneshot(
+                        axum::http::Request::builder()
+                            .method(method.as_str())
+                            .uri(uri)
+                            .header("content-type", "application/json")
+                            .body(axum::body::Body::from(body.to_string()))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                let status = resp.status().as_u16();
+                let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+                    .await
+                    .unwrap();
+                (
+                    status,
+                    serde_json::from_slice::<serde_json::Value>(&bytes)
+                        .unwrap_or(serde_json::Value::Null),
+                )
+            }
+        };
+
+        let (status, created) = call(
+            app.clone(),
+            "POST",
+            "/collections",
+            serde_json::json!({ "name": "HTTP Gate" }),
+        )
+        .await;
+        assert_eq!(status, 200, "{created}");
+        let id = created["collection"]["id"].as_str().unwrap().to_string();
+
+        let (status, _) = call(
+            app.clone(),
+            "POST",
+            &format!("/collections/{id}/documents"),
+            serde_json::json!({ "document_id": doc_id.to_string() }),
+        )
+        .await;
+        assert_eq!(status, 200);
+
+        let (status, list) = call(app.clone(), "GET", "/collections", serde_json::json!({})).await;
+        assert_eq!(status, 200, "{list}");
+        let row = list["collections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["collection"]["id"] == id)
+            .unwrap();
+        assert_eq!(row["document_count"], 1);
+
+        let (status, docs) = call(
+            app,
+            "GET",
+            &format!("/collections/{id}/documents"),
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert_eq!(docs["documents"].as_array().unwrap().len(), 1);
     }
 
     #[tokio::test]

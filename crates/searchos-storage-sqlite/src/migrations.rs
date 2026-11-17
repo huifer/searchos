@@ -825,6 +825,30 @@ ALTER TABLE document_versions ADD COLUMN summary TEXT;
 ALTER TABLE document_versions ADD COLUMN keywords_json TEXT;
 "#,
     },
+    // v15 - knowledge collections (RFC-030). Released migrations untouched.
+    Migration {
+        version: 15,
+        name: "knowledge_collections",
+        sql: r#"
+CREATE TABLE IF NOT EXISTS collections (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    description TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_collections_ws_name
+    ON collections(workspace_id, name);
+CREATE TABLE IF NOT EXISTS collection_documents (
+    collection_id TEXT NOT NULL,
+    document_id TEXT NOT NULL,
+    added_at TEXT NOT NULL,
+    PRIMARY KEY (collection_id, document_id)
+);
+CREATE INDEX IF NOT EXISTS idx_collection_docs_document ON collection_documents(document_id);
+"#,
+    },
 ];
 
 /// Applies pending migrations to a connection. Each version is atomic: SQL

@@ -416,6 +416,17 @@ The SearchOS implementation (`~/git_repo/searchos`) is verified by these command
   clippy/fmt/route scan green. Note: full test runs can take >20 minutes on
   this machine — use background + polling.
 
+- **RFC-030 knowledge collections v1 (2026-11-16):** `domain::collection`
+  (deterministic id from workspace+name, CollectionSummary); migration v15
+  `collections` + `collection_documents`; `CollectionRepo` (ensure /
+  add / remove / list / documents) with LIVE member counts (soft-deleted
+  docs hidden, membership kept); HTTP `/collections*` + CLI `collection`.
+  Note: the CLI invariant `every_argument_has_help` requires EVERY clap
+  argument to carry help — a bare `workspace: String` field without a doc
+  comment fails it. Full suite **805 passed / 0 failed** (86 suites);
+  clippy/fmt/route scan green. Doc-test compilation is very slow on this
+  machine (~5 min per crate) — budget for it.
+
 **Known environment notes:**
 - LanceDB requires `protoc` at build time (`brew install protobuf`).
 - Live network tests (fetch of https://example.com) tolerate sandbox timeouts by design.

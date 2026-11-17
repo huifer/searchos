@@ -401,6 +401,95 @@ paths:
                   document_id: { type: string }
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /collections:
+    get:
+      tags: [Knowledge]
+      summary: Workspace-scoped knowledge collections (RFC-030)
+      parameters:
+        - name: workspace_id
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Collections with LIVE (non-deleted) member counts.
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+    post:
+      tags: [Knowledge]
+      summary: Create (or fetch) a named collection (RFC-030)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+                workspace_id: { type: string, default: default }
+                description: { type: string }
+      responses:
+        '200':
+          description: The collection (deterministic id).
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+  /collections/{id}/documents:
+    get:
+      tags: [Knowledge]
+      summary: Live document ids in a collection
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Document ids (soft-deleted members hidden).
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+    post:
+      tags: [Knowledge]
+      summary: Add an existing document to a collection
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [document_id]
+              properties:
+                document_id: { type: string }
+      responses:
+        '200':
+          description: Membership added.
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+  /collections/{id}/documents/{document_id}:
+    delete:
+      tags: [Knowledge]
+      summary: Remove a collection membership (never the document)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: document_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '204': { description: Removed }
+        '404': { $ref: '#/components/responses/NotFound' }
+
   /entities:
     get:
       tags: [Knowledge]

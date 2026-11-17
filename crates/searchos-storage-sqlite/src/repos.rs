@@ -74,6 +74,196 @@ fn parse_keywords(raw: Option<String>) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Knowledge collection persistence (RFC-030 v1).
+pub struct CollectionRepo<'a> {
+    store: &'a SqliteStore,
+}
+
+impl<'a> CollectionRepo<'a> {
+    pub fn new(store: &'a SqliteStore) -> Self {
+        Self { store }
+    }
+
+    /// Creates OR returns the existing collection (workspace + normalized
+    /// name is unique). Id is deterministic, so concurrent callers agree.
+    pub fn ensure(
+        &self,
+        collection: &searchos_domain::collection::Collection,
+    ) -> Result<searchos_domain::collection::Collection, SearchOsError> {
+        self.store.with_conn(|c| {
+            let tx = c.unchecked_transaction().map_err(e)?;
+            let existing: Option<(
+                String,
+                String,
+                String,
+                Option<String>,
+                String,
+                String,
+            )> = tx
+                .query_row(
+                    "SELECT id, name, workspace_id, description, created_at, updated_at
+                     FROM collections WHERE workspace_id = ?1 AND name = ?2",
+                    params![collection.workspace_id, collection.name],
+                    |r| {
+                        Ok((
+                            r.get(0)?,
+                            r.get(1)?,
+                            r.get(2)?,
+                            r.get(3)?,
+                            r.get(4)?,
+                            r.get(5)?,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(e)?;
+            if let Some(row) = existing {
+                return Ok(searchos_domain::collection::Collection {
+                    id: searchos_domain::collection::CollectionId(row.0),
+                    name: row.1,
+                    workspace_id: row.2,
+                    description: row.3,
+                    created_at: chrono::DateTime::parse_from_rfc3339(&row.4)
+                        .map(|t| t.with_timezone(&chrono::Utc))
+                        .unwrap_or_else(|_| chrono::Utc::now()),
+                    updated_at: chrono::DateTime::parse_from_rfc3339(&row.5)
+                        .map(|t| t.with_timezone(&chrono::Utc))
+                        .unwrap_or_else(|_| chrono::Utc::now()),
+                });
+            }
+            tx.execute(
+                "INSERT INTO collections (id, name, workspace_id, description, created_at, updated_at)
+                 VALUES (?1,?2,?3,?4,?5,?6)",
+                params![
+                    collection.id.as_str(),
+                    collection.name,
+                    collection.workspace_id,
+                    collection.description,
+                    collection.created_at.to_rfc3339(),
+                    collection.updated_at.to_rfc3339(),
+                ],
+            )
+            .map_err(e)?;
+            tx.commit().map_err(e)?;
+            Ok(collection.clone())
+        })
+    }
+
+    /// Adds a document to a collection. No-op when already a member.
+    pub fn add_document(
+        &self,
+        collection_id: &searchos_domain::collection::CollectionId,
+        document_id: &searchos_domain::ids::DocumentId,
+    ) -> Result<(), SearchOsError> {
+        self.store.with_conn(|c| {
+            c.execute(
+                "INSERT OR IGNORE INTO collection_documents (collection_id, document_id, added_at)
+                 VALUES (?1,?2,?3)",
+                params![collection_id.as_str(), document_id.as_str(), now(),],
+            )
+            .map(|_| ())
+            .map_err(e)
+        })
+    }
+
+    /// Removes a membership (never touches the document itself).
+    pub fn remove_document(
+        &self,
+        collection_id: &searchos_domain::collection::CollectionId,
+        document_id: &searchos_domain::ids::DocumentId,
+    ) -> Result<(), SearchOsError> {
+        self.store.with_conn(|c| {
+            c.execute(
+                "DELETE FROM collection_documents WHERE collection_id = ?1 AND document_id = ?2",
+                params![collection_id.as_str(), document_id.as_str()],
+            )
+            .map(|_| ())
+            .map_err(e)
+        })
+    }
+
+    /// All collections visible to a workspace, with LIVE (non-deleted)
+    /// member counts — collection membership never resurrects a deleted doc.
+    pub fn list(
+        &self,
+        workspace: Option<&str>,
+    ) -> Result<Vec<searchos_domain::collection::CollectionSummary>, SearchOsError> {
+        self.store.with_conn(|c| {
+            let mut stmt = c
+                .prepare(
+                    "SELECT c.id, c.name, c.workspace_id, c.description, c.created_at, c.updated_at,
+                            (SELECT count(*) FROM collection_documents cd
+                             JOIN documents d ON d.id = cd.document_id
+                             WHERE cd.collection_id = c.id AND d.status <> 'deleted')
+                     FROM collections c
+                     WHERE (?1 IS NULL OR c.workspace_id = ?1)
+                     ORDER BY c.name, c.id",
+                )
+                .map_err(e)?;
+            let rows = stmt
+                .query_map(params![workspace], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                        r.get::<_, Option<String>>(3)?,
+                        r.get::<_, String>(4)?,
+                        r.get::<_, String>(5)?,
+                        r.get::<_, i64>(6)?,
+                    ))
+                })
+                .map_err(e)?;
+            let mut out = Vec::new();
+            for row in rows {
+                let row = row.map_err(|er| SearchOsError::Internal(er.to_string()))?;
+                out.push(searchos_domain::collection::CollectionSummary {
+                    collection: searchos_domain::collection::Collection {
+                        id: searchos_domain::collection::CollectionId(row.0),
+                        name: row.1,
+                        workspace_id: row.2,
+                        description: row.3,
+                        created_at: chrono::DateTime::parse_from_rfc3339(&row.4)
+                            .map(|t| t.with_timezone(&chrono::Utc))
+                            .unwrap_or_else(|_| chrono::Utc::now()),
+                        updated_at: chrono::DateTime::parse_from_rfc3339(&row.5)
+                            .map(|t| t.with_timezone(&chrono::Utc))
+                            .unwrap_or_else(|_| chrono::Utc::now()),
+                    },
+                    document_count: row.6.max(0) as usize,
+                });
+            }
+            Ok(out)
+        })
+    }
+
+    /// Document ids in one collection (LIVE documents only), newest first.
+    pub fn documents(
+        &self,
+        collection_id: &searchos_domain::collection::CollectionId,
+    ) -> Result<Vec<searchos_domain::ids::DocumentId>, SearchOsError> {
+        self.store.with_conn(|c| {
+            let mut stmt = c
+                .prepare(
+                    "SELECT cd.document_id FROM collection_documents cd
+                     JOIN documents d ON d.id = cd.document_id
+                     WHERE cd.collection_id = ?1 AND d.status <> 'deleted'
+                     ORDER BY cd.added_at DESC, cd.document_id",
+                )
+                .map_err(e)?;
+            let rows = stmt
+                .query_map(params![collection_id.as_str()], |r| r.get::<_, String>(0))
+                .map_err(e)?;
+            let mut out = Vec::new();
+            for row in rows {
+                out.push(searchos_domain::ids::DocumentId::new(
+                    row.map_err(|er| SearchOsError::Internal(er.to_string()))?,
+                ));
+            }
+            Ok(out)
+        })
+    }
+}
+
 /// Entity alias persistence (RFC-058). Append-only in practice: an existing
 /// alias keeps its first owner; operator entities may add aliases, never
 /// re-point them.

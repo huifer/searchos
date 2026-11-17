@@ -735,3 +735,60 @@ async fn short_documents_have_honest_empty_insights() {
     assert!(version.summary.is_none());
     assert!(version.keywords.is_empty());
 }
+
+/// RFC-030 v1: collections are workspace-scoped, idempotent to create, and
+/// their counts hide soft-deleted documents without losing membership.
+#[tokio::test]
+async fn knowledge_collections_track_live_membership() {
+    use searchos_domain::collection::Collection;
+    use searchos_storage_sqlite::repos::CollectionRepo;
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = SearchOsConfig::default();
+    cfg.app.data_dir = dir.path().to_path_buf();
+    let rt = searchos_core::SearchOsRuntime::init(cfg).await.unwrap();
+    let repo = CollectionRepo::new(&rt.sqlite);
+    let ws = WorkspaceId::new("ws_collections");
+
+    let collection = Collection::new(&ws, "Reading List", Some("curated".into()));
+    let created = repo.ensure(&collection).unwrap();
+    assert_eq!(created.id, collection.id);
+    let same = repo.ensure(&collection).unwrap();
+    assert_eq!(same.id, created.id, "create is idempotent");
+
+    let mut req = IngestRequest::new(ws.clone());
+    req.source_key = Some("notes/collection".into());
+    let doc = rt
+        .application
+        .ingest_service
+        .ingest_text(
+            req,
+            "A document that belongs to the reading list collection.",
+        )
+        .await
+        .unwrap();
+    repo.add_document(&created.id, &doc.document_id).unwrap();
+    repo.add_document(&created.id, &doc.document_id).unwrap(); // idempotent
+
+    let summaries = repo.list(Some("ws_collections")).unwrap();
+    assert_eq!(summaries.len(), 1);
+    assert_eq!(summaries[0].document_count, 1);
+    assert!(
+        repo.list(Some("other_ws")).unwrap().is_empty(),
+        "workspace scoped"
+    );
+    assert_eq!(
+        repo.documents(&created.id).unwrap(),
+        vec![doc.document_id.clone()]
+    );
+
+    // Soft-delete hides the member from the LIVE view but keeps membership.
+    rt.delete_document(&doc.document_id).await.unwrap();
+    assert_eq!(
+        repo.list(Some("ws_collections")).unwrap()[0].document_count,
+        0
+    );
+    assert!(repo.documents(&created.id).unwrap().is_empty());
+    repo.remove_document(&created.id, &doc.document_id).unwrap();
+    assert_eq!(repo.documents(&created.id).unwrap().len(), 0);
+}

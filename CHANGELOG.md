@@ -125,6 +125,18 @@ multi-arch images, and attaches the matching section of this file.
   `ingest_redacts_secrets_before_object_write`,
   `redaction_can_be_disabled_explicitly` and
   `ingest_time_secret_redaction_is_wired_through_config`.
+- **Knowledge collections v1 (RFC-030).** Workspace-scoped, named
+  collections group documents for curation: deterministic ids from
+  (workspace, name) so concurrent callers agree, idempotent creation,
+  membership that never changes what retrieval can see, and member counts
+  that hide soft-deleted documents (the same audit rule as
+  `GET /documents`). Surfaces: `GET/POST /collections`,
+  `POST/DELETE /collections/{id}/documents`, `GET /collections/{id}/documents`,
+  CLI `searchos collection list|create|add|remove|documents`; migration
+  **v15** adds `collections` + `collection_documents`. Gate:
+  `knowledge_collections_track_live_membership` (idempotent create,
+  workspace scoping, soft-delete hides the member) and the HTTP round trip
+  `collection_endpoints_create_add_and_list`.
 - **Document intelligence v1 (RFC-036).** Ingest and fetch compute a
   deterministic, EXTRACTIVE summary (verbatim source sentences, never a
   paraphrase) plus observed keywords (stopwords excluded, CJK bigrams),
