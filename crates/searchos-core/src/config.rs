@@ -52,6 +52,11 @@ pub struct FederationConfig {
     pub source_timeout_ms: u64,
     /// Maximum sources one plan may select (ADR-062-002).
     pub max_sources: usize,
+    /// RFC-080 source ordering: `reliability_first` (default) | `cost_adaptive`.
+    /// `cost_adaptive` orders equally local / equally authoritative sources by
+    /// expected quality per unit cost instead of configured priority. It is
+    /// opt-in: the default keeps the historical order byte-for-byte.
+    pub selection: String,
 }
 
 impl Default for FederationConfig {
@@ -61,6 +66,7 @@ impl Default for FederationConfig {
             max_parallel_sources: 8,
             source_timeout_ms: 5_000,
             max_sources: 8,
+            selection: "reliability_first".into(),
         }
     }
 }
@@ -797,6 +803,7 @@ pub const ALL_CONFIG_FIELDS: &[&str] = &[
     "federation.max_parallel_sources",
     "federation.source_timeout_ms",
     "federation.max_sources",
+    "federation.selection",
     "intelligence.query_expansion",
     "intelligence.query_expansion_mode",
     "intelligence.reranking",
@@ -912,6 +919,7 @@ pub const CONSUMED_CONFIG_FIELDS: &[&str] = &[
     "federation.max_parallel_sources",
     "federation.source_timeout_ms",
     "federation.max_sources",
+    "federation.selection",
     "intelligence.query_expansion",
     "intelligence.query_expansion_mode",
     "intelligence.reranking",
@@ -1018,6 +1026,12 @@ impl SearchOsConfig {
         }
         if self.federation.max_parallel_sources == 0 {
             errors.push("federation.max_parallel_sources must be > 0".into());
+        }
+        match self.federation.selection.as_str() {
+            "reliability_first" | "cost_adaptive" => {}
+            other => errors.push(format!(
+                "federation.selection must be reliability_first|cost_adaptive, got {other}"
+            )),
         }
         if self.federation.source_timeout_ms == 0 {
             errors.push("federation.source_timeout_ms must be > 0".into());

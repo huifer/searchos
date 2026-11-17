@@ -27,6 +27,17 @@ multi-arch images, and attaches the matching section of this file.
 
 ### Added
 
+- **Cost-adaptive source selection (RFC-080).** `federation.selection =
+  cost_adaptive` orders equally local and equally authoritative sources by
+  EXPECTED QUALITY PER UNIT COST — the live success-rate EMA blended with
+  the declared metadata trust, over the estimated cost — instead of by
+  configured priority. The default (`reliability_first`) keeps the previous
+  order byte-for-byte, locality still dominates, and a required-authoritative
+  source is never traded away to save money: fail-open is an availability
+  property, not a quality pass. Every eligible source is scored on the plan
+  (`source_scores`), the policy in force is reported by `/search/plan` and
+  `/system/status`, and an unknown value falls back to `reliability_first`
+  with a warning.
 - **Route-conflict gate now runs in CI.** The static scanner is vendored as
   `scripts/scan-routes.sh` and runs in the `openapi` job on every pull
   request, so a conflicting Axum route cannot merge on a machine that never

@@ -1638,8 +1638,35 @@ components:
           type: array
           items: { type: string }
           description: Selected source ids in execution order, empty in legacy mode.
+        source_selection:
+          type: string
+          nullable: true
+          enum: [reliability_first, cost_adaptive, null]
+          description: >-
+            RFC-080 ordering policy used by the planner. Null means the legacy
+            pipeline is authoritative and no federated plan was produced.
+        source_scores:
+          type: array
+          items: { $ref: "#/components/schemas/SourceSelectionScore" }
+          description: >-
+            RFC-080 per-source score for every eligible source, selected or
+            not, so the ordering decision can be reviewed after the fact.
 
         currency: { type: string }
+    SourceSelectionScore:
+      type: object
+      description: >-
+        RFC-080 score of one eligible source under cost-adaptive selection.
+        `expected_quality` blends the observed success rate with the
+        declared metadata trust; `value_density` is the expected quality per
+        million micro units (free sources use the maximum finite value).
+      required: [source_id, expected_quality, cost_micros, value_density, selected]
+      properties:
+        source_id: { type: string }
+        expected_quality: { type: number, format: float }
+        cost_micros: { type: integer, format: int64 }
+        value_density: { type: number, format: double }
+        selected: { type: boolean }
     ContextBudget:
       type: object
       description: >-
@@ -2201,6 +2228,13 @@ components:
             strategy: { type: string, enum: [legacy, plan_only, execute] }
             max_sources: { type: integer }
             max_parallel_sources: { type: integer }
+            selection:
+              type: string
+              enum: [reliability_first, cost_adaptive]
+              description: >-
+                RFC-080 source ordering policy. `cost_adaptive` orders equally
+                local / equally authoritative sources by expected quality per
+                unit cost instead of configured priority.
             sources:
               type: array
               items:

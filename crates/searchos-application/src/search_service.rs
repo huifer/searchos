@@ -249,6 +249,8 @@ pub struct SearchDependencies {
     pub federation_strategy: String,
     /// Fan-out / deadline caps resolved from `config.federation`.
     pub federation_limits: searchos_domain::FederationLimits,
+    /// RFC-080 source ordering: `reliability_first` (default) | `cost_adaptive`.
+    pub federation_selection: String,
 }
 
 /// Federation modes recognised by `federation_strategy`.
@@ -501,6 +503,7 @@ impl SearchServiceImpl {
             max_latency_ms: req.budget.max_execution_time_ms,
             stop_when_covered: true,
             generic_sources_can_answer: true,
+            selection: self.deps.selection_mode(),
         };
         let plan = searchos_federated::FederatedPlanner::plan(&context, &descriptors);
         record_federation_plan(&plan);
@@ -631,6 +634,11 @@ impl SearchServiceImpl {
                 .as_ref()
                 .map(|p| p.selected_source_ids())
                 .unwrap_or_default(),
+            source_selection: federated.as_ref().map(|p| p.selection.as_str().to_string()),
+            source_scores: federated
+                .as_ref()
+                .map(|p| p.selection_scores.clone())
+                .unwrap_or_default(),
         })
     }
 }
@@ -662,6 +670,12 @@ pub struct SearchPlanReport {
     pub federation_strategy: Option<String>,
     #[serde(default)]
     pub federated_sources: Vec<String>,
+    /// RFC-080 ordering policy actually used by the planner.
+    #[serde(default)]
+    pub source_selection: Option<String>,
+    /// RFC-080 per-source score for every eligible source (audit trail).
+    #[serde(default)]
+    pub source_scores: Vec<searchos_federated::SourceSelectionScore>,
 }
 
 /// Builds the external query plan: one targeted query per open requirement,
@@ -1663,6 +1677,21 @@ fn local_results_and_evidence(
 }
 
 impl SearchDependencies {
+    /// RFC-080 selection policy. An unparsable value falls back to the
+    /// historical order and is reported — never silently applied.
+    pub fn selection_mode(&self) -> searchos_federated::SelectionMode {
+        match searchos_federated::SelectionMode::parse(&self.federation_selection) {
+            Ok(mode) => mode,
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "unknown federation.selection; falling back to reliability_first"
+                );
+                searchos_federated::SelectionMode::default()
+            }
+        }
+    }
+
     /// RFC-034: policies currently in force (hot-reloaded) or the build-time
     /// defaults. Every policy read in the pipeline goes through these.
     pub fn effective_quality(&self) -> searchos_policy::QualityPolicy {
@@ -3338,6 +3367,7 @@ impl SearchServiceImplStub {
             max_latency_ms: req.budget.max_execution_time_ms,
             stop_when_covered: true,
             generic_sources_can_answer: true,
+            selection: self.deps.selection_mode(),
         };
         let plan = searchos_federated::FederatedPlanner::plan(&context, &descriptors);
         tracing::debug!(

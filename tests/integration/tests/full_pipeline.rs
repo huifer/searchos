@@ -104,6 +104,7 @@ fn rebuild_deps(
         federation_registry: Some(Arc::new(federation_registry(runtime))),
         federation_strategy: strategy.to_string(),
         federation_limits: searchos_domain::FederationLimits::default(),
+        federation_selection: "reliability_first".into(),
     })
 }
 
@@ -1058,6 +1059,7 @@ async fn federated_execute_mode_bills_once_and_matches_legacy_results() {
             federation_registry: Some(Arc::new(registry)),
             federation_strategy: strategy.to_string(),
             federation_limits: searchos_domain::FederationLimits::default(),
+            federation_selection: "reliability_first".into(),
         };
         (SearchServiceImpl::new(Arc::new(deps)), runtime)
     };
@@ -1313,6 +1315,7 @@ async fn federated_failures_trip_the_source_circuit_in_the_live_pipeline() {
         federation_registry: Some(Arc::clone(&registry)),
         federation_strategy: "execute".into(),
         federation_limits: searchos_domain::FederationLimits::default(),
+        federation_selection: "reliability_first".into(),
     };
     let svc = SearchServiceImpl::new(Arc::new(deps));
 
@@ -1489,6 +1492,7 @@ async fn federated_execute_respects_a_tiny_wall_clock_budget() {
         federation_registry: Some(Arc::clone(&registry)),
         federation_strategy: "execute".into(),
         federation_limits: searchos_domain::FederationLimits::default(),
+        federation_selection: "reliability_first".into(),
     };
     let svc = SearchServiceImpl::new(Arc::new(deps));
 
@@ -1640,6 +1644,7 @@ async fn context_assembly_collapses_cross_host_syndicated_content() {
         federation_registry: Some(Arc::clone(&registry)),
         federation_strategy: "execute".into(),
         federation_limits: searchos_domain::FederationLimits::default(),
+        federation_selection: "reliability_first".into(),
     };
     let svc = SearchServiceImpl::new(Arc::new(deps));
 
@@ -1784,6 +1789,7 @@ async fn decision_rejects_external_only_when_all_sources_are_tripped() {
         federation_registry: Some(Arc::clone(&registry)),
         federation_strategy: "execute".into(),
         federation_limits: searchos_domain::FederationLimits::default(),
+        federation_selection: "reliability_first".into(),
     };
     let svc = SearchServiceImpl::new(Arc::new(deps));
 
@@ -1948,6 +1954,7 @@ async fn cost_adaptive_downsizes_the_external_plan_within_budget() {
             federation_registry: Some(Arc::clone(&registry)),
             federation_strategy: "execute".into(),
             federation_limits: searchos_domain::FederationLimits::default(),
+            federation_selection: "reliability_first".into(),
         };
         let svc = SearchServiceImpl::new(Arc::new(deps));
         let mut req = request("cost adaptive probe", SearchMode::ExternalOnly);
@@ -2083,6 +2090,7 @@ async fn initial_query_expansion_is_opt_in_and_budget_bounded() {
             federation_registry: None,
             federation_strategy: "legacy".into(),
             federation_limits: searchos_domain::FederationLimits::default(),
+            federation_selection: "reliability_first".into(),
         };
         let svc = SearchServiceImpl::new(Arc::new(deps));
         let mut req = request(

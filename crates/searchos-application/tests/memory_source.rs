@@ -247,6 +247,7 @@ async fn memory_source_is_selected_under_local_only() {
             workspace_id: "ws_a".into(),
             requirements: vec!["decision".into()],
             generic_sources_can_answer: true,
+            selection: searchos_federated::SelectionMode::default(),
             ..Default::default()
         },
         &descriptors,

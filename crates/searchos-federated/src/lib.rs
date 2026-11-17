@@ -65,8 +65,8 @@ pub use execute::{
 pub use fusion::{fuse_ranks, RankedSourceList};
 pub use planner::{
     aggregate, billable_cost, free_cost, FederatedOutcome, FederatedPlanner, FederatedSearchPlan,
-    FederationStrategy, PlanningContext, RejectedSource, RejectionReason, SearchStage, SourceTask,
-    StageExecutionMode, StopCondition,
+    FederationStrategy, PlanningContext, RejectedSource, RejectionReason, SearchStage,
+    SelectionMode, SourceSelectionScore, SourceTask, StageExecutionMode, StopCondition,
 };
 pub use registry::{categories_of, scope_label, InMemorySourceRegistry, RegistryError};
 pub use resource::{

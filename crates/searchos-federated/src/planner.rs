@@ -31,6 +31,7 @@ use crate::source::{
 use searchos_domain::ids::WorkspaceId;
 use searchos_domain::SearchMode;
 use serde::{Deserialize, Serialize};
+use std::cmp::Ordering;
 
 fn default_stop_when_covered() -> bool {
     true
@@ -86,6 +87,46 @@ impl FederationStrategy {
     }
 }
 
+/// RFC-080: how selected sources are ORDERED.
+///
+/// This is deliberately orthogonal to [`FederationStrategy`]: `strategy`
+/// decides the execution shape (parallel / sequential / selective), while
+/// `selection` decides which eligible source the plan tries FIRST. The
+/// default keeps the historical reliability/priority order byte-for-byte —
+/// cost-adaptive routing is opt-in so no existing contract changes shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SelectionMode {
+    /// Local first, then declared-authority, then configured priority.
+    /// The historical order; latency and success rate act as gates only.
+    #[default]
+    ReliabilityFirst,
+    /// Among equally local/authoritative sources, order by EXPECTED QUALITY
+    /// PER UNIT COST, not by configured priority: a cheap source with a
+    /// higher observed success rate and metadata trust is tried before an
+    /// expensive one that merely declares a higher priority.
+    CostAdaptive,
+}
+
+impl SelectionMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::ReliabilityFirst => "reliability_first",
+            Self::CostAdaptive => "cost_adaptive",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "reliability_first" => Ok(Self::ReliabilityFirst),
+            "cost_adaptive" => Ok(Self::CostAdaptive),
+            other => Err(format!(
+                "unknown source selection mode {other}; use reliability_first|cost_adaptive"
+            )),
+        }
+    }
+}
+
 /// Inputs the planner reasons over.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PlanningContext {
@@ -119,6 +160,9 @@ pub struct PlanningContext {
     /// true; specialized sources declare their requirement ids.
     #[serde(default)]
     pub generic_sources_can_answer: bool,
+    /// RFC-080 source ordering. Default keeps the historical order.
+    #[serde(default)]
+    pub selection: SelectionMode,
 }
 
 impl PlanningContext {
@@ -148,6 +192,7 @@ impl Default for PlanningContext {
             max_latency_ms: default_max_latency_ms(),
             stop_when_covered: true,
             generic_sources_can_answer: true,
+            selection: SelectionMode::default(),
         }
     }
 }
@@ -253,7 +298,23 @@ pub enum StopCondition {
 }
 
 /// The auditable plan.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Auditable score for one eligible source under cost-adaptive selection.
+/// Present for EVERY eligible source, selected or rejected, so a reviewer
+/// can see why the cheaper source went first.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SourceSelectionScore {
+    pub source_id: String,
+    /// 0.0..=1.0: observed success rate blended with declared metadata trust.
+    pub expected_quality: f32,
+    /// Estimated cost of one execution, in micro units.
+    pub cost_micros: i64,
+    /// Expected quality per MILLION micro units. Free sources use a capped
+    /// density instead of infinity so the value stays serialisable.
+    pub value_density: f64,
+    pub selected: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FederatedSearchPlan {
     pub strategy: FederationStrategy,
     pub mode: SearchMode,
@@ -269,6 +330,12 @@ pub struct FederatedSearchPlan {
     /// Requirements that are both required and have no eligible source —
     /// the plan cannot produce a quality-passing result.
     pub unmet_required_requirements: Vec<String>,
+    /// RFC-080: the ordering policy actually used (auditability).
+    #[serde(default)]
+    pub selection: SelectionMode,
+    /// RFC-080: per-source score for eligible sources, even when not selected.
+    #[serde(default)]
+    pub selection_scores: Vec<SourceSelectionScore>,
 }
 
 impl FederatedSearchPlan {
@@ -305,6 +372,30 @@ impl FederatedSearchPlan {
     /// Whether this plan can possibly satisfy every required requirement.
     pub fn can_satisfy_requirements(&self) -> bool {
         self.unmet_required_requirements.is_empty()
+    }
+}
+
+/// Blended quality signal for a source (RFC-080 §8.2).
+///
+/// SUCCESS RATE is the live EMA from observed outcomes, not a declared
+/// claim. METADATA TRUST is the declared confidence in the source's own
+/// provenance. A source that never returns usable results cannot beat a
+/// cheaper reliable one just by promising a high priority.
+pub fn expected_quality(descriptor: &SearchSourceDescriptor) -> f32 {
+    let success = descriptor.reliability.success_rate.clamp(0.0, 1.0);
+    let trust = descriptor.reliability.metadata_trust.clamp(0.0, 1.0);
+    (success * (0.5 + 0.5 * trust)).clamp(0.0, 1.0)
+}
+
+/// Free executions get the largest finite density; billable ones are scaled
+/// to quality per one million micro units so the ratio stays readable.
+pub fn value_density(descriptor: &SearchSourceDescriptor) -> f64 {
+    let quality = expected_quality(descriptor) as f64;
+    let cost = descriptor.cost.estimated_cost_micros.max(0) as f64;
+    if cost == 0.0 {
+        f64::MAX
+    } else {
+        quality * 1_000_000.0 / cost
     }
 }
 
@@ -353,6 +444,19 @@ impl FederatedPlanner {
                 .is_external()
                 .cmp(&b.category.is_external())
                 .then_with(|| requirement_authority(b, &open).cmp(&requirement_authority(a, &open)))
+                // RFC-080: cost-adaptive ordering sits AFTER the permission
+                // boundary, locality and requirement authority. A required
+                // authoritative source is never traded away to save money —
+                // fail-open is an availability property, not a quality pass.
+                .then_with(|| {
+                    if context.selection == SelectionMode::CostAdaptive {
+                        value_density(b)
+                            .partial_cmp(&value_density(a))
+                            .unwrap_or(Ordering::Equal)
+                    } else {
+                        Ordering::Equal
+                    }
+                })
                 .then_with(|| b.priority.cmp(&a.priority))
                 .then_with(|| a.source_id.as_str().cmp(b.source_id.as_str()))
         });
@@ -366,7 +470,7 @@ impl FederatedPlanner {
         let mut covered: Vec<String> = context.covered_requirements.clone();
         let mut unanswerable: Vec<String> = Vec::new();
 
-        for descriptor in eligible {
+        for descriptor in eligible.iter().copied() {
             if selected_count >= context.max_sources {
                 rejections.push(RejectedSource {
                     source_id: descriptor.source_id.to_string(),
@@ -561,6 +665,27 @@ impl FederatedPlanner {
             stop_conditions.push(StopCondition::NoEligibleSourceRemains);
         }
 
+        // RFC-080 audit trail: score every eligible source (selected or not)
+        // BEFORE the plan moves the stages.
+        let selection_scores: Vec<SourceSelectionScore> = {
+            let mut scores: Vec<SourceSelectionScore> = eligible
+                .iter()
+                .map(|d| SourceSelectionScore {
+                    source_id: d.source_id.to_string(),
+                    expected_quality: expected_quality(d),
+                    cost_micros: d.cost.estimated_cost_micros,
+                    value_density: value_density(d),
+                    selected: stages.iter().any(|s| {
+                        s.tasks
+                            .iter()
+                            .any(|t| t.source_id == d.source_id.to_string())
+                    }),
+                })
+                .collect();
+            scores.sort_by(|a, b| a.source_id.as_str().cmp(b.source_id.as_str()));
+            scores
+        };
+
         FederatedSearchPlan {
             strategy: context.strategy,
             mode: context.mode,
@@ -571,6 +696,8 @@ impl FederatedPlanner {
             max_deadline_ms,
             unanswerable_requirements: unanswerable,
             unmet_required_requirements: unmet_required,
+            selection: context.selection,
+            selection_scores,
         }
     }
 }

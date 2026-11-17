@@ -101,6 +101,7 @@ fn context(
         max_latency_ms: 30_000,
         stop_when_covered: true,
         generic_sources_can_answer: true,
+        selection: searchos_federated::SelectionMode::default(),
     }
 }
 
@@ -977,7 +978,7 @@ fn required_source_failure_forces_partial() {
     let mut ctx = context(
         SearchMode::ExternalOnly,
         FederationStrategy::Auto,
-        &["required_official_source"],
+        &["required_official_source", "background"],
     );
     ctx.required_requirements = vec!["required_official_source".into()];
     let plan = FederatedPlanner::plan(&ctx, &[official, blog.clone()]);
@@ -1380,5 +1381,137 @@ fn latency_feedback_updates_the_live_profile_on_every_scope_copy() {
     assert!(
         resolved.p95_ms >= resolved.p50_ms * 2,
         "p95 stays above p50"
+    );
+}
+// --- RFC-080: cost-adaptive source selection ---------------------------------
+
+fn adaptive_source(
+    id: &str,
+    priority: i32,
+    cost_micros: i64,
+    success_rate: f32,
+    metadata_trust: f32,
+) -> SearchSourceDescriptor {
+    let mut d = descriptor(
+        id,
+        SourceCategory::WebSearch,
+        SourceScope::Global,
+        priority,
+        cost_micros,
+        true,
+        &[], // generic: fills open requirements, never authoritative
+    );
+    d.reliability.success_rate = success_rate;
+    d.reliability.metadata_trust = metadata_trust;
+    d
+}
+
+#[test]
+fn cost_adaptive_prefers_quality_per_cost_over_configured_priority() {
+    // Expensive + mediocre, but declared high priority.
+    let expensive = adaptive_source("expensive", 10, 50_000, 0.5, 0.5);
+    // Cheap + reliable, with a low priority.
+    let cheap = adaptive_source("cheap", 1, 5_000, 0.95, 1.0);
+    // Two open requirements so BOTH generic sources have a fill: the
+    // "no re-purchase" rule (INV-30-04) would otherwise reject the second.
+    let mut ctx = context(
+        SearchMode::ExternalOnly,
+        FederationStrategy::Auto,
+        &["a", "b"],
+    );
+    ctx.selection = searchos_federated::SelectionMode::CostAdaptive;
+
+    let plan = FederatedPlanner::plan(&ctx, &[expensive, cheap]);
+    assert_eq!(
+        plan.selected_source_ids(),
+        vec!["cheap".to_string(), "expensive".to_string()],
+        "value density must beat configured priority under cost_adaptive"
+    );
+    assert_eq!(
+        plan.selection,
+        searchos_federated::SelectionMode::CostAdaptive
+    );
+    assert_eq!(plan.selection_scores.len(), 2);
+    let cheap_score = plan
+        .selection_scores
+        .iter()
+        .find(|s| s.source_id == "cheap")
+        .expect("score for every eligible source");
+    assert!((cheap_score.expected_quality - 0.95).abs() < 0.001);
+    assert!(cheap_score.selected);
+    assert!((cheap_score.value_density - 190.0).abs() < 0.01);
+}
+
+#[test]
+fn reliability_first_keeps_the_historical_priority_order() {
+    let expensive = adaptive_source("expensive", 10, 50_000, 0.5, 0.5);
+    let cheap = adaptive_source("cheap", 1, 5_000, 0.95, 1.0);
+    let ctx = context(
+        SearchMode::ExternalOnly,
+        FederationStrategy::Auto,
+        &["a", "b"],
+    );
+
+    let plan = FederatedPlanner::plan(&ctx, &[expensive, cheap]);
+    assert_eq!(
+        plan.selected_source_ids(),
+        vec!["expensive".to_string(), "cheap".to_string()],
+        "the default must remain byte-for-byte compatible"
+    );
+    assert_eq!(
+        plan.selection,
+        searchos_federated::SelectionMode::ReliabilityFirst
+    );
+    // Scores are still recorded for audit, even when the policy is off.
+    assert_eq!(plan.selection_scores.len(), 2);
+}
+
+#[test]
+fn cost_adaptive_never_trades_a_required_authoritative_source_for_a_cheaper_one() {
+    let mut official = adaptive_source("official", 1, 50_000, 0.5, 0.5);
+    official.satisfies_requirements = vec!["required_official_source".into()];
+    let generic = adaptive_source("generic", 20, 1_000, 1.0, 1.0);
+    // "background" is a second, non-required gap so the generic source is
+    // eligible too; "required_official_source" is the REQUIRED gap that the
+    // authoritative source owns.
+    let mut ctx = context(
+        SearchMode::ExternalOnly,
+        FederationStrategy::Auto,
+        &["required_official_source", "background"],
+    );
+    ctx.required_requirements = vec!["required_official_source".into()];
+    ctx.selection = searchos_federated::SelectionMode::CostAdaptive;
+
+    let plan = FederatedPlanner::plan(&ctx, &[generic, official]);
+    assert_eq!(
+        plan.selected_source_ids(),
+        vec!["official".to_string(), "generic".to_string()],
+        "requirement authority outranks value density: fail-open is not a quality pass"
+    );
+    assert!(plan.can_satisfy_requirements());
+}
+
+#[test]
+fn free_local_source_stays_first_under_cost_adaptive() {
+    let local = descriptor(
+        "local",
+        SourceCategory::LocalKnowledge,
+        SourceScope::Global,
+        1,
+        0,
+        false,
+        &[],
+    );
+    let mut web = adaptive_source("web", 20, 1, 1.0, 1.0);
+    web.reliability.success_rate = 1.0;
+    web.reliability.metadata_trust = 1.0;
+    let mut ctx = context(SearchMode::Hybrid, FederationStrategy::Auto, &["answer"]);
+    ctx.selection = searchos_federated::SelectionMode::CostAdaptive;
+
+    let plan = FederatedPlanner::plan(&ctx, &[web, local]);
+    assert_eq!(
+        plan.selected_source_ids()[0],
+        "local",
+        "locality is the primary key; a paid source cannot outrank a free local one"
     );
 }

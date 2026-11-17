@@ -467,6 +467,26 @@ The SearchOS implementation (`~/git_repo/searchos`) is verified by these command
   real foreign-session incidents. No Rust code changed in this pass, so the
   cargo gates were not re-run (the 805-test result still stands).
 
+- **RFC-080 cost-adaptive source selection (2026-11-16):** `SelectionMode`
+  (`reliability_first` default | `cost_adaptive`) in
+  `searchos_federated::planner`; `PlanningContext.selection` (serde default),
+  `FederatedSearchPlan.selection` + `selection_scores`; quality =
+  `success_rate * (0.5 + 0.5 * metadata_trust)`, density = quality per
+  1M micros (free sources = f64::MAX). The value-density key is applied AFTER
+  locality and requirement authority, so required-authoritative sources are
+  never traded for a cheaper one. Config `federation.selection` (validated,
+  in ALL/CONSUMED field lists) → runtime → `SearchDependencies.federation_selection`
+  → `SearchDependencies::selection_mode()` → both planning contexts →
+  `SearchPlanReport.source_selection` + `source_scores`; `/system/status`
+  exposes it. Gates: 4 kernel gates in
+  `crates/searchos-federated/tests/federated_invariants.rs` +
+  `tests/integration/tests/cost_adaptive_routing.rs` (3 gates).
+  Gotchas: a source needs `capabilities.lexical_search|semantic_search|
+  exact_lookup` or it is rejected as `Capability`; a billable generic source
+  needs an OPEN requirement or it is refused as a re-purchase (INV-30-04) —
+  use a comparison query so the analysis derives one; `FederatedSearchPlan`
+  can no longer derive `Eq` (the score carries floats).
+
 **Known environment notes:**
 - LanceDB requires `protoc` at build time (`brew install protobuf`).
 - Live network tests (fetch of https://example.com) tolerate sandbox timeouts by design.

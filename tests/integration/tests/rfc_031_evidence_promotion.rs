@@ -810,6 +810,7 @@ mod pipeline {
                 federation_registry: None,
                 federation_strategy: "legacy".into(),
                 federation_limits: searchos_domain::FederationLimits::default(),
+                federation_selection: "reliability_first".into(),
             });
             Self {
                 runtime,

@@ -2022,6 +2022,8 @@ async fn system_status(
             "strategy": state.runtime.config.federation.strategy,
             "max_sources": state.runtime.config.federation.max_sources,
             "max_parallel_sources": state.runtime.config.federation.max_parallel_sources,
+            // RFC-080: the source ordering policy in force.
+            "selection": state.runtime.config.federation.selection,
             "sources": state.runtime.federation_registry.list(
                 &searchos_federated::SourceFilter { enabled_only: true, ..Default::default() },
                 &searchos_domain::ids::WorkspaceId::new("default"),

@@ -101,6 +101,13 @@ indexes:
   rebuild_on_start: false
   verify_on_start: true
 
+federation:                  # RFC-062 / RFC-080
+  strategy: legacy           # legacy | plan_only | execute
+  selection: reliability_first   # reliability_first | cost_adaptive
+  max_sources: 8
+  max_parallel_sources: 8
+  source_timeout_ms: 5000
+
 policies:
   default_profile: general
   minimum_quality: 0.6

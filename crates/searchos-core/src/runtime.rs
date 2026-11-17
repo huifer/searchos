@@ -875,6 +875,9 @@ impl SearchOsRuntime {
                 max_parallel_sources: config.federation.max_parallel_sources,
                 source_timeout_ms: config.federation.source_timeout_ms,
             },
+            // RFC-080: cost-adaptive source ordering is opt-in and lives in
+            // the config, so the plan is auditable from the config file.
+            federation_selection: config.federation.selection.clone(),
         });
 
         let search_deps = Arc::clone(&deps);

@@ -221,6 +221,7 @@ fn plan_for(
             max_latency_ms: 30_000,
             stop_when_covered: false,
             generic_sources_can_answer: false,
+            selection: searchos_federated::SelectionMode::default(),
         },
         &[],
     );
