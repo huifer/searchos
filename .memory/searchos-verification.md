@@ -504,6 +504,22 @@ The SearchOS implementation (`~/git_repo/searchos`) is verified by these command
   `futures::executor::block_on`). Gates: 4 application unit tests + 5
   integration gates in `tests/integration/tests/search_watch.rs`.
 
+- **RFC-033 online feedback (2026-11-16):** `searchos-application/src/feedback.rs`
+  has `FeedbackVerdict` (canonical=3/helpful=2/related=1/irrelevant|wrong=0),
+  append-only `FeedbackEvent`/`FeedbackStore` port, pure
+  `aggregate_feedback(events, workspace, min_agreement)` and
+  `FeedbackQrels::dataset()`. Migration v17 `search_feedback`; core
+  `SqliteFeedbackStore`; `application.feedback_service`. Config-free.
+  CLI `feedback add|list|qrels|dataset`; HTTP `/feedback*`
+  (POST/GET, `/qrels`, `/dataset` NDJSON); OpenAPI FeedbackEvent/FeedbackQrels;
+  both SDKs updated. Gotchas: contradiction is a `Disputed` exclusion, a TIE
+  at the top verdict is `InsufficientAgreement` (never silently pick by
+  grade); query is normalized (trim/lower/collapse whitespace) and URL goes
+  through `crate::merge::canonical_url`; `EvaluationDataset::load_jsonl`
+  derives dataset_id from the FILE NAME, not a field in the JSONL, so don't
+  assert equality after a round-trip. Gates: 7 application unit tests + 4
+  integration gates in `tests/integration/tests/online_feedback.rs`.
+
 **Known environment notes:**
 - LanceDB requires `protoc` at build time (`brew install protobuf`).
 - Live network tests (fetch of https://example.com) tolerate sandbox timeouts by design.

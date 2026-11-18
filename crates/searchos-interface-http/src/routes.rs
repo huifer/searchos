@@ -461,6 +461,11 @@ pub fn api_route_table() -> Vec<RouteSpec> {
         RouteSpec::new("GET", "/system/status", get(system_status)),
         // RFC-063: the federated source catalog (read-only observability).
         RouteSpec::new("GET", "/sources", get(list_sources)),
+        // RFC-033: human feedback -> graded qrels -> evaluation dataset.
+        RouteSpec::new("POST", "/feedback", post(submit_feedback)),
+        RouteSpec::new("GET", "/feedback", get(list_feedback)),
+        RouteSpec::new("GET", "/feedback/qrels", get(feedback_qrels)),
+        RouteSpec::new("GET", "/feedback/dataset", get(feedback_dataset)),
         // RFC-035: deterministic quality watchdog (run + append-only history).
         RouteSpec::new("POST", "/watch/run", post(watch_run)),
         RouteSpec::new("GET", "/watch/snapshots", get(watch_snapshots)),
@@ -1988,6 +1993,136 @@ async fn list_traces(
 
 /// `GET /system/status` — one aggregated read-only view for the console
 /// (equivalent to `searchos doctor`, RFC-019 19.5).
+fn feedback_service(
+    state: &AppState,
+) -> Result<Arc<searchos_application::feedback::FeedbackService>, ApiError> {
+    state
+        .runtime
+        .application
+        .feedback_service
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "feedback service is not wired",
+            )
+        })
+}
+
+async fn submit_feedback(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    state.authorize(&headers)?;
+    let verdict = body
+        .get("verdict")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            ApiError::new(StatusCode::BAD_REQUEST, "validation", "verdict is required")
+        })?;
+    let verdict = searchos_application::feedback::FeedbackVerdict::parse(verdict)
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, "validation", e))?;
+    let get = |key: &str| {
+        body.get(key)
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
+    let input = searchos_application::feedback::NewFeedback {
+        workspace_id: get("workspace_id"),
+        task_id: body
+            .get("task_id")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        query: get("query"),
+        url: get("url"),
+        verdict,
+        note: body
+            .get("note")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+    };
+    let event = feedback_service(&state)?
+        .submit(input)
+        .await
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, "validation", e.to_string()))?;
+    Ok(Json(serde_json::to_value(event).unwrap_or_default()))
+}
+
+async fn list_feedback(
+    State(state): State<AppState>,
+    Query(query): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    state.authorize(&headers)?;
+    let workspace_id = query
+        .get("workspace_id")
+        .cloned()
+        .unwrap_or_else(|| "default".into());
+    let limit = query
+        .get("limit")
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(50);
+    let events = feedback_service(&state)?
+        .list(&workspace_id, limit)
+        .await
+        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()))?;
+    Ok(Json(serde_json::json!({ "feedback": events })))
+}
+
+fn feedback_query(query: &HashMap<String, String>) -> (String, usize) {
+    (
+        query
+            .get("workspace_id")
+            .cloned()
+            .unwrap_or_else(|| "default".into()),
+        query
+            .get("min_agreement")
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(2),
+    )
+}
+
+async fn feedback_qrels(
+    State(state): State<AppState>,
+    Query(query): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    state.authorize(&headers)?;
+    let (workspace, min_agreement) = feedback_query(&query);
+    let qrels = feedback_service(&state)?
+        .qrels(&workspace, min_agreement)
+        .await
+        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()))?;
+    Ok(Json(serde_json::to_value(qrels).unwrap_or_default()))
+}
+
+async fn feedback_dataset(
+    State(state): State<AppState>,
+    Query(query): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, ApiError> {
+    state.authorize(&headers)?;
+    let (workspace, min_agreement) = feedback_query(&query);
+    let dataset = feedback_service(&state)?
+        .dataset(&workspace, min_agreement)
+        .await
+        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()))?;
+    let mut jsonl = String::new();
+    for q in &dataset.questions {
+        jsonl.push_str(&serde_json::to_string(q).unwrap_or_default());
+        jsonl.push('\n');
+    }
+    Ok((
+        StatusCode::OK,
+        [("content-type", "application/x-ndjson")],
+        jsonl,
+    ))
+}
+
 async fn watch_run(
     State(state): State<AppState>,
     headers: HeaderMap,

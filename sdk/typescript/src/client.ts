@@ -681,6 +681,41 @@ export class SearchOSClient {
     return this.get(`/trace/${encodeURIComponent(traceId)}`) as Promise<DecisionTrace>;
   }
 
+  // -- Online feedback (RFC-033) --------------------------------------------
+
+  submitFeedback(input: {
+    workspace_id: string;
+    query: string;
+    url: string;
+    verdict: "canonical" | "helpful" | "related" | "irrelevant" | "wrong";
+    task_id?: string;
+    note?: string;
+  }): Promise<Record<string, unknown>> {
+    return this.post("/feedback", input);
+  }
+
+  listFeedback(workspaceId = "default", limit = 50): Promise<{ feedback: Record<string, unknown>[] }> {
+    return this.get("/feedback", { workspace_id: workspaceId, limit }) as Promise<{
+      feedback: Record<string, unknown>[];
+    }>;
+  }
+
+  feedbackQrels(workspaceId = "default", minAgreement = 2): Promise<Record<string, unknown>> {
+    return this.get("/feedback/qrels", {
+      workspace_id: workspaceId,
+      min_agreement: minAgreement,
+    });
+  }
+
+  /** Graded evaluation dataset as JSONL (one question per line). */
+  feedbackDataset(workspaceId = "default", minAgreement = 2): Promise<string> {
+    return this.get(
+      "/feedback/dataset",
+      { workspace_id: workspaceId, min_agreement: minAgreement },
+      "text",
+    ) as Promise<string>;
+  }
+
   // -- Search Watch (RFC-035) -----------------------------------------------
 
   /** Run every applicable check and append one snapshot. */

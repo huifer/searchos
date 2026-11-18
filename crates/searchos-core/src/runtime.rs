@@ -63,6 +63,61 @@ impl searchos_application::validity::EvidenceValidityPort for SqliteEvidenceVali
     }
 }
 
+/// RFC-033: the SQLite projection of append-only human feedback.
+struct SqliteFeedbackStore {
+    store: Arc<SqliteStore>,
+}
+
+#[async_trait::async_trait]
+impl searchos_application::feedback::FeedbackStore for SqliteFeedbackStore {
+    async fn append(
+        &self,
+        event: &searchos_application::feedback::FeedbackEvent,
+    ) -> Result<(), String> {
+        repos::FeedbackRepo::new(&self.store)
+            .append(
+                &event.id,
+                &event.created_at.to_rfc3339(),
+                &event.workspace_id,
+                event.task_id.as_deref(),
+                &event.query,
+                &event.url,
+                event.verdict.as_str(),
+                event.note.as_deref(),
+            )
+            .map_err(|e| e.to_string())
+    }
+
+    async fn list(
+        &self,
+        workspace_id: &str,
+        limit: u32,
+    ) -> Result<Vec<searchos_application::feedback::FeedbackEvent>, String> {
+        let rows = repos::FeedbackRepo::new(&self.store)
+            .list(workspace_id, limit)
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::with_capacity(rows.len());
+        for (id, created_at, ws, task_id, query, url, verdict, note) in rows {
+            let created_at = created_at
+                .parse::<chrono::DateTime<chrono::Utc>>()
+                .map_err(|e| format!("corrupt feedback timestamp {id}: {e}"))?;
+            let verdict = searchos_application::feedback::FeedbackVerdict::parse(&verdict)
+                .map_err(|e| format!("corrupt feedback verdict in {id}: {e}"))?;
+            out.push(searchos_application::feedback::FeedbackEvent {
+                id,
+                created_at,
+                workspace_id: ws,
+                task_id,
+                query,
+                url,
+                verdict,
+                note,
+            });
+        }
+        Ok(out)
+    }
+}
+
 /// RFC-035: the SQLite projection of the append-only watch snapshot log.
 struct SqliteWatchStore {
     store: Arc<SqliteStore>,
@@ -1086,6 +1141,12 @@ impl SearchOsRuntime {
             config.watch.dataset(),
         ));
 
+        let feedback_service = Arc::new(searchos_application::feedback::FeedbackService::new(
+            Arc::new(SqliteFeedbackStore {
+                store: Arc::clone(&sqlite),
+            }) as Arc<dyn searchos_application::feedback::FeedbackStore>,
+        ));
+
         let application = Arc::new(SearchOsApplication {
             search_service,
             fetch_service,
@@ -1094,6 +1155,7 @@ impl SearchOsRuntime {
             cost_service,
             analytics_service,
             watch_service: Some(watch_service),
+            feedback_service: Some(feedback_service),
         });
 
         let runtime = Arc::new(Self {

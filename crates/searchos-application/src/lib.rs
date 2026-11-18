@@ -11,6 +11,7 @@
 
 pub mod analytics;
 pub mod entity;
+pub mod feedback;
 pub mod fetch_service;
 pub mod ingest_service;
 pub mod memory_source;
@@ -60,6 +61,8 @@ pub struct SearchOsApplication {
     pub analytics_service: Arc<dyn analytics::AnalyticsQueryService>,
     /// RFC-035: deterministic quality watchdog over the Read Model.
     pub watch_service: Option<Arc<watch::WatchService>>,
+    /// RFC-033: human-feedback → qrels learning loop.
+    pub feedback_service: Option<Arc<feedback::FeedbackService>>,
 }
 
 /// Memory use case (thin facade over MemoryService with namespace guard).

@@ -223,6 +223,11 @@ enum Command {
         #[command(subcommand)]
         cmd: WatchCmd,
     },
+    /// Human feedback → graded qrels → evaluation dataset (RFC-033)
+    Feedback {
+        #[command(subcommand)]
+        cmd: FeedbackCmd,
+    },
     /// Cost ledger operations
     Cost {
         #[command(subcommand)]
@@ -511,6 +516,61 @@ enum StatsCmd {
 enum ConfigCmd {
     /// Validate the effective configuration (exit 2 on errors)
     Validate,
+}
+
+#[derive(Subcommand)]
+enum FeedbackCmd {
+    /// Record an append-only judgement on one retrieved result
+    Add {
+        /// The query that produced the result
+        #[arg(long)]
+        query: String,
+        /// Result URL / canonical reference
+        #[arg(long)]
+        url: String,
+        /// Human verdict
+        #[arg(long)]
+        verdict: String,
+        /// Workspace scope
+        #[arg(long, default_value = "default")]
+        workspace: String,
+        /// Search task id, when known
+        #[arg(long)]
+        task: Option<String>,
+        /// Optional local note (never sent to a provider)
+        #[arg(long)]
+        note: Option<String>,
+    },
+    /// List recorded judgements, newest first
+    List {
+        /// Workspace scope
+        #[arg(long, default_value = "default")]
+        workspace: String,
+        /// Maximum rows
+        #[arg(long, default_value_t = 50)]
+        limit: u32,
+    },
+    /// Aggregate accepted qrels (disputed pairs are excluded)
+    Qrels {
+        /// Workspace scope
+        #[arg(long, default_value = "default")]
+        workspace: String,
+        /// Votes a verdict needs to become a qrel
+        #[arg(long, default_value_t = 2)]
+        min_agreement: usize,
+    },
+    /// Export a graded evaluation dataset (JSONL) from accepted feedback
+    Dataset {
+        /// Workspace scope
+        #[arg(long, default_value = "default")]
+        workspace: String,
+        /// Votes a verdict needs to become a qrel
+        #[arg(long, default_value_t = 2)]
+        min_agreement: usize,
+        /// Write JSONL to this file (default: stdout)
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1564,6 +1624,94 @@ async fn run(cli: Cli) -> Result<(), SearchOsError> {
                 None => println!("{json}"),
             }
             Ok(())
+        }
+        Command::Feedback { cmd } => {
+            let cli_ref = &cli;
+            let rt = runtime(cli_ref).await?;
+            let feedback = rt.application.feedback_service.as_ref().ok_or_else(|| {
+                SearchOsError::Internal("feedback service is not wired".to_string())
+            })?;
+            match cmd {
+                FeedbackCmd::Add {
+                    query,
+                    url,
+                    verdict,
+                    workspace,
+                    task,
+                    note,
+                } => {
+                    let verdict = searchos_application::feedback::FeedbackVerdict::parse(verdict)
+                        .map_err(|e| SearchOsError::validation("verdict", e))?;
+                    let event = feedback
+                        .submit(searchos_application::feedback::NewFeedback {
+                            workspace_id: workspace.clone(),
+                            task_id: task.clone(),
+                            query: query.clone(),
+                            url: url.clone(),
+                            verdict,
+                            note: note.clone(),
+                        })
+                        .await?;
+                    print(
+                        &serde_json::to_value(event)
+                            .map_err(|e| SearchOsError::Internal(e.to_string()))?,
+                        format,
+                    );
+                    Ok(())
+                }
+                FeedbackCmd::List { workspace, limit } => {
+                    let events = feedback.list(workspace, *limit).await?;
+                    print(
+                        &serde_json::to_value(events)
+                            .map_err(|e| SearchOsError::Internal(e.to_string()))?,
+                        format,
+                    );
+                    Ok(())
+                }
+                FeedbackCmd::Qrels {
+                    workspace,
+                    min_agreement,
+                } => {
+                    let qrels = feedback.qrels(workspace, *min_agreement).await?;
+                    print(
+                        &serde_json::to_value(qrels)
+                            .map_err(|e| SearchOsError::Internal(e.to_string()))?,
+                        format,
+                    );
+                    Ok(())
+                }
+                FeedbackCmd::Dataset {
+                    workspace,
+                    min_agreement,
+                    out,
+                } => {
+                    let dataset = feedback.dataset(workspace, *min_agreement).await?;
+                    let mut jsonl = String::new();
+                    for question in &dataset.questions {
+                        jsonl.push_str(
+                            &serde_json::to_string(question)
+                                .map_err(|e| SearchOsError::Internal(e.to_string()))?,
+                        );
+                        jsonl.push('\n');
+                    }
+                    match out {
+                        Some(path) => {
+                            std::fs::write(path, jsonl)
+                                .map_err(|e| SearchOsError::Storage(e.to_string()))?;
+                            print(
+                                &serde_json::json!({
+                                    "dataset_id": dataset.dataset_id,
+                                    "questions": dataset.questions.len(),
+                                    "path": path.display().to_string(),
+                                }),
+                                format,
+                            );
+                        }
+                        None => println!("{jsonl}"),
+                    }
+                    Ok(())
+                }
+            }
         }
         Command::Watch { cmd } => {
             let cli_ref = &cli;

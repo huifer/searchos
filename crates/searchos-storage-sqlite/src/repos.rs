@@ -5744,3 +5744,87 @@ impl<'a> WatchRepo<'a> {
         })
     }
 }
+
+/// RFC-033: append-only human feedback on retrieved results.
+pub type FeedbackRow = (
+    String,
+    String,
+    String,
+    Option<String>,
+    String,
+    String,
+    String,
+    Option<String>,
+);
+
+pub struct FeedbackRepo<'a> {
+    pub store: &'a SqliteStore,
+}
+
+impl<'a> FeedbackRepo<'a> {
+    pub fn new(store: &'a SqliteStore) -> Self {
+        Self { store }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn append(
+        &self,
+        id: &str,
+        created_at: &str,
+        workspace_id: &str,
+        task_id: Option<&str>,
+        query: &str,
+        url: &str,
+        verdict: &str,
+        note: Option<&str>,
+    ) -> Result<(), SearchOsError> {
+        self.store.with_conn(|c| {
+            c.execute(
+                "INSERT OR IGNORE INTO search_feedback
+                 (id, created_at, workspace_id, task_id, query, url, verdict, note)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                rusqlite::params![
+                    id,
+                    created_at,
+                    workspace_id,
+                    task_id,
+                    query,
+                    url,
+                    verdict,
+                    note
+                ],
+            )
+            .map_err(e)?;
+            Ok(())
+        })
+    }
+
+    /// Returns `(id, created_at, workspace_id, task_id, query, url, verdict, note)`.
+    pub fn list(&self, workspace_id: &str, limit: u32) -> Result<Vec<FeedbackRow>, SearchOsError> {
+        let limit = limit.clamp(1, 10_000) as i64;
+        self.store.with_conn(|c| {
+            let mut stmt = c
+                .prepare(
+                    "SELECT id, created_at, workspace_id, task_id, query, url, verdict, note
+                     FROM search_feedback WHERE workspace_id = ?1
+                     ORDER BY created_at DESC, id DESC LIMIT ?2",
+                )
+                .map_err(e)?;
+            let rows = stmt
+                .query_map(rusqlite::params![workspace_id, limit], |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                        r.get(6)?,
+                        r.get(7)?,
+                    ))
+                })
+                .map_err(e)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(e)
+        })
+    }
+}

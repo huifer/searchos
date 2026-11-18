@@ -1098,6 +1098,92 @@ paths:
               schema: { $ref: '#/components/schemas/SourceCatalog' }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
+  /feedback:
+    post:
+      tags: [Search]
+      summary: Record append-only human feedback on a result (RFC-033)
+      description: >-
+        A judgement is a human observation, never edited. The verdict maps to
+        a fixed graded relevance value (canonical=3, helpful=2, related=1,
+        irrelevant/wrong=0). Notes stay local and are never sent to a provider.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [workspace_id, query, url, verdict]
+              properties:
+                workspace_id: { type: string }
+                task_id: { type: string, nullable: true }
+                query: { type: string }
+                url: { type: string }
+                verdict:
+                  type: string
+                  enum: [canonical, helpful, related, irrelevant, wrong]
+                note: { type: string, nullable: true }
+      responses:
+        '200':
+          description: The recorded feedback event.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FeedbackEvent' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    get:
+      tags: [Search]
+      summary: List feedback events, newest first (RFC-033)
+      parameters:
+        - { name: workspace_id, in: query, schema: { type: string, default: default } }
+        - { name: limit, in: query, schema: { type: integer, default: 50 } }
+      responses:
+        '200':
+          description: Feedback audit trail.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  feedback:
+                    type: array
+                    items: { $ref: '#/components/schemas/FeedbackEvent' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /feedback/qrels:
+    get:
+      tags: [Search]
+      summary: Aggregate accepted qrels, with excluded pairs for audit (RFC-033)
+      description: >-
+        A pair is accepted only when a verdict reaches `min_agreement` votes
+        without a tie. Contradictory judgements (grade spread >= 2) are
+        DISPUTED and excluded — never averaged into a fabricated label.
+      parameters:
+        - { name: workspace_id, in: query, schema: { type: string, default: default } }
+        - { name: min_agreement, in: query, schema: { type: integer, default: 2, minimum: 1 } }
+      responses:
+        '200':
+          description: Accepted qrels and exclusions.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FeedbackQrels' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /feedback/dataset:
+    get:
+      tags: [Search]
+      summary: Export a graded evaluation dataset as JSONL (RFC-033)
+      description: >-
+        Feed the result to `searchos eval run --dataset` or `watch.dataset_path`
+        to close the loop: human judgement → qrels → measured quality.
+      parameters:
+        - { name: workspace_id, in: query, schema: { type: string, default: default } }
+        - { name: min_agreement, in: query, schema: { type: integer, default: 2, minimum: 1 } }
+      responses:
+        '200':
+          description: One eval question per line.
+          content:
+            application/x-ndjson:
+              schema: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
   /watch/run:
     post:
       tags: [Search]
@@ -1691,6 +1777,46 @@ components:
             not, so the ordering decision can be reviewed after the fact.
 
         currency: { type: string }
+    FeedbackEvent:
+      type: object
+      required: [id, created_at, workspace_id, query, url, verdict]
+      properties:
+        id: { type: string }
+        created_at: { type: string, format: date-time }
+        workspace_id: { type: string }
+        task_id: { type: string, nullable: true }
+        query: { type: string }
+        url: { type: string }
+        verdict:
+          type: string
+          enum: [canonical, helpful, related, irrelevant, wrong]
+        note: { type: string, nullable: true }
+    FeedbackQrels:
+      type: object
+      required: [workspace_id, min_agreement, accepted, excluded]
+      properties:
+        workspace_id: { type: string }
+        min_agreement: { type: integer }
+        accepted:
+          type: array
+          items:
+            type: object
+            properties:
+              query: { type: string }
+              url: { type: string }
+              grade: { type: integer, minimum: 0, maximum: 3 }
+              agreement: { type: integer }
+        excluded:
+          type: array
+          items:
+            type: object
+            properties:
+              query: { type: string }
+              url: { type: string }
+              reason: { type: string, enum: [disputed, insufficient_agreement] }
+              grades:
+                type: array
+                items: { type: integer }
     WatchReport:
       type: object
       description: >-

@@ -274,6 +274,46 @@ class SearchOSClient:
         """Raw recorded decision trace at the canonical path."""
         return self._get(f"/trace/{trace_id}")
 
+    # -- Online feedback (RFC-033) --------------------------------------------
+
+    def submit_feedback(
+        self,
+        *,
+        query: str,
+        url: str,
+        verdict: Literal["canonical", "helpful", "related", "irrelevant", "wrong"],
+        workspace_id: str = "default",
+        task_id: str | None = None,
+        note: str | None = None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "workspace_id": workspace_id,
+            "query": query,
+            "url": url,
+            "verdict": verdict,
+        }
+        if task_id:
+            body["task_id"] = task_id
+        if note:
+            body["note"] = note
+        return self._post("/feedback", body)
+
+    def list_feedback(self, workspace_id: str = "default", limit: int = 50) -> list[dict[str, Any]]:
+        return self._get("/feedback", {"workspace_id": workspace_id, "limit": limit}).get("feedback", [])
+
+    def feedback_qrels(self, workspace_id: str = "default", min_agreement: int = 2) -> dict[str, Any]:
+        return self._get(
+            "/feedback/qrels",
+            {"workspace_id": workspace_id, "min_agreement": min_agreement},
+        )
+
+    def feedback_dataset(self, workspace_id: str = "default", min_agreement: int = 2) -> str:
+        return self._request(
+            "GET",
+            f"/feedback/dataset?workspace_id={workspace_id}&min_agreement={min_agreement}",
+            parse="text",
+        )
+
     # -- Search Watch (RFC-035) -----------------------------------------------
 
     def watch_run(self) -> dict[str, Any]:

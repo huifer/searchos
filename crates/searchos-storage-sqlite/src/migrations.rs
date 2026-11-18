@@ -868,6 +868,27 @@ CREATE INDEX IF NOT EXISTS idx_watch_snapshots_ws
     ON watch_snapshots(workspace_id, created_at DESC);
 "#,
     },
+    // v17 - RFC-033 online feedback. Append-only human judgements; an
+    // edited verdict is a NEW row, never a rewrite of someone's observation.
+    Migration {
+        version: 17,
+        name: "search_feedback",
+        sql: r#"
+CREATE TABLE IF NOT EXISTS search_feedback (
+    id TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    task_id TEXT,
+    query TEXT NOT NULL,
+    url TEXT NOT NULL,
+    verdict TEXT NOT NULL,
+    note TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_feedback_workspace
+    ON search_feedback(workspace_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_feedback_task ON search_feedback(task_id);
+"#,
+    },
 ];
 
 /// Applies pending migrations to a connection. Each version is atomic: SQL

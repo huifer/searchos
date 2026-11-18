@@ -27,6 +27,15 @@ multi-arch images, and attaches the matching section of this file.
 
 ### Added
 
+- **Online feedback → graded qrels → evaluation dataset (RFC-033).** Humans
+  can judge a retrieved result (`canonical`=3, `helpful`=2, `related`=1,
+  `irrelevant`/`wrong`=0); every judgement is an append-only, workspace-scoped
+  row. `GET /feedback/qrels` and `GET /feedback/dataset` turn them into a
+  graded `EvaluationDataset` JSONL that `searchos eval run` and
+  `watch.dataset_path` consume directly — closing the learning loop. A pair
+  only becomes a qrel with `min_agreement` votes and no tie; contradictory
+  judgements are `disputed` and excluded, never averaged into a fabricated
+  label. Migration v17, CLI `feedback add|list|qrels|dataset`, both SDKs.
 - **Search Watch (RFC-035).** A deterministic quality watchdog over the same
   Analytics Read Model the console reads. Optional thresholds for quality
   pass rate, failed-search ratio and pass-rate regression, plus an optional

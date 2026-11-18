@@ -5783,6 +5783,7 @@ dependencies = [
  "searchos-decision",
  "searchos-document",
  "searchos-domain",
+ "searchos-evaluation",
  "searchos-federated",
  "searchos-fetch",
  "searchos-index-tantivy",
