@@ -1,5 +1,6 @@
 //! Configuration (configs/searchos.example.yaml schema + env overrides).
 
+use searchos_domain::SearchOsError;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -77,6 +78,14 @@ pub struct WatchConfig {
     pub min_mrr: f64,
     pub min_ndcg: f64,
     pub min_recall: f64,
+    /// Statuses that trigger a notification (`regressed`, `degraded`, ...).
+    pub notify_on: Vec<String>,
+    /// Optional webhook URL. The payload is the report only — no document
+    /// bodies, queries or notes.
+    pub webhook_url: Option<String>,
+    /// Built-in scheduler interval in seconds. `0` disables it, which is the
+    /// default: an operator normally runs the watch from cron/CI.
+    pub schedule_interval_seconds: u64,
 }
 
 impl Default for WatchConfig {
@@ -92,6 +101,9 @@ impl Default for WatchConfig {
             min_mrr: 0.0,
             min_ndcg: 0.0,
             min_recall: 0.0,
+            notify_on: vec!["regressed".into(), "degraded".into()],
+            webhook_url: None,
+            schedule_interval_seconds: 0,
         }
     }
 }
@@ -104,6 +116,12 @@ impl WatchConfig {
             max_quality_pass_rate_drop: self.max_quality_pass_rate_drop,
             min_sample: self.min_sample,
         }
+    }
+
+    pub fn notify_policy(
+        &self,
+    ) -> Result<searchos_application::watch::NotifyPolicy, SearchOsError> {
+        searchos_application::watch::NotifyPolicy::parse_statuses(&self.notify_on)
     }
 
     pub fn dataset(&self) -> Option<searchos_application::watch::WatchDataset> {
@@ -908,6 +926,9 @@ pub const ALL_CONFIG_FIELDS: &[&str] = &[
     "watch.min_mrr",
     "watch.min_ndcg",
     "watch.min_recall",
+    "watch.notify_on",
+    "watch.webhook_url",
+    "watch.schedule_interval_seconds",
     "intelligence.query_expansion",
     "intelligence.query_expansion_mode",
     "intelligence.reranking",
@@ -1037,6 +1058,9 @@ pub const CONSUMED_CONFIG_FIELDS: &[&str] = &[
     "watch.min_mrr",
     "watch.min_ndcg",
     "watch.min_recall",
+    "watch.notify_on",
+    "watch.webhook_url",
+    "watch.schedule_interval_seconds",
     "intelligence.query_expansion",
     "intelligence.query_expansion_mode",
     "intelligence.reranking",
@@ -1146,6 +1170,14 @@ impl SearchOsConfig {
         }
         if self.quality_learning.min_relevance_grade > 3 {
             errors.push("quality_learning.min_relevance_grade must be 0..=3".into());
+        }
+        if let Err(err) = self.watch.notify_policy() {
+            errors.push(err.to_string());
+        }
+        if let Some(url) = self.watch.webhook_url.as_ref() {
+            if !(url.starts_with("http://") || url.starts_with("https://")) {
+                errors.push("watch.webhook_url must be an http(s) URL".into());
+            }
         }
         if let Err(err) = self.watch.thresholds().validate() {
             errors.push(err.to_string());

@@ -5561,6 +5561,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "hex",
+ "reqwest 0.12.28",
  "rusqlite",
  "searchos-application",
  "searchos-cache",

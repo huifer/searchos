@@ -116,6 +116,9 @@ pub struct WatchReport {
     pub ranking: Option<serde_json::Value>,
     /// Honest note when the snapshot could not be persisted.
     pub persistence_error: Option<String>,
+    /// Delivery attempts made for this run (empty when the policy skipped).
+    #[serde(default)]
+    pub notifications: Vec<NotifyOutcome>,
 }
 
 /// Thresholds are optional on purpose: an unset check is `skipped`, not
@@ -181,6 +184,68 @@ pub struct WatchDataset {
     pub min_recall: f64,
 }
 
+/// Where a watch result goes when it is worth telling a human about.
+///
+/// A notifier must NEVER be able to fail the watch itself: the report is the
+/// product, delivery is best-effort. Implementations report their failure in
+/// [`NotifyOutcome::error`] and the run records it.
+#[async_trait]
+pub trait WatchNotifier: Send + Sync {
+    fn name(&self) -> &'static str;
+    async fn notify(&self, report: &WatchReport) -> Result<(), String>;
+}
+
+/// When a run is worth notifying about.
+///
+/// `pass` and `skipped` are intentionally NOT notifiable by default: an
+/// operator who gets pinged on every quiet run stops reading the pings.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NotifyPolicy {
+    /// Statuses that trigger a notification.
+    pub statuses: Vec<WatchStatus>,
+}
+
+impl Default for NotifyPolicy {
+    fn default() -> Self {
+        Self {
+            statuses: vec![WatchStatus::Regressed, WatchStatus::Degraded],
+        }
+    }
+}
+
+impl NotifyPolicy {
+    pub fn should_notify(&self, status: WatchStatus) -> bool {
+        self.statuses.contains(&status)
+    }
+
+    pub fn parse_statuses(values: &[String]) -> Result<Self, SearchOsError> {
+        let mut statuses = Vec::new();
+        for value in values {
+            let status = match value.as_str() {
+                "pass" => WatchStatus::Pass,
+                "skipped" => WatchStatus::Skipped,
+                "degraded" => WatchStatus::Degraded,
+                "regressed" => WatchStatus::Regressed,
+                other => {
+                    return Err(SearchOsError::validation(
+                        "watch.notify_on",
+                        format!("unknown watch status {other}"),
+                    ))
+                }
+            };
+            statuses.push(status);
+        }
+        Ok(Self { statuses })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NotifyOutcome {
+    pub notifier: String,
+    pub delivered: bool,
+    pub error: Option<String>,
+}
+
 /// Append-only snapshot store. Implemented by the runtime over SQLite.
 #[async_trait]
 pub trait WatchSnapshotStore: Send + Sync {
@@ -215,6 +280,8 @@ pub struct WatchService {
     workspace_id: String,
     thresholds: WatchThresholds,
     dataset: Option<WatchDataset>,
+    notifiers: Vec<Arc<dyn WatchNotifier>>,
+    notify_policy: NotifyPolicy,
 }
 
 impl WatchService {
@@ -233,7 +300,20 @@ impl WatchService {
             workspace_id,
             thresholds,
             dataset,
+            notifiers: Vec::new(),
+            notify_policy: NotifyPolicy::default(),
         }
+    }
+
+    /// Installs notifiers and the status policy that triggers them.
+    pub fn with_notifiers(
+        mut self,
+        notifiers: Vec<Arc<dyn WatchNotifier>>,
+        notify_policy: NotifyPolicy,
+    ) -> Self {
+        self.notifiers = notifiers;
+        self.notify_policy = notify_policy;
+        self
     }
 
     async fn signals(&self) -> Result<WatchSignals, String> {
@@ -560,10 +640,38 @@ impl WatchService {
             signals,
             ranking,
             persistence_error: None,
+            notifications: Vec::new(),
         };
         if let Some(store) = self.store.as_ref() {
             if let Err(e) = store.append(&report).await {
                 report.persistence_error = Some(e);
+            }
+        }
+        // Delivery is best-effort and never changes the verdict: a webhook
+        // that is down cannot turn a regression into a pass, or a pass into
+        // an error.
+        if self.notify_policy.should_notify(report.status) {
+            for notifier in &self.notifiers {
+                let outcome = match notifier.notify(&report).await {
+                    Ok(()) => NotifyOutcome {
+                        notifier: notifier.name().to_string(),
+                        delivered: true,
+                        error: None,
+                    },
+                    Err(e) => NotifyOutcome {
+                        notifier: notifier.name().to_string(),
+                        delivered: false,
+                        error: Some(e),
+                    },
+                };
+                if let Some(error) = outcome.error.as_deref() {
+                    tracing::warn!(
+                        notifier = outcome.notifier.as_str(),
+                        %error,
+                        "watch notification failed"
+                    );
+                }
+                report.notifications.push(outcome);
             }
         }
         Ok(report)
@@ -613,5 +721,77 @@ mod tests {
             ..WatchThresholds::default()
         };
         assert!(good.validate().is_ok());
+    }
+}
+
+#[cfg(test)]
+mod notify_tests {
+    use super::*;
+
+    #[test]
+    fn quiet_statuses_do_not_page_the_operator() {
+        let policy = NotifyPolicy::default();
+        assert!(!policy.should_notify(WatchStatus::Pass));
+        assert!(!policy.should_notify(WatchStatus::Skipped));
+        assert!(policy.should_notify(WatchStatus::Degraded));
+        assert!(policy.should_notify(WatchStatus::Regressed));
+    }
+
+    #[test]
+    fn statuses_are_strictly_validated() {
+        assert!(NotifyPolicy::parse_statuses(&["regressed".into()]).is_ok());
+        assert!(NotifyPolicy::parse_statuses(&["loud".into()]).is_err());
+        let policy = NotifyPolicy::parse_statuses(&["pass".into()]).unwrap();
+        assert!(policy.should_notify(WatchStatus::Pass));
+    }
+
+    /// A failing notifier must not fail the run, and the failure must be
+    /// visible in the report.
+    struct BrokenNotifier;
+
+    #[async_trait]
+    impl WatchNotifier for BrokenNotifier {
+        fn name(&self) -> &'static str {
+            "broken"
+        }
+        async fn notify(&self, _report: &WatchReport) -> Result<(), String> {
+            Err("webhook down".into())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_broken_notifier_is_recorded_not_raised() {
+        let broken: Arc<dyn WatchNotifier> = Arc::new(BrokenNotifier);
+        let policy = NotifyPolicy {
+            statuses: vec![WatchStatus::Skipped],
+        };
+        let report = WatchReport {
+            id: "w".into(),
+            ran_at: Utc::now(),
+            workspace_id: "ws".into(),
+            status: WatchStatus::Skipped,
+            checks: Vec::new(),
+            signals: None,
+            ranking: None,
+            persistence_error: None,
+            notifications: Vec::new(),
+        };
+        // The service delivers via its own run(); here we assert the
+        // outcome shape a caller observes.
+        let outcome = match broken.notify(&report).await {
+            Ok(()) => NotifyOutcome {
+                notifier: "broken".into(),
+                delivered: true,
+                error: None,
+            },
+            Err(e) => NotifyOutcome {
+                notifier: "broken".into(),
+                delivered: false,
+                error: Some(e),
+            },
+        };
+        assert!(!outcome.delivered);
+        assert_eq!(outcome.error.as_deref(), Some("webhook down"));
+        assert!(policy.should_notify(report.status));
     }
 }

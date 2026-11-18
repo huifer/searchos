@@ -27,6 +27,16 @@ multi-arch images, and attaches the matching section of this file.
 
 ### Added
 
+- **Watch dispatch: notifications + built-in schedule (RFC-035).** A watch
+  result that matters now reaches a human without a manual step:
+  `watch.notify_on` selects the statuses (default `regressed` + `degraded`,
+  so quiet runs never page), a log notifier is always installed, and an
+  optional webhook receives the REPORT ONLY — checks, signals and ranking,
+  never document bodies, queries or notes. `watch.schedule_interval_seconds`
+  runs the watch inside the gateway on a fixed interval and stops cleanly on
+  shutdown; `0` (the default) keeps it on cron/CI. A failing notifier is
+  recorded in the run, never raised, so a broken webhook cannot disguise a
+  regression as a pass (or the reverse).
 - **Result-level source-quality learning (RFC-080).** The cost-adaptive
   router no longer scores a source only by how reliably it answered: after
   each non-cached search it learns, per source, what fraction of that

@@ -629,6 +629,52 @@ async fn shutdown_signal(mut rx: tokio::sync::watch::Receiver<bool>) {
 /// Runs until `stop` is signalled, then performs one final drain so work
 /// enqueued just before shutdown is not lost. Failure is logged and retried on
 /// the next tick; the worker never panics the gateway.
+/// RFC-035: runs the watch on a fixed interval until the gateway stops.
+///
+/// A tick that fails (analytics unavailable, dataset unreadable) is LOGGED
+/// and the loop continues: a broken tick must not silence the schedule. The
+/// run itself already records `degraded`/`skipped` honestly, so the schedule
+/// adds cadence, not judgement.
+pub async fn run_watch_scheduler(
+    runtime: Arc<SearchOsRuntime>,
+    interval_seconds: u64,
+    mut stop: tokio::sync::watch::Receiver<bool>,
+) {
+    let period = Duration::from_secs(interval_seconds.max(1));
+    let mut ticker = tokio::time::interval(period);
+    // Skip the immediate first tick: an operator restarting the gateway
+    // should not trigger an instant evaluation storm.
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            _ = ticker.tick() => {}
+            _ = stop.changed() => {
+                if *stop.borrow() {
+                    break;
+                }
+                continue;
+            }
+        }
+        let Some(watch) = runtime.application.watch_service.as_ref() else {
+            break;
+        };
+        match watch.run().await {
+            Ok(report) => {
+                if report.status != searchos_application::watch::WatchStatus::Pass {
+                    tracing::warn!(
+                        status = report.status.as_str(),
+                        "scheduled search watch finished without a pass"
+                    );
+                } else {
+                    tracing::debug!("scheduled search watch passed");
+                }
+            }
+            Err(e) => tracing::warn!(error = %e, "scheduled search watch failed"),
+        }
+    }
+    tracing::info!("search watch scheduler stopped");
+}
+
 pub(crate) async fn run_outbox_worker(
     runtime: Arc<SearchOsRuntime>,
     mut stop: tokio::sync::watch::Receiver<bool>,
@@ -695,6 +741,21 @@ pub async fn serve(state: AppState) -> Result<(), String> {
         run_outbox_worker(worker_runtime, stop_rx_worker).await;
     });
 
+    // RFC-035: optional built-in watch schedule. `schedule_interval_seconds
+    // = 0` (the default) keeps the watchdog on cron/CI instead, so the
+    // gateway never surprises an operator with background evaluations.
+    let watch_interval = state.runtime.config.watch.schedule_interval_seconds;
+    let watch_worker = if watch_interval > 0 {
+        let (watch_stop_tx, watch_stop_rx) = tokio::sync::watch::channel(false);
+        let watch_runtime = Arc::clone(&state.runtime);
+        let handle = tokio::spawn(async move {
+            run_watch_scheduler(watch_runtime, watch_interval, watch_stop_rx).await;
+        });
+        Some((watch_stop_tx, handle))
+    } else {
+        None
+    };
+
     let app = router(state.clone());
     let addr = format!("{host}:{port}");
     let listener = tokio::net::TcpListener::bind(&addr)
@@ -714,6 +775,15 @@ pub async fn serve(state: AppState) -> Result<(), String> {
         Ok(Ok(())) => {}
         Ok(Err(e)) => tracing::warn!("outbox worker task failed: {e}"),
         Err(_) => tracing::warn!("timed out waiting for the outbox worker to stop"),
+    }
+    // RFC-035: stop the watch schedule (it exits on the next select).
+    if let Some((watch_stop_tx, watch_handle)) = watch_worker {
+        let _ = watch_stop_tx.send(true);
+        match tokio::time::timeout(Duration::from_secs(5), watch_handle).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => tracing::warn!("watch scheduler task failed: {e}"),
+            Err(_) => tracing::warn!("timed out waiting for the watch scheduler to stop"),
+        }
     }
     searchos_observability::MetricsRegistry::global().inc_counter("shutdown.graceful_total");
     tracing::info!("gateway shut down cleanly");

@@ -114,6 +114,9 @@ watch:                       # RFC-035: unset thresholds are skipped, not passed
   min_sample: 5                 # observations needed before a trend fires
   dataset_path: null            # optional labelled JSONL for ranking checks
   dataset_limit: 20
+  notify_on: [regressed, degraded]  # quiet runs never page
+  webhook_url: null             # report-only JSON; no document text or queries
+  schedule_interval_seconds: 0  # 0 = run from cron/CI instead
 
 federation:                  # RFC-062 / RFC-080
   strategy: legacy           # legacy | plan_only | execute

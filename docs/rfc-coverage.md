@@ -44,7 +44,7 @@ per turn #81.
 | 032 | Source Trust | **Partial** | content communities + original-publisher detection (074), per-source reliability and latency (080) exist. Gap: publisher-level trust scoring. |
 | 033 | Online Feedback | **Delivered (v1)** | append-only human judgements on retrieved results (`canonical`=3 / `helpful`=2 / `related`=1 / `irrelevant`/`wrong`=0) via `POST /feedback`, CLI `feedback add|list|qrels|dataset`; aggregation only accepts a verdict with `min_agreement` votes and NO tie — contradictory pairs are `disputed` and excluded, never averaged into a fabricated label. `GET /feedback/qrels` + `/feedback/dataset` export graded `EvaluationDataset` JSONL that `searchos eval run` and `watch.dataset_path` consume directly — the learning loop closes. Workspace-scoped, notes never sent to a provider. Gap: no UI for collecting judgements; no model training from feedback (v1 only produces qrels). |
 | 034 | Policy Management | **Delivered (v1)** | versioned append-only policies, live pointer, rollback; `GET/PUT /policies*`, CLI `policy`. |
-| 035 | Search Watch | **Delivered (v1)** | deterministic quality watchdog over the Analytics Read Model: optional quality/failure/trend thresholds, an optional labelled-dataset ranking check, append-only snapshots (migration v16), `searchos watch run|history`, `POST /watch/run`, `GET /watch/snapshots`. An unavailable signal is `skipped` (never a pass), a trend only fires when BOTH snapshots have `min_sample` observations, and a regression is a result — not an HTTP error. Gap: no scheduler/dispatch (run it from cron/CI) and no notification channels. |
+| 035 | Search Watch | **Delivered (v1 + dispatch)** | deterministic quality watchdog over the Analytics Read Model: optional quality/failure/trend thresholds, an optional labelled-dataset ranking check, append-only snapshots (migration v16), `searchos watch run|history`, `POST /watch/run`, `GET /watch/snapshots`. An unavailable signal is `skipped` (never a pass), a trend only fires when BOTH snapshots have `min_sample` observations, and a regression is a result — not an HTTP error. **Dispatch**: `watch.notify_on` statuses (default `regressed`+`degraded`) drive a log notifier plus an optional webhook that receives the report ONLY (no document bodies, queries or notes), and `watch.schedule_interval_seconds` runs it inside the gateway with a clean shutdown. A failing notifier is recorded in the run, never raised. Gap: no per-notifier retry/backoff and no email/Slack-native formatting (webhook JSON only). |
 | 036 | Document Intelligence | **Delivered (v1)** | deterministic extractive summary + keywords computed at ingest, persisted per version (migration v14), surfaced by `document inspect` and `GET /documents/:id`. Extractive by design — no generated text. |
 | 037 | Multilingual Search | **Partial** | CJK bigrams in the analyzer, Chinese seed corpus + graded CJK ranking gate. Gap: cross-lingual embedding/reranking. |
 | 038 | Evidence Graph | **Delivered (v1)** | `duplicate_of` / `same_content` edges on the response, built from the merge. |
@@ -115,7 +115,7 @@ per turn #81.
 | 032 | 来源信任 | **Partial** | 已有内容社群与原始发布者判定（074）、按来源的可靠性与延迟（080）。差距：发布方级别的信任评分。 |
 | 033 | 在线反馈 | **Delivered (v1)** | 对检索结果的只追加人工判断（`canonical`=3 / `helpful`=2 / `related`=1 / `irrelevant`/`wrong`=0），通过 `POST /feedback` 和 CLI `feedback add|list|qrels|dataset` 录入；聚合只接受达到 `min_agreement` 票且**无平票**的判断——矛盾对被标记为 `disputed` 并排除，绝不平均出一个伪造的标签。`GET /feedback/qrels` 与 `/feedback/dataset` 导出分级 `EvaluationDataset` JSONL，直接喂给 `searchos eval run` 和 `watch.dataset_path`——学习闭环就此合拢。工作区隔离，备注绝不发给 provider。差距：没有收集判断的 UI；v1 只用反馈产出 qrels，不做模型训练。 |
 | 034 | 策略管理 | **Delivered (v1)** | 版本化只追加策略、生效指针、回滚；`GET/PUT /policies*`、CLI `policy`。 |
-| 035 | 检索监控订阅 | **Delivered (v1)** | 基于分析读模型的确定性质量看门狗：可选的质量/失败率/趋势阈值、可选标注数据集排序检查、只追加快照（migration v16）、`searchos watch run|history`、`POST /watch/run`、`GET /watch/snapshots`。信号不可用即为 `skipped`（绝不当作通过），趋势只有在前后两次快照都达到 `min_sample` 时才触发，退化是结果而不是 HTTP 错误。差距：不含调度器/分发（由 cron/CI 触发）和通知渠道。 |
+| 035 | 检索监控订阅 | **Delivered (v1 + 分发)** | 基于分析读模型的确定性质量看门狗：可选的质量/失败率/趋势阈值、可选标注数据集排序检查、只追加快照（migration v16）、`searchos watch run|history`、`POST /watch/run`、`GET /watch/snapshots`。信号不可用即为 `skipped`（绝不当作通过），趋势只有在前后两次快照都达到 `min_sample` 时才触发，退化是结果而不是 HTTP 错误。**分发**：`watch.notify_on` 指定触发状态（默认 `regressed`+`degraded`），驱动日志通知器与可选 webhook（只发报告，不含文档正文、查询或备注），`watch.schedule_interval_seconds` 让网关内置调度并能干净停机。通知失败会记录在本次运行里，绝不抛出。差距：没有按通知器的重试/退避，也没有邮件/Slack 原生格式（仅 webhook JSON）。 |
 | 036 | 文档智能 | **Delivered (v1)** | 摄取时计算确定性抽取式摘要 + 关键词，随版本持久化（migration v14），`document inspect` 与 `GET /documents/:id` 可见。刻意只做抽取式——不生成文本。 |
 | 037 | 多语言检索 | **Partial** | 分析器含 CJK bigram，中文种子语料 + 中文分级排序门禁。差距：跨语言 embedding / rerank。 |
 | 038 | 证据图 | **Delivered (v1)** | 响应上的 `duplicate_of` / `same_content` 边，由合并结果构建。 |
@@ -176,10 +176,7 @@ per turn #81.
 
 Ordered by how much they would close a real user-visible hole:
 
-1. **035 watch dispatch** — the watchdog measures and records honestly, but a
-   scheduler and notification channels are deliberately out of v1 scope (run it
-   from cron/CI).
-2. **037 cross-lingual retrieval** — CJK works, cross-lingual queries do not.
-3. **049 structured extraction** — extraction returns prose, not schema-shaped records.
+1. **037 cross-lingual retrieval** — CJK works, cross-lingual queries do not.
+2. **049 structured extraction** — extraction returns prose, not schema-shaped records.
 
 Everything marked **Reject** is a frozen decision, not a backlog item.

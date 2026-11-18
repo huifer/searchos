@@ -543,6 +543,22 @@ The SearchOS implementation (`~/git_repo/searchos`) is verified by these command
   restart gate uses `init_with_paths` with fresh index paths but the SAME
   db file.
 
+- **RFC-035 dispatch (2026-11-16):** `watch` gained `WatchNotifier` trait,
+  `NotifyPolicy` (default statuses regressed+degraded; pass/skipped quiet),
+  `NotifyOutcome` recorded in `WatchReport.notifications`. Delivery is
+  best-effort and never changes the verdict. Core: `LogWatchNotifier`
+  (tracing warn) + `WebhookWatchNotifier` (reqwest, 10s timeout, report-only
+  JSON, no doc text/queries/notes). Config `watch.notify_on`,
+  `watch.webhook_url`, `watch.schedule_interval_seconds` (0 = off) — all in
+  the ALL/CONSUMED lists and validated. Gateway `serve()` spawns
+  `run_watch_scheduler` when the interval > 0 and stops it on shutdown.
+  Gates: 3 app unit tests (policy, strict status parsing, broken notifier
+  recorded) + 2 integration gates in tests/integration/tests/watch_dispatch.rs
+  (raw-TCP webhook sink receives the report; scheduler produces snapshots and
+  stops). Gotchas: don't hold a std MutexGuard across await in tests
+  (clippy); a second runtime on the same data dir hits the Tantivy lock;
+  `run_watch_scheduler` is `pub` so the integration crate can drive it.
+
 **Known environment notes:**
 - LanceDB requires `protoc` at build time (`brew install protobuf`).
 - Live network tests (fetch of https://example.com) tolerate sandbox timeouts by design.

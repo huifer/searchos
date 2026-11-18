@@ -212,6 +212,80 @@ impl searchos_application::feedback::FeedbackStore for SqliteFeedbackStore {
     }
 }
 
+/// RFC-035: notifications for a watch run.
+///
+/// Both implementations are best-effort: a delivery failure is REPORTED in
+/// the run, never raised as an error, so a broken webhook cannot make the
+/// watchdog look like it failed to measure.
+struct LogWatchNotifier;
+
+#[async_trait::async_trait]
+impl searchos_application::watch::WatchNotifier for LogWatchNotifier {
+    fn name(&self) -> &'static str {
+        "log"
+    }
+
+    async fn notify(
+        &self,
+        report: &searchos_application::watch::WatchReport,
+    ) -> Result<(), String> {
+        let summary: Vec<String> = report
+            .checks
+            .iter()
+            .map(|c| format!("{}={}", c.id, c.status.as_str()))
+            .collect();
+        tracing::warn!(
+            watch_id = report.id.as_str(),
+            workspace = report.workspace_id.as_str(),
+            status = report.status.as_str(),
+            checks = summary.join(",").as_str(),
+            "search watch needs attention"
+        );
+        Ok(())
+    }
+}
+
+struct WebhookWatchNotifier {
+    url: String,
+    client: reqwest::Client,
+}
+
+#[async_trait::async_trait]
+impl searchos_application::watch::WatchNotifier for WebhookWatchNotifier {
+    fn name(&self) -> &'static str {
+        "webhook"
+    }
+
+    async fn notify(
+        &self,
+        report: &searchos_application::watch::WatchReport,
+    ) -> Result<(), String> {
+        // Only the report travels: metrics and check verdicts. Document
+        // bodies, queries and notes never leave the machine.
+        let body = serde_json::json!({
+            "type": "searchos.watch",
+            "id": report.id,
+            "ran_at": report.ran_at.to_rfc3339(),
+            "workspace_id": report.workspace_id,
+            "status": report.status.as_str(),
+            "checks": report.checks,
+            "signals": report.signals,
+            "ranking": report.ranking,
+        });
+        let response = self
+            .client
+            .post(&self.url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("webhook unreachable: {e}"))?;
+        if !response.status().is_success() {
+            return Err(format!("webhook returned HTTP {}", response.status()));
+        }
+        Ok(())
+    }
+}
+
 /// RFC-035: the SQLite projection of the append-only watch snapshot log.
 struct SqliteWatchStore {
     store: Arc<SqliteStore>,
@@ -1275,14 +1349,29 @@ impl SearchOsRuntime {
             Some(Arc::new(SqliteWatchStore {
                 store: Arc::clone(&sqlite),
             }));
-        let watch_service = Arc::new(searchos_application::watch::WatchService::new(
-            Arc::clone(&analytics_service),
-            Arc::clone(&search_service),
-            watch_store,
-            config.watch.workspace_id.clone(),
-            config.watch.thresholds(),
-            config.watch.dataset(),
-        ));
+        let mut notifiers: Vec<Arc<dyn searchos_application::watch::WatchNotifier>> =
+            vec![Arc::new(LogWatchNotifier)];
+        if let Some(url) = config.watch.webhook_url.as_ref() {
+            notifiers.push(Arc::new(WebhookWatchNotifier {
+                url: url.clone(),
+                client: reqwest::Client::builder()
+                    .timeout(std::time::Duration::from_secs(10))
+                    .build()
+                    .unwrap_or_else(|_| reqwest::Client::new()),
+            }));
+        }
+        let notify_policy = config.watch.notify_policy()?;
+        let watch_service = Arc::new(
+            searchos_application::watch::WatchService::new(
+                Arc::clone(&analytics_service),
+                Arc::clone(&search_service),
+                watch_store,
+                config.watch.workspace_id.clone(),
+                config.watch.thresholds(),
+                config.watch.dataset(),
+            )
+            .with_notifiers(notifiers, notify_policy),
+        );
 
         let feedback_service = Arc::new(searchos_application::feedback::FeedbackService::new(
             Arc::new(SqliteFeedbackStore {
