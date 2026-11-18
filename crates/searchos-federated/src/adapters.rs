@@ -77,6 +77,7 @@ impl LocalIndexSource {
                     metadata_trust: 0.8,
                     consecutive_failures: 0,
                     circuit_open: false,
+                    ..ReliabilityProfile::default()
                 },
                 cost: SourceCostProfile {
                     estimated_cost_micros: 0,

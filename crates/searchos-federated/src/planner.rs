@@ -384,8 +384,23 @@ impl FederatedSearchPlan {
 pub fn expected_quality(descriptor: &SearchSourceDescriptor) -> f32 {
     let success = descriptor.reliability.success_rate.clamp(0.0, 1.0);
     let trust = descriptor.reliability.metadata_trust.clamp(0.0, 1.0);
-    (success * (0.5 + 0.5 * trust)).clamp(0.0, 1.0)
+    let base = success * (0.5 + 0.5 * trust);
+    // RFC-080: the result-level signal is an EXTRA factor, never a
+    // replacement: a source that fails often stays down, and a source whose
+    // judged results are poor is downweighted ON TOP of that. Until a source
+    // has enough judged samples the factor is 1.0 — an unjudged source is
+    // unknown, not bad.
+    let result_term = if descriptor.reliability.result_samples >= MIN_RESULT_QUALITY_SAMPLES {
+        0.5 + 0.5 * descriptor.reliability.result_quality.clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+    (base * result_term).clamp(0.0, 1.0)
 }
+
+/// How many judged results a source needs before its result-level score is
+/// allowed to influence source ordering.
+pub const MIN_RESULT_QUALITY_SAMPLES: u32 = 3;
 
 /// Free executions get the largest finite density; billable ones are scaled
 /// to quality per one million micro units so the ratio stays readable.

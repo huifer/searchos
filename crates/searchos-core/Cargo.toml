@@ -31,6 +31,7 @@ searchos-provider = { workspace = true }
 searchos-document = { workspace = true }
 searchos-application = { workspace = true }
 searchos-observability = { workspace = true }
+searchos-evaluation = { workspace = true }
 searchos-storage-fs = { workspace = true }
 searchos-storage-sqlite = { workspace = true }
 searchos-index-tantivy = { workspace = true }

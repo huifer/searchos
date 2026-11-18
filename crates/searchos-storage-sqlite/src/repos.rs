@@ -5777,12 +5777,15 @@ impl<'a> FeedbackRepo<'a> {
         url: &str,
         verdict: &str,
         note: Option<&str>,
+        normalized_query: &str,
+        canonical_url: &str,
     ) -> Result<(), SearchOsError> {
         self.store.with_conn(|c| {
             c.execute(
                 "INSERT OR IGNORE INTO search_feedback
-                 (id, created_at, workspace_id, task_id, query, url, verdict, note)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                 (id, created_at, workspace_id, task_id, query, url, verdict, note,
+                  normalized_query, canonical_url)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 rusqlite::params![
                     id,
                     created_at,
@@ -5791,11 +5794,39 @@ impl<'a> FeedbackRepo<'a> {
                     query,
                     url,
                     verdict,
-                    note
+                    note,
+                    normalized_query,
+                    canonical_url
                 ],
             )
             .map_err(e)?;
             Ok(())
+        })
+    }
+
+    /// Judgements for one (normalized query, canonical url) pair. Used by the
+    /// relevance judge to resolve a verdict without scanning the table.
+    pub fn grades_for(
+        &self,
+        workspace_id: &str,
+        normalized_query: &str,
+        canonical_url: &str,
+    ) -> Result<Vec<(String, u8)>, SearchOsError> {
+        self.store.with_conn(|c| {
+            let mut stmt = c
+                .prepare(
+                    "SELECT verdict, COUNT(*) FROM search_feedback
+                     WHERE workspace_id = ?1 AND normalized_query = ?2 AND canonical_url = ?3
+                     GROUP BY verdict",
+                )
+                .map_err(e)?;
+            let rows = stmt
+                .query_map(
+                    rusqlite::params![workspace_id, normalized_query, canonical_url],
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u8)),
+                )
+                .map_err(e)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(e)
         })
     }
 
@@ -5825,6 +5856,57 @@ impl<'a> FeedbackRepo<'a> {
                 })
                 .map_err(e)?;
             rows.collect::<Result<Vec<_>, _>>().map_err(e)
+        })
+    }
+}
+
+/// RFC-080: durable per-source result-level quality score.
+pub struct SourceQualityRepo<'a> {
+    pub store: &'a SqliteStore,
+}
+
+impl<'a> SourceQualityRepo<'a> {
+    pub fn new(store: &'a SqliteStore) -> Self {
+        Self { store }
+    }
+
+    pub fn load_all(&self) -> Result<Vec<(String, f32, u32)>, SearchOsError> {
+        self.store.with_conn(|c| {
+            let mut stmt = c
+                .prepare("SELECT source_id, result_quality, result_samples FROM source_quality")
+                .map_err(e)?;
+            let rows = stmt
+                .query_map([], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, f64>(1)? as f32,
+                        r.get::<_, i64>(2)? as u32,
+                    ))
+                })
+                .map_err(e)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(e)
+        })
+    }
+
+    pub fn save(
+        &self,
+        source_id: &str,
+        quality: f32,
+        samples: u32,
+        updated_at: &str,
+    ) -> Result<(), SearchOsError> {
+        self.store.with_conn(|c| {
+            c.execute(
+                "INSERT INTO source_quality (source_id, result_quality, result_samples, updated_at)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(source_id) DO UPDATE SET
+                    result_quality = excluded.result_quality,
+                    result_samples = excluded.result_samples,
+                    updated_at = excluded.updated_at",
+                rusqlite::params![source_id, quality as f64, samples as i64, updated_at],
+            )
+            .map_err(e)?;
+            Ok(())
         })
     }
 }

@@ -219,6 +219,63 @@ impl InMemorySourceRegistry {
         Some(just_opened)
     }
 
+    /// Seeds a persisted result-level quality score into every scope copy of
+    /// a source (used when the runtime restores learned state at startup).
+    pub fn seed_result_quality(&self, source_id: &SourceId, quality: f32, samples: u32) {
+        let Ok(mut guard) = self.inner.write() else {
+            return;
+        };
+        let Some(entries) = guard.get_mut(source_id.as_str()) else {
+            return;
+        };
+        for entry in entries.iter_mut() {
+            entry.descriptor.reliability.result_quality = quality.clamp(0.0, 1.0);
+            entry.descriptor.reliability.result_samples = samples;
+        }
+    }
+
+    /// The learned result-level quality of a source, read from any live
+    /// scope copy (all copies are updated together, so they agree).
+    pub fn learned_quality(&self, source_id: &SourceId) -> Option<(f32, u32)> {
+        let guard = self.inner.read().ok()?;
+        let entries = guard.get(source_id.as_str())?;
+        let entry = entries.first()?;
+        Some((
+            entry.descriptor.reliability.result_quality,
+            entry.descriptor.reliability.result_samples,
+        ))
+    }
+
+    /// Result-level quality learning (RFC-080 slice): the fraction of a
+    /// source's JUDGED results that the relevance judge marked relevant.
+    ///
+    /// Only judged results count — an unjudged result carries no information
+    /// and must not push the average down. The value is an exponential moving
+    /// average, so one bad query cannot erase a track record, and it is
+    /// updated on EVERY scope registration of the id so a higher-precedence
+    /// override cannot keep a stale score alive.
+    pub fn record_result_quality(&self, source_id: &SourceId, relevant_ratio: f32) {
+        const RESULT_QUALITY_EMA_WEIGHT: f32 = 0.2;
+        let Ok(mut guard) = self.inner.write() else {
+            return;
+        };
+        let Some(entries) = guard.get_mut(source_id.as_str()) else {
+            return;
+        };
+        for entry in entries.iter_mut() {
+            let reliability = &mut entry.descriptor.reliability;
+            let ratio = relevant_ratio.clamp(0.0, 1.0);
+            if reliability.result_samples == 0 {
+                reliability.result_quality = ratio;
+            } else {
+                reliability.result_quality = reliability.result_quality
+                    * (1.0 - RESULT_QUALITY_EMA_WEIGHT)
+                    + ratio * RESULT_QUALITY_EMA_WEIGHT;
+            }
+            reliability.result_samples = reliability.result_samples.saturating_add(1);
+        }
+    }
+
     /// Live latency feedback (RFC-080 slice): observed execution latency
     /// updates the source's p50 (EMA) and p95 (decaying upper envelope, with
     /// a p50-based floor). `timeout_ms` is a DECLARED hard bound and is never

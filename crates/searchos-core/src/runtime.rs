@@ -63,6 +63,96 @@ impl searchos_application::validity::EvidenceValidityPort for SqliteEvidenceVali
     }
 }
 
+/// RFC-080: a relevance judge backed by the human feedback table.
+///
+/// It resolves the SAME judgements the aggregation uses (most votes win,
+/// contradictions stay undecided) so the router learns from exactly the
+/// labels an operator can audit. A URL nobody judged returns `None` — the
+/// unknown case, never "irrelevant".
+struct SqliteRelevanceJudge {
+    store: Arc<SqliteStore>,
+    /// Optional evaluated dataset used as an additional qrel source.
+    dataset: Option<searchos_application::quality_learning::QrelIndex>,
+}
+
+impl SqliteRelevanceJudge {
+    fn normalize(query: &str) -> String {
+        query
+            .trim()
+            .to_lowercase()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}
+
+impl searchos_application::quality_learning::RelevanceJudge for SqliteRelevanceJudge {
+    fn grade(&self, query: &str, url: &str) -> Option<u8> {
+        let normalized_query = Self::normalize(query);
+        let canonical_url = searchos_application::merge::canonical_url(url);
+        if let Some(dataset) = self.dataset.as_ref() {
+            if let Some(grade) =
+                searchos_application::quality_learning::RelevanceJudge::grade(dataset, query, url)
+            {
+                return Some(grade);
+            }
+        }
+        let rows = repos::FeedbackRepo::new(&self.store)
+            .grades_for("*", &normalized_query, &canonical_url)
+            .ok()?;
+        if rows.is_empty() {
+            return None;
+        }
+        // Same rule as the aggregation: the verdict with the most votes wins,
+        // a tie is undecided, and a contradiction is not a label.
+        let mut best: Option<(u8, usize)> = None;
+        let mut tied = false;
+        for (verdict, count) in rows {
+            let grade = searchos_application::feedback::FeedbackVerdict::parse(&verdict)
+                .map(|v| v.grade())
+                .ok()?;
+            let count = count as usize;
+            match best {
+                Some((_, best_count)) if best_count > count => {}
+                Some((_, best_count)) if best_count == count => tied = true,
+                _ => {
+                    best = Some((grade, count));
+                    tied = false;
+                }
+            }
+        }
+        if tied {
+            return None;
+        }
+        best.map(|(grade, _)| grade)
+    }
+}
+
+/// RFC-080: durable per-source learned quality.
+struct SqliteSourceQualityStore {
+    store: Arc<SqliteStore>,
+}
+
+#[async_trait::async_trait]
+impl searchos_application::quality_learning::SourceQualityStore for SqliteSourceQualityStore {
+    async fn load_all(&self) -> Result<Vec<(String, f32, u32)>, String> {
+        repos::SourceQualityRepo::new(&self.store)
+            .load_all()
+            .map_err(|e| e.to_string())
+    }
+
+    async fn save(&self, source_id: &str, quality: f32, samples: u32) -> Result<(), String> {
+        repos::SourceQualityRepo::new(&self.store)
+            .save(
+                source_id,
+                quality,
+                samples,
+                &chrono::Utc::now().to_rfc3339(),
+            )
+            .map_err(|e| e.to_string())
+    }
+}
+
 /// RFC-033: the SQLite projection of append-only human feedback.
 struct SqliteFeedbackStore {
     store: Arc<SqliteStore>,
@@ -74,6 +164,8 @@ impl searchos_application::feedback::FeedbackStore for SqliteFeedbackStore {
         &self,
         event: &searchos_application::feedback::FeedbackEvent,
     ) -> Result<(), String> {
+        let (normalized_query, canonical_url) =
+            searchos_application::feedback::aggregation_key(&event.query, &event.url);
         repos::FeedbackRepo::new(&self.store)
             .append(
                 &event.id,
@@ -84,6 +176,8 @@ impl searchos_application::feedback::FeedbackStore for SqliteFeedbackStore {
                 &event.url,
                 event.verdict.as_str(),
                 event.note.as_deref(),
+                &normalized_query,
+                &canonical_url,
             )
             .map_err(|e| e.to_string())
     }
@@ -918,6 +1012,54 @@ impl SearchOsRuntime {
             });
         let entity_registry = Arc::new(searchos_application::entity::EntityRegistry::new());
         entity_registry.rebuild(entity_store.entities().await?);
+        // RFC-080: result-level quality learning. The judge reads the SAME
+        // human judgements the feedback API records (plus an optional
+        // evaluated dataset); the learner keeps the registry's picture of
+        // each source's result quality and persists it.
+        let quality_learner =
+            if config.quality_learning.enabled {
+                let dataset_index = config
+                .quality_learning
+                .qrels_path
+                .as_ref()
+                .and_then(|path| {
+                    let mut index = searchos_application::quality_learning::QrelIndex::new();
+                    match searchos_evaluation::dataset::EvaluationDataset::load_jsonl(
+                        std::path::Path::new(path),
+                    ) {
+                        Ok(dataset) => index.extend_from_dataset(&dataset),
+                        Err(err) => {
+                            tracing::warn!(%err, path, "quality_learning.qrels_path unreadable");
+                        }
+                    }
+                    if index.is_empty() { None } else { Some(index) }
+                });
+                let judge = Arc::new(SqliteRelevanceJudge {
+                    store: Arc::clone(&sqlite),
+                    dataset: dataset_index,
+                });
+                let learner =
+                    Arc::new(searchos_application::quality_learning::QualityLearner::new(
+                        judge as Arc<dyn searchos_application::quality_learning::RelevanceJudge>,
+                        Arc::clone(&federation_registry),
+                        Some(Arc::new(SqliteSourceQualityStore {
+                            store: Arc::clone(&sqlite),
+                        })
+                            as Arc<
+                                dyn searchos_application::quality_learning::SourceQualityStore,
+                            >),
+                        config.quality_learning.min_relevance_grade,
+                    ));
+                match learner.seed().await {
+                    Ok(0) => {}
+                    Ok(count) => tracing::debug!(count, "seeded learned source quality"),
+                    Err(err) => tracing::warn!(%err, "could not seed learned source quality"),
+                }
+                Some(learner)
+            } else {
+                None
+            };
+
         let deps = Arc::new(searchos_application::search_service::SearchDependencies {
             profiles: searchos_policy::ProfileRegistry::builtin(),
             quality: quality_policy.clone(),
@@ -978,6 +1120,7 @@ impl SearchOsRuntime {
             // RFC-080: cost-adaptive source ordering is opt-in and lives in
             // the config, so the plan is auditable from the config file.
             federation_selection: config.federation.selection.clone(),
+            quality_learner: quality_learner.clone(),
         });
 
         let search_deps = Arc::clone(&deps);

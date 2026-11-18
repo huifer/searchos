@@ -150,6 +150,17 @@ pub struct ReliabilityProfile {
     pub consecutive_failures: u32,
     /// Whether the planner may send an unverifiable query to it at all.
     pub circuit_open: bool,
+    /// RFC-080: RESULT-LEVEL quality, learned from judged results.
+    ///
+    /// 0.0..=1.0 exponential moving average of the fraction of a source's
+    /// JUDGED results that the relevance judge marked relevant. It is
+    /// `None`-like while `result_samples` is below the minimum: an UNJUDGED
+    /// source is unknown, not bad, and must never be punished for it.
+    #[serde(default)]
+    pub result_quality: f32,
+    /// How many judged results fed `result_quality`.
+    #[serde(default)]
+    pub result_samples: u32,
 }
 
 impl Default for ReliabilityProfile {
@@ -159,6 +170,8 @@ impl Default for ReliabilityProfile {
             metadata_trust: 0.5,
             consecutive_failures: 0,
             circuit_open: false,
+            result_quality: 0.0,
+            result_samples: 0,
         }
     }
 }

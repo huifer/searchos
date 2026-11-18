@@ -18,6 +18,7 @@ pub mod memory_source;
 pub mod merge;
 pub mod policy;
 pub mod promotion_service;
+pub mod quality_learning;
 pub mod redaction;
 pub mod replay;
 pub mod research;

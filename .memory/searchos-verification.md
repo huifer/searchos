@@ -520,6 +520,29 @@ The SearchOS implementation (`~/git_repo/searchos`) is verified by these command
   assert equality after a round-trip. Gates: 7 application unit tests + 4
   integration gates in `tests/integration/tests/online_feedback.rs`.
 
+- **RFC-080 result-level quality learning (2026-11-16):**
+  `searchos-application/src/quality_learning.rs` = `RelevanceJudge` trait +
+  `QrelIndex` (built from RFC-033 `FeedbackQrels` and/or an
+  `EvaluationDataset`), `SourceQualityStore` port, `QualityLearner`
+  (`learn(source_id, query, urls)` → relevant-judged ratio → registry EMA;
+  `seed()` restores persisted scores). `ReliabilityProfile` gained
+  `result_quality` + `result_samples` (`#[serde(default)]`); registry gained
+  `record_result_quality` / `seed_result_quality` / `learned_quality`.
+  `planner::expected_quality` multiplies an EXTRA `0.5 + 0.5*result_quality`
+  factor once `MIN_RESULT_QUALITY_SAMPLES` (3) judged samples exist — below
+  that the factor is 1.0 so an unjudged source is never penalised. Config
+  `quality_learning.{enabled,min_relevance_grade,qrels_path}`; migration v18
+  adds `search_feedback.normalized_query/canonical_url` + `source_quality`
+  table; core `SqliteRelevanceJudge` (majority vote, tie = None) and
+  `SqliteSourceQualityStore`; learning runs in `SearchServiceImpl::search`
+  after the non-cached response (`learn_source_quality`). Gates: 5 app unit
+  tests + 3 integration gates in `tests/integration/tests/quality_learning.rs`.
+  Gotchas: `min_samples` was removed from config on purpose (a no-op knob
+  would violate the unconsumed-config rule — the floor is the planner
+  constant); a second runtime on the same dir hits the Tantivy lock, so the
+  restart gate uses `init_with_paths` with fresh index paths but the SAME
+  db file.
+
 **Known environment notes:**
 - LanceDB requires `protoc` at build time (`brew install protobuf`).
 - Live network tests (fetch of https://example.com) tolerate sandbox timeouts by design.

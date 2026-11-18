@@ -5569,6 +5569,7 @@ dependencies = [
  "searchos-decision",
  "searchos-document",
  "searchos-domain",
+ "searchos-evaluation",
  "searchos-extension",
  "searchos-federated",
  "searchos-fetch",

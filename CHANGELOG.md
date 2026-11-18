@@ -27,6 +27,13 @@ multi-arch images, and attaches the matching section of this file.
 
 ### Added
 
+- **Result-level source-quality learning (RFC-080).** The cost-adaptive
+  router no longer scores a source only by how reliably it answered: after
+  each non-cached search it learns, per source, what fraction of that
+  source's JUDGED results were relevant. Judgements come from human feedback
+  (RFC-033) and an optional evaluated dataset. Only judged results count — an
+  unjudged source is unknown, never bad — the score is an EMA, and it is
+  persisted (migration v18) so a restart does not erase what was learned.
 - **Online feedback → graded qrels → evaluation dataset (RFC-033).** Humans
   can judge a retrieved result (`canonical`=3, `helpful`=2, `related`=1,
   `irrelevant`/`wrong`=0); every judgement is an append-only, workspace-scoped

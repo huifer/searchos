@@ -89,7 +89,7 @@ per turn #81.
 | 077 | Search Cache Intelligence | **Delivered (v1)** | exact/canonical/semantic caches with mode+freshness keys and a 0.92 similarity gate; hit-time evidence validity across processes. |
 | 078 | Cost Attribution | **Delivered** | full cost ledger, reserve→execute→settle, reconciliation, savings views. |
 | 079 | Search Benchmark | **Delivered** | 500-question dataset, CJK corpus, CI eval gate, MRR / nDCG@5 / Recall@5. |
-| 080 | Provider Fallback & Routing | **Delivered (v1 slice)** | multi-key rotation, failure isolation, outcome-driven circuit breaker, per-source latency budget, AND **cost-adaptive source selection**: `federation.selection = cost_adaptive` orders equally local / equally authoritative sources by expected quality per unit cost (observed success rate × declared metadata trust, over the estimated cost) instead of configured priority. Required-authoritative sources are never traded away, and locality still dominates. Every eligible source is scored on the plan for audit. Gap: cost/quality learning from real candidate outcomes (the score uses source-level reliability, not per-result relevance). |
+| 080 | Provider Fallback & Routing | **Delivered (v1 slice + result-level learning)** | multi-key rotation, failure isolation, outcome-driven circuit breaker, per-source latency budget, **cost-adaptive source selection** (`federation.selection = cost_adaptive`: expected quality per unit cost instead of configured priority, with locality and requirement authority still dominating), AND **result-level quality learning**: after each non-cached search the router learns, per source, what fraction of that source's JUDGED results were relevant. Judgements come from RFC-033 feedback (and an optional evaluated dataset); only judged results count, an unjudged source is never penalised, the score is an EMA, and it persists across restarts (migration v18). Gap: learning is global per source (not per workspace or per query class), and the legacy (non-federated) path learns only where `SearchResultItem.source` names a registered source. |
 | 081 | Extension SDK | **Partial** | versioned extension registry, manifest discovery, quarantine. Gap: external-process extensions (frozen "Both" decision). |
 | 082 | Crawler Extension System | **Partial** | per-site crawler extensions with isolation. |
 | 083 | Plugin Isolation | **Partial** | fault isolation for native extensions. Gap: sandboxed external plugins. |
@@ -160,7 +160,7 @@ per turn #81.
 | 077 | 检索缓存智能 | **Delivered (v1)** | 精确/canonical/语义缓存，键含模式与新鲜度，0.92 相似度门槛；跨进程的命中时证据有效性校验。 |
 | 078 | 成本归因 | **Delivered** | 完整成本账本、reserve→execute→settle、对账、节省视图。 |
 | 079 | 检索基准 | **Delivered** | 500 题数据集、中文语料、CI 评估门禁、MRR / nDCG@5 / Recall@5。 |
-| 080 | Provider 回退与路由 | **Delivered (v1 切片)** | 多 key 轮换、失败隔离、结果驱动熔断、按来源延迟预算，以及**成本自适应选源**：`federation.selection = cost_adaptive` 时，在同样本地、同样权威的来源之间按「每单位成本的预期质量」（观测成功率 × 声明的元数据信任度，再除以估算成本）排序，而不是按配置的 priority。必需的权威来源永不被牺牲，本地优先仍是第一键。每个合格来源都会在计划里留下评分以便审计。差距：基于真实候选结果学习的成本/质量模型（当前评分用来源级可靠性，而非单条结果的相关性）。 |
+| 080 | Provider 回退与路由 | **Delivered (v1 切片 + 结果级学习)** | 多 key 轮换、失败隔离、结果驱动熔断、按来源延迟预算、**成本自适应选源**（`federation.selection = cost_adaptive`：按每单位成本的预期质量排序而非配置 priority，本地优先与需求权威仍优先），以及**结果级质量学习**：每次非缓存搜索后，按来源学习"该来源被判定过的结果中相关比例"。判定来自 RFC-033 反馈（及可选评估数据集）；只统计被判定过的结果，未被判定的来源绝不被惩罚，分数是 EMA，跨重启持久化（migration v18）。差距：学习按来源全局（不按工作区/查询类别），legacy（非联邦）路径只在 `SearchResultItem.source` 命中已注册来源时才学习。 |
 | 081 | 扩展 SDK | **Partial** | 版本化扩展注册表、manifest 发现、隔离。差距：外部进程扩展（冻结的「Both」决策）。 |
 | 082 | 爬虫扩展系统 | **Partial** | 带隔离的按站点爬虫扩展。 |
 | 083 | 插件隔离 | **Partial** | 原生扩展的故障隔离。差距：沙箱化的外部插件。 |
@@ -176,13 +176,10 @@ per turn #81.
 
 Ordered by how much they would close a real user-visible hole:
 
-1. **080 outcome-based quality learning** — cost-adaptive routing scores a source by its
-   observed success rate and declared metadata trust, not by how good its results
-   actually were for this query.
-2. **035 watch dispatch** — the watchdog measures and records honestly, but a
+1. **035 watch dispatch** — the watchdog measures and records honestly, but a
    scheduler and notification channels are deliberately out of v1 scope (run it
    from cron/CI).
-3. **037 cross-lingual retrieval** — CJK works, cross-lingual queries do not.
-4. **049 structured extraction** — extraction returns prose, not schema-shaped records.
+2. **037 cross-lingual retrieval** — CJK works, cross-lingual queries do not.
+3. **049 structured extraction** — extraction returns prose, not schema-shaped records.
 
 Everything marked **Reject** is a frozen decision, not a backlog item.

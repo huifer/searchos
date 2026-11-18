@@ -101,6 +101,11 @@ indexes:
   rebuild_on_start: false
   verify_on_start: true
 
+quality_learning:            # RFC-080: learn source quality from judged results
+  enabled: true
+  min_relevance_grade: 2     # grade at which a judged result counts as relevant
+  qrels_path: null           # optional evaluated dataset (JSONL) as extra qrels
+
 watch:                       # RFC-035: unset thresholds are skipped, not passed
   workspace_id: default
   min_quality_pass_rate: null   # e.g. 0.9 — quality-gate pass rate floor

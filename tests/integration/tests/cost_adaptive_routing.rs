@@ -141,6 +141,7 @@ async fn harness(
         federation_strategy: "plan_only".into(),
         federation_limits: searchos_domain::FederationLimits::default(),
         federation_selection: selection.to_string(),
+        quality_learner: None,
     });
     (Arc::clone(&runtime), SearchServiceImpl::new(deps))
 }

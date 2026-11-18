@@ -889,6 +889,24 @@ CREATE INDEX IF NOT EXISTS idx_feedback_workspace
 CREATE INDEX IF NOT EXISTS idx_feedback_task ON search_feedback(task_id);
 "#,
     },
+    // v18 - RFC-080 result-level quality learning. Two additive columns on
+    // the (already released) feedback table so the relevance judge can find
+    // a judgement without scanning and normalizing every row, plus the
+    // durable per-source quality score.
+    Migration {
+        version: 18,
+        name: "source_quality_learning",
+        sql: r#"
+ALTER TABLE search_feedback ADD COLUMN normalized_query TEXT;
+ALTER TABLE search_feedback ADD COLUMN canonical_url TEXT;
+CREATE TABLE IF NOT EXISTS source_quality (
+    source_id TEXT PRIMARY KEY,
+    result_quality REAL NOT NULL DEFAULT 0,
+    result_samples INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+);
+"#,
+    },
 ];
 
 /// Applies pending migrations to a connection. Each version is atomic: SQL

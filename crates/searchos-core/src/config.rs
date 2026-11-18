@@ -30,6 +30,30 @@ pub struct SearchOsConfig {
     pub federation: FederationConfig,
     /// RFC-035: deterministic search-quality watchdog.
     pub watch: WatchConfig,
+    /// RFC-080: result-level quality learning.
+    pub quality_learning: QualityLearningConfig,
+}
+
+/// RFC-080: result-level source-quality learning.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct QualityLearningConfig {
+    /// Learn from judged results at all.
+    pub enabled: bool,
+    /// Grade at which a judged result counts as relevant (0..=3).
+    pub min_relevance_grade: u8,
+    /// Optional evaluated dataset (JSONL) as an extra qrel source.
+    pub qrels_path: Option<String>,
+}
+
+impl Default for QualityLearningConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            min_relevance_grade: 2,
+            qrels_path: None,
+        }
+    }
 }
 
 /// RFC-035: thresholds are OPTIONAL. An unset check is reported as skipped,
@@ -356,6 +380,7 @@ impl Default for SearchOsConfig {
             extensions: ExtensionsConfig::default(),
             federation: FederationConfig::default(),
             watch: WatchConfig::default(),
+            quality_learning: QualityLearningConfig::default(),
             security: SecurityConfig::default(),
             observability: ObservabilityConfig::default(),
             providers: ProvidersConfig::default(),
@@ -870,6 +895,9 @@ pub const ALL_CONFIG_FIELDS: &[&str] = &[
     "federation.source_timeout_ms",
     "federation.max_sources",
     "federation.selection",
+    "quality_learning.enabled",
+    "quality_learning.min_relevance_grade",
+    "quality_learning.qrels_path",
     "watch.workspace_id",
     "watch.min_quality_pass_rate",
     "watch.max_search_failure_rate",
@@ -996,6 +1024,9 @@ pub const CONSUMED_CONFIG_FIELDS: &[&str] = &[
     "federation.source_timeout_ms",
     "federation.max_sources",
     "federation.selection",
+    "quality_learning.enabled",
+    "quality_learning.min_relevance_grade",
+    "quality_learning.qrels_path",
     "watch.workspace_id",
     "watch.min_quality_pass_rate",
     "watch.max_search_failure_rate",
@@ -1112,6 +1143,9 @@ impl SearchOsConfig {
         }
         if self.federation.max_parallel_sources == 0 {
             errors.push("federation.max_parallel_sources must be > 0".into());
+        }
+        if self.quality_learning.min_relevance_grade > 3 {
+            errors.push("quality_learning.min_relevance_grade must be 0..=3".into());
         }
         if let Err(err) = self.watch.thresholds().validate() {
             errors.push(err.to_string());

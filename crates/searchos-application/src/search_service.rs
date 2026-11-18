@@ -251,6 +251,9 @@ pub struct SearchDependencies {
     pub federation_limits: searchos_domain::FederationLimits,
     /// RFC-080 source ordering: `reliability_first` (default) | `cost_adaptive`.
     pub federation_selection: String,
+    /// RFC-080 result-level learning. `None` disables learning (tests and
+    /// harnesses that do not wire a judge).
+    pub quality_learner: Option<Arc<crate::quality_learning::QualityLearner>>,
 }
 
 /// Federation modes recognised by `federation_strategy`.
@@ -1477,6 +1480,30 @@ async fn carry_workspace_evidence(
     })
 }
 
+/// RFC-080: teaches the router which source produced judged-relevant
+/// results. Best-effort and never fails a request; a search that reveals no
+/// judgement is simply not a learning sample.
+async fn learn_source_quality(
+    deps: &Arc<SearchDependencies>,
+    req: &SearchRequest,
+    results: &[SearchResultItem],
+) {
+    let Some(learner) = deps.quality_learner.as_ref() else {
+        return;
+    };
+    let mut by_source: std::collections::BTreeMap<&str, Vec<String>> =
+        std::collections::BTreeMap::new();
+    for item in results {
+        by_source
+            .entry(item.source.as_str())
+            .or_default()
+            .push(item.url.clone());
+    }
+    for (source_id, urls) in by_source {
+        learner.learn(source_id, req.query.as_str(), &urls).await;
+    }
+}
+
 /// Best-effort analytics event; never fails the search request.
 async fn record_analytics(
     deps: &Arc<SearchDependencies>,
@@ -1983,6 +2010,10 @@ impl SearchService for SearchServiceImpl {
 
         let response: SearchResponse =
             serde_json::from_value(payload).map_err(|e| SearchOsError::Internal(e.to_string()))?;
+        // RFC-080 result-level learning: only the NON-CACHED path teaches the
+        // router, so replaying a cached answer cannot inflate a source's
+        // score. A source whose results nobody judged is left untouched.
+        learn_source_quality(&self.deps, &req, &response.results).await;
         if !bypass_cache && response.quality.status == QualityStatus::Passed {
             self.deps.cache.put(
                 &cache_key,
