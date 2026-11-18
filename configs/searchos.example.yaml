@@ -84,6 +84,12 @@ memory:
     model_version: v1         # cache-key version for embedding reuse
     max_batch_size: 32
 
+# RFC-037: cross-lingual term dictionary + extra recall pass (opt-in).
+#   启用后，中文查询会按内置中英术语表生成一条翻译召回列表，
+#   与原始结果做 RRF 融合；不替换原查询，不额外购买查询额度。
+# intelligence:
+#   cross_lingual: true
+
 intelligence:
   query_expansion: true
   # Attaches a real reranker to hybrid retrieval (RFC-007 7.7). `local` is an

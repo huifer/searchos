@@ -133,6 +133,7 @@ async fn harness(
         expansion_mode: "followup".into(),
         incremental: true,
         query_expansion: true,
+        cross_lingual: false,
         reranking: true,
         allow_external: false,
         promotion: None,

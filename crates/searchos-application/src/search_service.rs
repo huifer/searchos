@@ -254,6 +254,8 @@ pub struct SearchDependencies {
     /// RFC-080 result-level learning. `None` disables learning (tests and
     /// harnesses that do not wire a judge).
     pub quality_learner: Option<Arc<crate::quality_learning::QualityLearner>>,
+    /// RFC-037: derive cross-lingual variants and fuse them as EXTRA recall.
+    pub cross_lingual: bool,
 }
 
 /// Federation modes recognised by `federation_strategy`.
@@ -785,6 +787,13 @@ fn plan_external_queries(
         variants.extend(searchos_query::expansion::sub_question_variants(
             &req.query, 2,
         ));
+        // RFC-037: a cross-language variant competes for the SAME affordable
+        // budget as every other expansion, never an extra purchase.
+        if deps.cross_lingual {
+            variants.extend(searchos_query::crosslingual::cross_lingual_variants(
+                &req.query, 2,
+            ));
+        }
         for variant in variants {
             if planned.len() >= max_queries as usize {
                 break;
@@ -1246,6 +1255,43 @@ async fn retrieve_local_candidates(
                 .await?
         }
     };
+    // RFC-037: a Chinese query cannot BM25-match an English document that
+    // describes the same concept. Try ONE translated recall list and fuse it
+    // with the original — a variant is an ADDITION, never a substitution, so
+    // results the original already found cannot be pushed out by it.
+    if deps.cross_lingual {
+        if let Some(translated) =
+            searchos_query::crosslingual::full_cross_lingual_variant(&analysis.normalized)
+        {
+            if translated != analysis.normalized {
+                let mut translated_query = RetrievalQuery::new(&translated, pool_k);
+                translated_query.workspace_id = query.workspace_id.clone();
+                translated_query.language = query.language.clone();
+                translated_query.required_domains = query.required_domains.clone();
+                translated_query.excluded_domains = query.excluded_domains.clone();
+                translated_query.include_stale = true;
+                translated_query.fetched_after = fetched_after;
+                let extra = match &deps.hybrid {
+                    Some(hybrid) => hybrid.retrieve(&translated_query).await?,
+                    None => {
+                        deps.local_port
+                            .retrieve(&translated, top_k, Some(req.workspace_id.as_str()))
+                            .await?
+                    }
+                };
+                if !extra.is_empty() {
+                    let config = searchos_retrieval::RrfConfig::default();
+                    candidates = searchos_retrieval::rrf_fuse_weighted(
+                        &[
+                            searchos_retrieval::RankedSource::new("original", 1.0, &candidates),
+                            searchos_retrieval::RankedSource::new("cross_lingual", 1.0, &extra),
+                        ],
+                        &config,
+                    );
+                }
+            }
+        }
+    }
     let ids: Vec<&str> = candidates.iter().map(|c| c.chunk_id.as_str()).collect();
     if deps.reranking {
         // RFC-007 7.7: a real reranker may have reordered the fused set.

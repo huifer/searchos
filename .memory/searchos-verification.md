@@ -559,6 +559,25 @@ The SearchOS implementation (`~/git_repo/searchos`) is verified by these command
   (clippy); a second runtime on the same data dir hits the Tantivy lock;
   `run_watch_scheduler` is `pub` so the integration crate can drive it.
 
+- **RFC-037 cross-lingual retrieval (2026-11-16):**
+  `searchos-query/src/crosslingual.rs` = curated bidirectional `TERM_PAIRS`
+  (zh,en), `cross_lingual_variants(query,max)` and
+  `full_cross_lingual_variant(query)`. Language is from
+  `language::detect_language` (zh/en only). Longest term wins; a shorter
+  term inside an already-fired longer term (排序 in 排序算法) is skipped.
+  English terms need token boundaries; CJK terms are substrings. Config
+  `intelligence.cross_lingual` (default false, opt-in) → `SearchDependencies`
+  → (1) extra local recall list through the SAME hybrid retriever, fused with
+  the original via `rrf_fuse_weighted` (both lists weight 1.0), and (2)
+  external plan variants competing for the same query budget. The original
+  query is never replaced. Gates: 5 query unit tests + 3 integration gates
+  in tests/integration/tests/cross_lingual.rs (zh query finds EN doc; flag
+  off is unchanged; original-language result survives fusion). Gotchas:
+  use a query with NO shared ASCII token (just 排序算法, not "BM25 排序
+  算法") or BM25 alone explains the hit; a second runtime on the same index
+  dir hits the Tantivy lock — the test uses `init_with_paths` with fresh
+  index paths.
+
 **Known environment notes:**
 - LanceDB requires `protoc` at build time (`brew install protobuf`).
 - Live network tests (fetch of https://example.com) tolerate sandbox timeouts by design.

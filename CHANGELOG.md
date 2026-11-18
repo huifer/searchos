@@ -27,6 +27,15 @@ multi-arch images, and attaches the matching section of this file.
 
 ### Added
 
+- **Cross-lingual retrieval (RFC-037).** A curated bidirectional term
+  dictionary (34 domain pairs) lets a Chinese query find English documents
+  describing the same concept, and vice versa. With `intelligence.cross_lingual
+  = true` (opt-in), a translated recall pass is fused with the original via
+  weighted RRF — the original query is never replaced, so existing matches
+  cannot be pushed out; in the external plan a cross-language variant
+  competes for the SAME affordable budget as every other expansion. No LLM,
+  no network, fully reproducible. Term-level only: this is not full machine
+  translation, and the table is a starter set.
 - **Watch dispatch: notifications + built-in schedule (RFC-035).** A watch
   result that matters now reaches a human without a manual step:
   `watch.notify_on` selects the statuses (default `regressed` + `degraded`,

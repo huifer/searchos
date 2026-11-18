@@ -184,6 +184,8 @@ impl Default for FederationConfig {
 #[serde(default)]
 pub struct IntelligenceConfig {
     pub query_expansion: bool,
+    /// RFC-037: cross-lingual query variants + extra recall pass.
+    pub cross_lingual: bool,
     /// RFC-072: where query expansion may add queries.
     /// `followup` (default): only follow-up rounds expand — no extra spend on
     /// the first plan. `initial`: the first plan may add synonym /
@@ -205,6 +207,7 @@ impl Default for IntelligenceConfig {
     fn default() -> Self {
         Self {
             query_expansion: true,
+            cross_lingual: false,
             query_expansion_mode: "followup".into(),
             reranking: true,
             reranker_provider: "local".into(),
@@ -930,6 +933,7 @@ pub const ALL_CONFIG_FIELDS: &[&str] = &[
     "watch.webhook_url",
     "watch.schedule_interval_seconds",
     "intelligence.query_expansion",
+    "intelligence.cross_lingual",
     "intelligence.query_expansion_mode",
     "intelligence.reranking",
     "intelligence.reranker_provider",
@@ -1062,6 +1066,7 @@ pub const CONSUMED_CONFIG_FIELDS: &[&str] = &[
     "watch.webhook_url",
     "watch.schedule_interval_seconds",
     "intelligence.query_expansion",
+    "intelligence.cross_lingual",
     "intelligence.query_expansion_mode",
     "intelligence.reranking",
     "intelligence.reranker_provider",

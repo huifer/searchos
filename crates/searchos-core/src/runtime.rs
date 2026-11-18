@@ -1177,6 +1177,7 @@ impl SearchOsRuntime {
             semantic_dedup: config.search.semantic_dedup,
             incremental: config.search.incremental,
             query_expansion: config.intelligence.query_expansion,
+            cross_lingual: config.intelligence.cross_lingual,
             reranking: config.intelligence.reranking,
             allow_external: config.tavily_api_key().is_some() || config.brave_api_key().is_some(),
             promotion: promotion_service,

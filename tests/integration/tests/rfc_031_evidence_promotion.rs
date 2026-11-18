@@ -804,6 +804,7 @@ mod pipeline {
                 incremental: true,
                 session_store: None,
                 query_expansion: true,
+                cross_lingual: false,
                 reranking: true,
                 allow_external: true,
                 promotion,

@@ -4,12 +4,14 @@
 //! Extraction → Intent Classification → Temporal Sensitivity → Source
 //! Requirement → Query Fingerprint → Search Profile Resolution.
 
+pub mod crosslingual;
 pub mod expansion;
 pub mod fingerprint;
 pub mod intent;
 pub mod language;
 pub mod normalize;
 
+pub use crosslingual::{cross_lingual_variants, full_cross_lingual_variant, TERM_PAIRS};
 pub use expansion::{ExpansionConfig, QueryExpander};
 pub use fingerprint::{fingerprint, QueryFingerprintParts};
 pub use intent::{

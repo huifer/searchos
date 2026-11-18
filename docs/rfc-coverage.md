@@ -46,7 +46,7 @@ per turn #81.
 | 034 | Policy Management | **Delivered (v1)** | versioned append-only policies, live pointer, rollback; `GET/PUT /policies*`, CLI `policy`. |
 | 035 | Search Watch | **Delivered (v1 + dispatch)** | deterministic quality watchdog over the Analytics Read Model: optional quality/failure/trend thresholds, an optional labelled-dataset ranking check, append-only snapshots (migration v16), `searchos watch run|history`, `POST /watch/run`, `GET /watch/snapshots`. An unavailable signal is `skipped` (never a pass), a trend only fires when BOTH snapshots have `min_sample` observations, and a regression is a result — not an HTTP error. **Dispatch**: `watch.notify_on` statuses (default `regressed`+`degraded`) drive a log notifier plus an optional webhook that receives the report ONLY (no document bodies, queries or notes), and `watch.schedule_interval_seconds` runs it inside the gateway with a clean shutdown. A failing notifier is recorded in the run, never raised. Gap: no per-notifier retry/backoff and no email/Slack-native formatting (webhook JSON only). |
 | 036 | Document Intelligence | **Delivered (v1)** | deterministic extractive summary + keywords computed at ingest, persisted per version (migration v14), surfaced by `document inspect` and `GET /documents/:id`. Extractive by design — no generated text. |
-| 037 | Multilingual Search | **Partial** | CJK bigrams in the analyzer, Chinese seed corpus + graded CJK ranking gate. Gap: cross-lingual embedding/reranking. |
+| 037 | Multilingual Search | **Delivered (v1)** | deterministic cross-lingual recall via a curated bidirectional term dictionary (`searchos-query::crosslingual`, 34 domain pairs): a Chinese query generates ONE translated recall list (`intelligence.cross_lingual = true`, opt-in), fused with the original results by weighted RRF — the original query is never replaced, and a cross-language variant in the external plan competes for the SAME query budget. No LLM, no network, fully reproducible and auditable. Gap: term-level translation only, not full grammatical MT; the table is a starter set, not a general dictionary. |
 | 038 | Evidence Graph | **Delivered (v1)** | `duplicate_of` / `same_content` edges on the response, built from the merge. |
 | 039 | Provider Intelligence | **Partial** | key rotation (ADR-029), health, outcome-driven circuit breaker, live p50/p95. Gap: provider selection by quality signal. |
 | 040 | Search Replay | **Delivered (v1)** | `POST /replay/{trace_id}` replays a recorded decision offline with an optional what-if policy. |
@@ -117,7 +117,7 @@ per turn #81.
 | 034 | 策略管理 | **Delivered (v1)** | 版本化只追加策略、生效指针、回滚；`GET/PUT /policies*`、CLI `policy`。 |
 | 035 | 检索监控订阅 | **Delivered (v1 + 分发)** | 基于分析读模型的确定性质量看门狗：可选的质量/失败率/趋势阈值、可选标注数据集排序检查、只追加快照（migration v16）、`searchos watch run|history`、`POST /watch/run`、`GET /watch/snapshots`。信号不可用即为 `skipped`（绝不当作通过），趋势只有在前后两次快照都达到 `min_sample` 时才触发，退化是结果而不是 HTTP 错误。**分发**：`watch.notify_on` 指定触发状态（默认 `regressed`+`degraded`），驱动日志通知器与可选 webhook（只发报告，不含文档正文、查询或备注），`watch.schedule_interval_seconds` 让网关内置调度并能干净停机。通知失败会记录在本次运行里，绝不抛出。差距：没有按通知器的重试/退避，也没有邮件/Slack 原生格式（仅 webhook JSON）。 |
 | 036 | 文档智能 | **Delivered (v1)** | 摄取时计算确定性抽取式摘要 + 关键词，随版本持久化（migration v14），`document inspect` 与 `GET /documents/:id` 可见。刻意只做抽取式——不生成文本。 |
-| 037 | 多语言检索 | **Partial** | 分析器含 CJK bigram，中文种子语料 + 中文分级排序门禁。差距：跨语言 embedding / rerank。 |
+| 037 | 多语言检索 | **Delivered (v1)** | 通过精选双向术语词典（`searchos-query::crosslingual`，34 条领域术语对）实现确定性跨语言召回：中文查询生成一条翻译召回列表（`intelligence.cross_lingual = true`，可选启用），与原始结果用加权 RRF 融合——原查询绝不被替换，外部计划里的跨语言变体与其余扩展**共享同一查询预算**。无 LLM、无网络，完全可复现可审计。差距：只做术语级翻译，不做完整语法机器翻译；词典是起步集，不是通用词典。 |
 | 038 | 证据图 | **Delivered (v1)** | 响应上的 `duplicate_of` / `same_content` 边，由合并结果构建。 |
 | 039 | Provider 智能 | **Partial** | 多 key 轮换（ADR-029）、健康检查、结果驱动的熔断、实时 p50/p95。差距：按质量信号选 provider。 |
 | 040 | 检索重放 | **Delivered (v1)** | `POST /replay/{trace_id}` 离线重放已记录决策，可带假设策略。 |
@@ -176,7 +176,6 @@ per turn #81.
 
 Ordered by how much they would close a real user-visible hole:
 
-1. **037 cross-lingual retrieval** — CJK works, cross-lingual queries do not.
-2. **049 structured extraction** — extraction returns prose, not schema-shaped records.
+1. **049 structured extraction** — extraction returns prose, not schema-shaped records.
 
 Everything marked **Reject** is a frozen decision, not a backlog item.

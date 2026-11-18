@@ -74,6 +74,7 @@ fn rebuild_deps(runtime: &Arc<searchos_core::SearchOsRuntime>) -> Arc<SearchDepe
         expansion_mode: "followup".into(),
         incremental: true,
         query_expansion: true,
+        cross_lingual: false,
         reranking: true,
         allow_external: false,
         promotion: None,
