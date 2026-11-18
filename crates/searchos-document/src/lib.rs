@@ -11,6 +11,7 @@ pub mod hash;
 pub mod intelligence;
 pub mod lifecycle;
 pub mod outbox;
+pub mod structures;
 
 pub use canonical::{canonical_url, source_host};
 pub use chunk::{chunk_text, ChunkingConfig};
@@ -18,6 +19,9 @@ pub use hash::{content_hash, content_ref, CONTENT_REF_PREFIX};
 pub use lifecycle::decide_version_diff;
 pub use outbox::{OutboxEntity, OutboxEvent, OutboxOperation};
 pub use searchos_domain::document::VersionDiff;
+pub use structures::{
+    extract_structures, StructureBlock, StructureExtraction, StructureKind, TableRecord,
+};
 
 /// Bump this when the extractor changes output shape so new versions are
 /// written even for identical upstream content.

@@ -681,6 +681,13 @@ export class SearchOSClient {
     return this.get(`/trace/${encodeURIComponent(traceId)}`) as Promise<DecisionTrace>;
   }
 
+  // -- Structured extraction (RFC-049) ---------------------------------------
+
+  /** Deterministic structures (code blocks, tables, lists, headings, links). */
+  extractStructures(input: { text?: string; url?: string }): Promise<Record<string, unknown>> {
+    return this.post("/structures", input);
+  }
+
   // -- Online feedback (RFC-033) --------------------------------------------
 
   submitFeedback(input: {

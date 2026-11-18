@@ -578,6 +578,21 @@ The SearchOS implementation (`~/git_repo/searchos`) is verified by these command
   dir hits the Tantivy lock — the test uses `init_with_paths` with fresh
   index paths.
 
+- **RFC-049 structured extraction (2026-11-16):**
+  `crates/searchos-document/src/structures.rs` = `StructureKind`
+  (code_block/table/list/heading/link), `StructureBlock` (content + 1-based
+  `line` + language/level/url/label/headers/rows), `TableRecord` (records
+  keyed by the table's OWN header names, `to_records()` → JSON objects) and
+  `extract_structures(text)`. Markdown pipe tables only; `\|` escapes stay
+  in the cell; duplicate headers become `Name_2`; HTML tables are not
+  converted upstream. HTTP `POST /structures` (`{text}` or `{url}` — a URL
+  is fetched as a PREVIEW via `fetch_preview`, nothing persisted) and CLI
+  `searchos structures --text|--file|--url` (stdin when neither). OpenAPI
+  StructureBlock/TableRecord/StructureExtraction; both SDKs updated. Gates:
+  10 extractor unit tests + 2 HTTP tests
+  (`structures_endpoint_extracts_blocks_and_records`,
+  `structures_endpoint_requires_text_or_url`).
+
 **Known environment notes:**
 - LanceDB requires `protoc` at build time (`brew install protobuf`).
 - Live network tests (fetch of https://example.com) tolerate sandbox timeouts by design.

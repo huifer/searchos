@@ -461,6 +461,8 @@ pub fn api_route_table() -> Vec<RouteSpec> {
         RouteSpec::new("GET", "/system/status", get(system_status)),
         // RFC-063: the federated source catalog (read-only observability).
         RouteSpec::new("GET", "/sources", get(list_sources)),
+        // RFC-049: deterministic structured extraction.
+        RouteSpec::new("POST", "/structures", post(extract_structures)),
         // RFC-033: human feedback -> graded qrels -> evaluation dataset.
         RouteSpec::new("POST", "/feedback", post(submit_feedback)),
         RouteSpec::new("GET", "/feedback", get(list_feedback)),
@@ -2063,6 +2065,49 @@ async fn list_traces(
 
 /// `GET /system/status` — one aggregated read-only view for the console
 /// (equivalent to `searchos doctor`, RFC-019 19.5).
+async fn extract_structures(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    state.authorize(&headers)?;
+    let text = body
+        .get("text")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let url = body.get("url").and_then(|v| v.as_str()).map(str::to_string);
+    let text = match (text, url) {
+        (Some(text), _) => text,
+        (None, Some(url)) => {
+            // Preview only: nothing is fetched into the knowledge store.
+            let preview = state
+                .runtime
+                .application
+                .fetch_service
+                .fetch_preview(&url)
+                .await
+                .map_err(|e| ApiError::new(StatusCode::BAD_GATEWAY, "provider", e.to_string()))?;
+            preview.markdown
+        }
+        (None, None) => {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "validation",
+                "text or url is required",
+            ))
+        }
+    };
+    let extraction = searchos_document::structures::extract_structures(&text);
+    Ok(Json(serde_json::json!({
+        "blocks": extraction.blocks,
+        "tables": extraction.tables,
+        "counts": {
+            "blocks": extraction.blocks.len(),
+            "tables": extraction.tables.len(),
+        },
+    })))
+}
+
 fn feedback_service(
     state: &AppState,
 ) -> Result<Arc<searchos_application::feedback::FeedbackService>, ApiError> {
@@ -4571,6 +4616,39 @@ mod tests {
         let cost = call(app, "/cost/summary").await;
         assert!(cost["summary"].is_object());
         assert_eq!(cost["is_estimate"], true);
+    }
+
+    /// RFC-049: the structured-extraction endpoint returns the parsed
+    /// structures and the header-keyed table records.
+    #[tokio::test]
+    async fn structures_endpoint_extracts_blocks_and_records() {
+        let (st, _d) = state().await;
+        let app = router(st);
+        let doc = "## Parameters\n\n| Name | Type |\n|---|---|\n| top_k | int |\n| timeout | int |\n\n```rust\nlet x = 1;\n```";
+        let (status, body) =
+            call_post(app, "/structures", serde_json::json!({ "text": doc })).await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["counts"]["tables"], 1, "{body}");
+        let table = &body["tables"][0];
+        assert_eq!(table["headers"][0], "Name");
+        assert_eq!(table["rows"][0]["Name"], "top_k");
+        assert_eq!(table["rows"][0]["Type"], "int");
+        let blocks = body["blocks"].as_array().unwrap();
+        assert!(blocks
+            .iter()
+            .any(|b| b["kind"] == "code_block" && b["language"] == "rust"));
+        assert!(blocks.iter().any(|b| b["kind"] == "heading"));
+    }
+
+    /// RFC-049: a request without text or url is a client error, not an
+    /// empty success.
+    #[tokio::test]
+    async fn structures_endpoint_requires_text_or_url() {
+        let (st, _d) = state().await;
+        let app = router(st);
+        let (status, body) = call_post(app, "/structures", serde_json::json!({})).await;
+        assert_eq!(status, 400, "{body}");
+        assert_eq!(body["error"]["code"], "validation");
     }
 
     async fn call(app: Router, path: &str) -> serde_json::Value {

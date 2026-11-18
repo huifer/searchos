@@ -27,6 +27,13 @@ multi-arch images, and attaches the matching section of this file.
 
 ### Added
 
+- **Structured extraction (RFC-049).** Prose in, structures out: fenced
+  code blocks (with their language), markdown tables flattened into
+  header-keyed records, lists, headings with levels, and links — every block
+  carries the source line it came from. Deterministic, no LLM, no invented
+  fields: a record's keys are the table's own header names. `POST /structures`
+  accepts text or a preview URL (nothing is persisted) and
+  `searchos structures --text|--file|--url` does the same locally.
 - **Cross-lingual retrieval (RFC-037).** A curated bidirectional term
   dictionary (34 domain pairs) lets a Chinese query find English documents
   describing the same concept, and vice versa. With `intelligence.cross_lingual

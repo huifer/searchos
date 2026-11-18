@@ -58,7 +58,7 @@ per turn #81.
 | 046 | Result Normalization | **Delivered** | canonical URL implementation, `merge_evidence` normalization and conflict retention. |
 | 047 | Ranking Engine | **Delivered** | weighted RRF fusion, title boost, fuzzy fallback, feature + remote rerankers, vertical routing. |
 | 048 | Vertical Search | **Delivered (v1)** | `RetrievalVertical` / `VerticalRouter` with declared weights (RFC-065 slice). |
-| 049 | Structured Extraction | **Partial** | content extraction and HTML sanitization exist. Gap: schema-shaped structured extraction. |
+| 049 | Structured Extraction | **Delivered (v1)** | deterministic structure extraction in `searchos-document::structures`: fenced code blocks (with language), markdown tables (parsed into header-keyed RECORDS — the table's own header names, nothing invented), lists, headings (level) and links, each block carrying its 1-based source line so it is traceable. `POST /structures` (text or a preview URL — nothing persisted) and CLI `searchos structures --text|--file|--url`. No LLM, no interpretation, fully reproducible. Gap: no schema-driven extraction (a caller-defined field mapping), and HTML tables are not converted to markdown upstream. |
 | 050 | Source Discovery | **Partial** | source registry + `GET /sources` catalog exist. Gap: automatic source discovery. |
 | 051 | Crawl Frontier | **Partial** | crawler selection, robots/Crawl-delay, failure isolation. Gap: frontier scheduling across hosts. |
 | 052 | Browser Rendering | **Reject** | browser engine is an explicit v1 non-goal. |
@@ -129,7 +129,7 @@ per turn #81.
 | 046 | 结果归一化 | **Delivered** | 统一 canonical URL 实现、`merge_evidence` 归一化与冲突保留。 |
 | 047 | 排序引擎 | **Delivered** | 加权 RRF 融合、标题加权、模糊回退、特征 + 远程 reranker、垂直路由。 |
 | 048 | 垂直检索 | **Delivered (v1)** | `RetrievalVertical` / `VerticalRouter` + 声明权重（RFC-065 切片）。 |
-| 049 | 结构化抽取 | **Partial** | 内容抽取与 HTML 清洗已有。差距：按 schema 的结构化抽取。 |
+| 049 | 结构化抽取 | **Delivered (v1)** | `searchos-document::structures` 确定性抽取：围栏代码块（含语言）、Markdown 表格（解析成以**表头自身字段名**为键的记录——不臆造字段）、列表、标题（层级）与链接，每个块都带 1-based 源行号，可回溯。`POST /structures`（文本或预览 URL，不落库）与 CLI `searchos structures --text|--file|--url`。无 LLM、无解释性加工、完全可复现。差距：没有 schema 驱动的抽取（调用方自定义字段映射），且上游 HTML 表格未转成 Markdown。 |
 | 050 | 来源发现 | **Partial** | 来源注册表 + `GET /sources` 目录已有。差距：自动发现来源。 |
 | 051 | 爬取前沿 | **Partial** | 爬虫选择、robots/Crawl-delay、失败隔离已有。差距：跨主机的调度前沿。 |
 | 052 | 浏览器渲染 | **Reject** | 浏览器引擎是明确的 v1 非目标。 |
@@ -176,6 +176,5 @@ per turn #81.
 
 Ordered by how much they would close a real user-visible hole:
 
-1. **049 structured extraction** — extraction returns prose, not schema-shaped records.
 
 Everything marked **Reject** is a frozen decision, not a backlog item.

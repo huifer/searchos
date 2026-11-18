@@ -228,6 +228,18 @@ enum Command {
         #[command(subcommand)]
         cmd: FeedbackCmd,
     },
+    /// Deterministic structured extraction (RFC-049)
+    Structures {
+        /// Text to parse (stdin when neither text nor file is given)
+        #[arg(long)]
+        text: Option<String>,
+        /// File to parse
+        #[arg(long)]
+        file: Option<PathBuf>,
+        /// URL to fetch (preview only, nothing is persisted)
+        #[arg(long)]
+        url: Option<String>,
+    },
     /// Cost ledger operations
     Cost {
         #[command(subcommand)]
@@ -1623,6 +1635,34 @@ async fn run(cli: Cli) -> Result<(), SearchOsError> {
                 }
                 None => println!("{json}"),
             }
+            Ok(())
+        }
+        Command::Structures { text, file, url } => {
+            let content = match (text, file, url) {
+                (Some(text), _, _) => text.clone(),
+                (_, Some(path), _) => std::fs::read_to_string(path)
+                    .map_err(|e| SearchOsError::Storage(format!("read {}: {e}", path.display())))?,
+                (_, _, Some(url)) => {
+                    let cli_ref = &cli;
+                    let rt = runtime(cli_ref).await?;
+                    let preview = rt.application.fetch_service.fetch_preview(url).await?;
+                    preview.markdown
+                }
+                (None, None, None) => {
+                    use std::io::Read;
+                    let mut buffer = String::new();
+                    std::io::stdin()
+                        .read_to_string(&mut buffer)
+                        .map_err(|e| SearchOsError::Internal(e.to_string()))?;
+                    buffer
+                }
+            };
+            let extraction = searchos_document::structures::extract_structures(&content);
+            print(
+                &serde_json::to_value(&extraction)
+                    .map_err(|e| SearchOsError::Internal(e.to_string()))?,
+                format,
+            );
             Ok(())
         }
         Command::Feedback { cmd } => {

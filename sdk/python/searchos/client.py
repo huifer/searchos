@@ -274,6 +274,19 @@ class SearchOSClient:
         """Raw recorded decision trace at the canonical path."""
         return self._get(f"/trace/{trace_id}")
 
+    # -- Structured extraction (RFC-049) ---------------------------------------
+
+    def extract_structures(
+        self, *, text: str | None = None, url: str | None = None
+    ) -> dict[str, Any]:
+        """Deterministic structures: code blocks, tables, lists, headings, links."""
+        body: dict[str, Any] = {}
+        if text is not None:
+            body["text"] = text
+        if url is not None:
+            body["url"] = url
+        return self._post("/structures", body)
+
     # -- Online feedback (RFC-033) --------------------------------------------
 
     def submit_feedback(

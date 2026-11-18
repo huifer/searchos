@@ -15,6 +15,7 @@ futures-util = "0.3"
 tracing = { workspace = true }
 searchos-domain = { workspace = true }
 searchos-federated = { workspace = true }
+searchos-document = { workspace = true }
 searchos-application = { workspace = true }
 searchos-core = { workspace = true }
 searchos-observability = { workspace = true }

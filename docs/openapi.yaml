@@ -1098,6 +1098,33 @@ paths:
               schema: { $ref: '#/components/schemas/SourceCatalog' }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
+  /structures:
+    post:
+      tags: [Search]
+      summary: Extract structures from text or a URL (RFC-049)
+      description: >-
+        Deterministic extraction of code blocks, tables, lists, headings and
+        links from markdown-ish text. Tables are also flattened into records
+        keyed by the table's OWN header names. No LLM, no invented fields: a
+        `url` is fetched as a PREVIEW only and nothing is persisted.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                text: { type: string }
+                url: { type: string }
+      responses:
+        '200':
+          description: Extracted structures.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StructureExtraction' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
   /feedback:
     post:
       tags: [Search]
@@ -1777,6 +1804,53 @@ components:
             not, so the ordering decision can be reviewed after the fact.
 
         currency: { type: string }
+    StructureBlock:
+      type: object
+      description: >-
+        One extracted structure. `line` is the 1-based start line in the
+        source text, so every block is traceable back to its origin.
+      required: [kind, content, line]
+      properties:
+        kind:
+          type: string
+          enum: [code_block, table, list, heading, link]
+        content: { type: string }
+        line: { type: integer }
+        language: { type: string, nullable: true }
+        level: { type: integer, nullable: true }
+        url: { type: string, nullable: true }
+        label: { type: string, nullable: true }
+        headers:
+          type: array
+          items: { type: string }
+        rows:
+          type: array
+          items:
+            type: array
+            items: { type: string }
+    TableRecord:
+      type: object
+      description: A table flattened into records keyed by its header names.
+      required: [headers, rows]
+      properties:
+        headers:
+          type: array
+          items: { type: string }
+        rows:
+          type: array
+          items:
+            type: object
+            additionalProperties: { type: string }
+    StructureExtraction:
+      type: object
+      required: [blocks, tables]
+      properties:
+        blocks:
+          type: array
+          items: { $ref: '#/components/schemas/StructureBlock' }
+        tables:
+          type: array
+          items: { $ref: '#/components/schemas/TableRecord' }
     FeedbackEvent:
       type: object
       required: [id, created_at, workspace_id, query, url, verdict]

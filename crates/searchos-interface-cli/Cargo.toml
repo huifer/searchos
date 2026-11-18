@@ -22,6 +22,7 @@ chrono = { workspace = true }
 searchos-domain = { workspace = true }
 searchos-policy = { workspace = true }
 searchos-query = { workspace = true }
+searchos-document = { workspace = true }
 searchos-decision = { workspace = true }
 searchos-cost = { workspace = true }
 searchos-cache = { workspace = true }
