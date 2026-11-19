@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/状态-v0.1.1%20已实现-6f7277" alt="status" />
+  <img src="https://img.shields.io/badge/状态-v0.2.0%20已实现-6f7277" alt="status" />
   <img src="https://img.shields.io/badge/rust-1.94%2B-orange?logo=rust" alt="rust" />
   <img src="https://img.shields.io/badge/next.js-16-black?logo=nextdotjs" alt="nextjs" />
   <img src="https://img.shields.io/badge/license-MIT-36f555" alt="license" />
@@ -56,6 +56,8 @@ SearchOS 用一套统一的基础设施解决这些问题。
 - **搜索 Agent 接口**——有界迭代检索（查询数与成本上限跨轮累计）、每次响应都带 `coverage_gaps`、
   `POST /search/plan`（先规划不花钱）、`POST /search/follow-up` 与 MCP `research`/`plan`
   支撑多轮研究。
+- **Agent 注册表**——按工作区声明 agent 身份：规范化 slug、显示名、描述与 enabled 生命周期标记；
+  通过 HTTP 与 CLI 可读，并与分析、trace、成本台账共享同一个 `agent_id`。
 - **可扩展核心**——Manifest 生命周期、权限、故障隔离的发现与隔离；原生 Provider 与网站爬虫随主程序编译。
 - **成本感知路由**——综合质量、新鲜度、延迟、成本、可用性进行评分选择；并提供 Singleflight 请求合并。
 - **分布式就绪（Distributed-ready）**——从数据模型与接口层面第一天就为多节点设计，但不在 v1 强制引入分布式复杂度。
@@ -149,12 +151,12 @@ MCP 仅 stdio（ADR-031），因此没有 MCP 容器——远程 agent 走 REST 
 每个版本都会发布预构建镜像：
 
 ```bash
-docker pull ghcr.io/huifer/searchos-gateway:0.1.1     # linux/amd64 + linux/arm64
-docker pull ghcr.io/huifer/searchos-console:0.1.1
+docker pull ghcr.io/huifer/searchos-gateway:0.2.0     # linux/amd64 + linux/arm64
+docker pull ghcr.io/huifer/searchos-console:0.2.0
 ```
 
 镜像由 release 工作流用自己的 `GITHUB_TOKEN` 推送，不需要额外的仓库密钥，
-并且**支持匿名拉取**——已针对已发布的 v0.1.1 产物验证：无需 `docker login`
+并且**支持匿名拉取**——已针对已发布的 v0.2.0 产物验证：无需 `docker login`
 即可 `docker pull`，且从 registry 拉下的网关镜像可直接响应 `/health`、
 `/metrics`，并完成完整的 ingest → search 链路。
 `docker-compose.yml` 使用完全相同的名字与 tag，所以 `docker compose pull` +
@@ -169,8 +171,8 @@ grep '^version' Cargo.toml
 # 2. 在 CHANGELOG.md 中为新版本添加小节
 
 # 3. 打 tag 并推送——release 工作流会接管
-git tag v0.1.1
-git push origin v0.1.1
+git tag v0.2.0
+git push origin v0.2.0
 ```
 
 `.github/workflows/release.yml` 会先跑与 CI 相同的门禁，再构建带 SHA-256
@@ -241,7 +243,7 @@ CI 在每次 push / PR 时运行 fmt / clippy / test 以及控制台 typecheck +
 ## 开发路线图
 
 以下分阶段计划属于**历史资料**：[`docs/feature-roadmap.md`](docs/feature-roadmap.md)
-中 Wave 0–4 的全部条目均已关闭并验证，当前仓库已发布为 **v0.1.1**。
+中 Wave 0–4 的全部条目均已关闭并验证，当前仓库已发布为 **v0.2.0**。
 [`docs/roadmap.md`](docs/roadmap.md) 的表格仅保留规划依据，不作为当前状态；
 发布记录见 [`CHANGELOG.md`](CHANGELOG.md)。
 
@@ -254,12 +256,13 @@ CI 在每次 push / PR 时运行 fmt / clippy / test 以及控制台 typecheck +
 | P4 | 扩展系统 |
 | P5 | AI 搜索智能 |
 | P6 | Agent 集成（MCP、TypeScript / Python SDK） |
-| P7 | 生产发布（已发布为 v0.1.1） |
+| P7 | 生产发布（已发布为 v0.2.0） |
 
 ## 文档
 
 - [架构说明](docs/architecture.md)
-- [正式 RFC 套件（16 份 RFC + 附录 17–24 + RFC-026..029）](docs/rfc/README.md)
+- [正式 RFC 套件（RFC-001…087 + 附录 17–30）](docs/rfc/README.md)
+  - [RFC 覆盖矩阵——每个 RFC 的权威状态](docs/rfc-coverage.md)
   - [RFC-001：产品架构](docs/rfc/rfc-001-product-architecture.md)
   - [RFC-004：搜索决策引擎](docs/rfc/rfc-004-search-decision-engine.md)
   - [附录 23：决策引擎工程基线（RFC-004 v1.1）](docs/rfc/part-23-decision-engineering-baseline.md)
@@ -283,17 +286,20 @@ CI 在每次 push / PR 时运行 fmt / clippy / test 以及控制台 typecheck +
 
 ## 当前限制
 
-以下是 v0.1.1 有意划定的边界，不是未通过的检查。完整 non-goal 清单见
-[`docs/feature-roadmap.md`](docs/feature-roadmap.md) §6。
+以下是有意划定的边界，不是未通过的检查。完整 non-goal 清单见
+[`docs/feature-roadmap.md`](docs/feature-roadmap.md) §6；逐 RFC 状态见
+[`docs/rfc-coverage.md`](docs/rfc-coverage.md)。
 
-- **本地 embedding 是确定性的，不是语义模型。** 运行时使用 `HashingEmbedder`
-  生成向量、记忆与语义缓存向量（`crates/searchos-core/src/runtime.rs`）。
-  `memory.embedding.provider` 设为非 `local` 时只会打印警告并回退，尚未接入
-  远程 embedding 模型或模型版本迁移。向量相似度与语义缓存复用应理解为
-  词法哈希邻近，而非模型语义。
-- **未挂载 reranker provider。** `Reranker` 端口与 `NeverReranker` 已存在，
-  但按 RFC-007 §7.7 重排默认不执行，`HybridRetriever` 构建时未注入。
-  `intelligence.reranking` 目前控制的是 RRF 结果缓存，而非模型重排。
+- **本地 embedding 是确定性的，不是语义模型。** 默认 Local Mode 运行时使用
+  `HashingEmbedder` 生成向量、记忆与语义缓存向量。配置后可使用 [OI] 兼容的
+  远程 embedding provider（批量、维度校验、按模型维度重建 LanceDB）；但本地
+  回退仍应理解为词法哈希邻近，而非模型语义。
+- **reranker 已接入。** 默认挂载 `FeatureReranker`（离线 title/body/phrase/recency
+  特征）；可配置 `RemoteReranker` cross-encoder 端点，并作为 `Reranking` 成本事件计费。
+  `NeverReranker` 仅用于测试与显式关闭。
+- **Agent 注册表的强制尚未接线。** 注册表会声明身份、描述与 `enabled`，并保存
+  建议性的每分钟预算；执行者仍是限流器，搜索准入尚未拒绝 disabled agent，也
+  没有强制该配额。
 - **SDK 只有 TypeScript 与 Python。** Rust 使用者直接依赖 workspace crates，
   没有单独的 `sdk/rust` 客户端。
 - **MCP 仅支持 stdio**（ADR-031）；`/crawl` 与 `/map` 不在 v1 范围内。

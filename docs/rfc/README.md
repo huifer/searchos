@@ -91,19 +91,23 @@ priority, M0–M8 milestones and a 24-section RFC template.
 
 | 最终编号 | 名称 | 状态 |
 | --- | --- | --- |
-| RFC-062 | [Federated Search Architecture](rfc-062-federated-search-architecture.md) | Implemented (kernel: `searchos-federated`) |
-| RFC-063 | [Search Source Registry](rfc-063-source-registry.md) | Implemented (in-process kernel) |
-| RFC-064 | [Unified Resource Model](rfc-064-unified-resource-model.md) | Implemented (kernel) |
-| RFC-065 | Hybrid Retrieval | Partially implemented |
-| RFC-066 | Trust-aware Result Fusion | Partially implemented |
-| RFC-067 | Context Assembly | P1 slice delivered (`searchos-context`) |
-| RFC-068 | Token Budget Management | P1 slice delivered (`searchos-context`) |
-| RFC-069–074 | Agent Memory & Deep Research | Planned / partially implemented |
-| RFC-075–086 | Cost, Provider, Extension, Distributed | Planned / staged |
-| RFC-087 | Privacy-aware Ingestion & Egress | Planned (P3) |
+| RFC-062 | [Federated Search Architecture](rfc-062-federated-search-architecture.md) | Delivered (v1; `searchos-federated`) |
+| RFC-063 | [Search Source Registry](rfc-063-source-registry.md) | Delivered (v1; scoped registry) |
+| RFC-064 | [Unified Resource Model](rfc-064-unified-resource-model.md) | Delivered (v1; 11 resource types) |
+| RFC-065 | Hybrid Retrieval | Delivered (v1; vertical routing) |
+| RFC-066 | Trust-aware Result Fusion | Delivered (v1; weighted RRF + reliability ordering) |
+| RFC-067 | Context Assembly | Delivered (`searchos-context`) |
+| RFC-068 | Token Budget Management | Delivered (`searchos-context`) |
+| RFC-069–074 | Agent Memory & Deep Research | Delivered (v1 slices) |
+| RFC-075–080 | Cost, Provider & Benchmark | Delivered (v1 slices) |
+| RFC-081–083 | Extension SDK / Crawler / Isolation | Partial (no external-process plugins) |
+| RFC-084–085 | Distributed Runtime / Multi-node | Reject for v1 (frozen *Staged* decision) |
+| RFC-086 | Search Intelligence Evaluation | Delivered (v1) |
+| RFC-087 | Privacy-aware Ingestion & Egress | Delivered (v1 slice) |
 | [RFC Master Index](rfc-master-index.md) | 最终总目录、职责、依赖、优先级 | Frozen baseline |
 
-编号冲突（029 / 031 / 087）与逐能力差距见
+逐 RFC 的权威状态与证据见 [`../rfc-coverage.md`](../rfc-coverage.md)。
+编号冲突（029 / 031 / 087）与详细差距见
 [`../gap-analysis-master-index.md`](../gap-analysis-master-index.md)。最重要的工程
 修正：联邦策略必须与 `SearchMode` 正交，不得新增 mode 变体，否则会破坏
 `INV-30-18`、Tavily 兼容契约、看板 `search_mode` 下推与缓存键。
@@ -160,6 +164,6 @@ RFC 不允许仅描述功能目标而缺少可验证的接口、数据结构和�
 2. **跨 Agent 知识隔离**：默认 Workspace 隔离，显式授权后才共享，不应该默认全局共享。
 3. **质量评估边界**：SearchOS 验证证据质量，不保证上层 LLM 最终答案绝对正确。
 
-**RFC Suite Version:** 1.0 (+ Annexes 23/24/30; Annex 30 and RFC-031 implemented) · Final RFC Master Index 001–087 (frozen)
-**Status:** Implemented Engineering Baseline (Annex 30 / RFC-031); final Master Index + RFC-062/063/064 kernels + `searchos-context` (067/068) wired through all transports
-**Next Step:** RFC-062 Phase 2 — wrap local retrieval and the provider router as `SearchSource`s, then the Phase 3 executor with the equivalence gate `federated_default_matches_legacy_pipeline`. Keep RFC-004 v1.1 acceptance tests (Part 23) green on every change; revisit deferred distributed/WASM capabilities in v1.5+.
+**RFC Suite Version:** 1.0 (+ Annexes 17–30; RFC-001…087 final catalogue) · v0.2.0 released
+**Status:** Delivered engineering baseline. `docs/rfc-coverage.md` is the authoritative per-RFC status: 73 Delivered, 10 Partial, 4 frozen Reject after RFC-060 and the RFC-039 quality-signal selection closeout.
+**Next Step:** close the remaining Partial gaps in priority order (032 publisher trust, 042 billing, 050 source discovery, 051 crawl frontier, 054 job scheduling, 056 streaming, 059 contradiction graph, 081–083 external-process/sandboxed extensions). Keep the Part 23 acceptance tests and the RFC-060/v0.2.0 gates green on every change; the four Reject RFCs and LLM answer generation stay non-goals.

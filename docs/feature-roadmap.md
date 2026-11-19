@@ -2,11 +2,12 @@
 
 > **STATUS (2026-11): CLOSED.** Every Wave 0–4 item in this document has been
 > implemented and verified. It is retained for the rationale, phasing and
-> non-goals, **not** as a current status list. The authoritative status is the
-> completion audit in `.memory/searchos-project.md`, the CI gates in
-> `.github/workflows/ci.yml` / `tests/README.md`, and `docs/deployment.md`.
-> Wave 1–2 descriptions below
-> are stale (they predate the Part 30 execution-correctness pass).
+> non-goals, **not** as a current status list. The authoritative per-RFC status
+> is [`docs/rfc-coverage.md`](rfc-coverage.md), the release notes are in
+> [`CHANGELOG.md`](../CHANGELOG.md), and the CI gates live in
+> `.github/workflows/ci.yml` / `tests/README.md` and `docs/deployment.md`.
+> Wave 1–2 descriptions below are stale (they predate the Part 30
+> execution-correctness pass).
 >
 > 目标：把当前 SearchOS 从主链路可运行，推进到执行正确、契约可信、可发布、可持续扩展。
 > 评估时间：2026-11-09（Asia/Shanghai）。评估期间同一工作树存在并行修改，以下状态以写入前的最新代码为准。

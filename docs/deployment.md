@@ -131,8 +131,8 @@ against a gateway that cannot serve its Read Model.
 ### 9. Building images without compose
 
 ```bash
-docker build --target gateway -t ghcr.io/huifer/searchos-gateway:0.1.1 .
-docker build --target console -t ghcr.io/huifer/searchos-console:0.1.1 .
+docker build --target gateway -t ghcr.io/huifer/searchos-gateway:0.2.0 .
+docker build --target console -t ghcr.io/huifer/searchos-console:0.2.0 .
 ```
 
 The Rust build uses BuildKit cache mounts for the cargo registry and
@@ -157,27 +157,23 @@ Every release also publishes ready-to-run images to GHCR, so you do not have to
 build locally at all:
 
 ```bash
-docker pull ghcr.io/huifer/searchos-gateway:0.1.1     # linux/amd64 + linux/arm64
-docker pull ghcr.io/huifer/searchos-console:0.1.1
+docker pull ghcr.io/huifer/searchos-gateway:0.2.0     # linux/amd64 + linux/arm64
+docker pull ghcr.io/huifer/searchos-console:0.2.0
 ```
 
 The release workflow logs in with its own `GITHUB_TOKEN` (the workflow already
-declares `packages: write`), so no registry secret is required, and the
-published packages are **anonymously pullable** — verified against `v0.1.1`:
-`docker pull ghcr.io/huifer/searchos-gateway:0.1.1` succeeds without
-`docker login`, and the pulled gateway image answers `/health` (reporting
-`version 0.1.1`), serves `/metrics`, and completes an ingest → search round
-trip.
-
-If a future package ever shows up private, the visibility can be changed in
+declares `packages: write`), so no registry secret is required. The `v0.2.0`
+release run 44453555713 published both images, and anonymous
+`docker manifest inspect` reports `linux/amd64` + `linux/arm64` for both.
+If a package ever shows up private, the visibility can be changed in
 GitHub → Packages → the package → Settings → General, or with the
 `package-visibility` workflow once a classic PAT with `write:packages` is
 stored as the `PACKAGES_ADMIN_TOKEN` repository secret — the workflow's own
 `GITHUB_TOKEN` cannot do it, because `/user/packages` resolves to the bot
 identity (the call answers 404).
 
-Each architecture is also available on its own tag (`:0.1.1-amd64`,
-`:0.1.1-arm64`); the version tag is a multi-arch manifest that joins the two
+Each architecture is also available on its own tag (`:0.2.0-amd64`,
+`:0.2.0-arm64`); the version tag is a multi-arch manifest that joins the two
 native builds.
 
 ### 10. Release and rollback
@@ -189,7 +185,7 @@ multi-arch images, and publishes a GitHub release with the matching
 
 ```bash
 grep '^version' Cargo.toml      # the tag must match this
-git tag v0.1.1 && git push origin v0.1.1
+git tag v0.2.0 && git push origin v0.2.0
 ```
 
 **Rollback** is a two-step operation because the knowledge base is data, not
@@ -325,8 +321,8 @@ Read Model 的网关启动。
 ### 9. 不用 compose 单独构建镜像
 
 ```bash
-docker build --target gateway -t ghcr.io/huifer/searchos-gateway:0.1.1 .
-docker build --target console -t ghcr.io/huifer/searchos-console:0.1.1 .
+docker build --target gateway -t ghcr.io/huifer/searchos-gateway:0.2.0 .
+docker build --target console -t ghcr.io/huifer/searchos-console:0.2.0 .
 ```
 
 Rust 构建对 cargo registry 与 `target/` 使用 BuildKit cache mount，源码变更后
@@ -348,22 +344,20 @@ Rust 构建对 cargo registry 与 `target/` 使用 BuildKit cache mount，源码
 每个版本也会把可直接运行的镜像发布到 GHCR，完全不需要本地构建：
 
 ```bash
-docker pull ghcr.io/huifer/searchos-gateway:0.1.1     # linux/amd64 + linux/arm64
-docker pull ghcr.io/huifer/searchos-console:0.1.1
+docker pull ghcr.io/huifer/searchos-gateway:0.2.0     # linux/amd64 + linux/arm64
+docker pull ghcr.io/huifer/searchos-console:0.2.0
 ```
 
 release 工作流用自带的 `GITHUB_TOKEN` 登录（工作流已声明 `packages: write`），
-不需要任何 registry 密钥，并且发布出来的 package **支持匿名拉取**——已针对 v0.1.1
-验证：不执行 `docker login` 也能 `docker pull ghcr.io/huifer/searchos-gateway:0.1.1`，
-拉下来的网关镜像能响应 `/health`（返回 `version 0.1.1`）与 `/metrics`，
-并完成完整的 ingest → search 链路。
+不需要任何 registry 密钥。`v0.2.0` 的 release run 44453555713 发布了两个镜像，
+匿名 `docker manifest inspect` 可以看到两者的 `linux/amd64` + `linux/arm64`。
 
 如果将来某个新 package 是私有的，可以在 GitHub → Packages → 对应 package →
 Settings → General 改可见性；或者存一个带 `write:packages` 的经典 PAT 作为
 `PACKAGES_ADMIN_TOKEN` 密钥后运行 `package-visibility` 工作流——工作流自带的
 `GITHUB_TOKEN` 做不到，因为 `/user/packages` 会解析成 bot 身份（调用返回 404）。
 
-每个架构也有独立 tag（`:0.1.1-amd64`、`:0.1.1-arm64`）；版本 tag 是把两个原生
+每个架构也有独立 tag（`:0.2.0-amd64`、`:0.2.0-arm64`）；版本 tag 是把两个原生
 构建合在一起的多架构 manifest。
 
 ### 10. 发版与回滚
@@ -374,7 +368,7 @@ Settings → General 改可见性；或者存一个带 `write:packages` 的经�
 
 ```bash
 grep '^version' Cargo.toml      # tag 必须与此一致
-git tag v0.1.1 && git push origin v0.1.1
+git tag v0.2.0 && git push origin v0.2.0
 ```
 
 **回滚**分两步，因为知识库是数据而不只是镜像：

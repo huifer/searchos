@@ -13,6 +13,10 @@ today, and if so, how far?* It supersedes the scattered status notes in
 the detailed evidence log for RFC-062…087) and the historical planning tables
 in [`feature-roadmap.md`](feature-roadmap.md) / [`roadmap.md`](roadmap.md).
 
+**Current totals:** 73 Delivered · 10 Partial · 4 Reject (87 numbered slots; the
+four Rejects are frozen v1 non-goals, so 73 of 83 in-scope slots are fully
+delivered).
+
 **Legend**
 
 | Status | Meaning |
@@ -50,7 +54,7 @@ per turn #81.
 | 036 | Document Intelligence | **Delivered (v1)** | deterministic extractive summary + keywords computed at ingest, persisted per version (migration v14), surfaced by `document inspect` and `GET /documents/:id`. Extractive by design — no generated text. |
 | 037 | Multilingual Search | **Delivered (v1)** | deterministic cross-lingual recall via a curated bidirectional term dictionary (`searchos-query::crosslingual`, 34 domain pairs): a Chinese query generates ONE translated recall list (`intelligence.cross_lingual = true`, opt-in), fused with the original results by weighted RRF — the original query is never replaced, and a cross-language variant in the external plan competes for the SAME query budget. No LLM, no network, fully reproducible and auditable. Gap: term-level translation only, not full grammatical MT; the table is a starter set, not a general dictionary. |
 | 038 | Evidence Graph | **Delivered (v1)** | `duplicate_of` / `same_content` edges on the response, built from the merge. |
-| 039 | Provider Intelligence | **Partial** | key rotation (ADR-029), health, outcome-driven circuit breaker, live p50/p95. Gap: provider selection by quality signal. |
+| 039 | Provider Intelligence | **Delivered (v1)** | key rotation (ADR-029), health, outcome-driven circuit breaker, live p50/p95, and **quality-signal provider selection**: `federation.selection = cost_adaptive` orders sources by `expected_quality` (observed success × declared trust × learned judged-result quality once ≥3 samples) per unit cost, and `/search/plan` exposes `source_scores` (`expected_quality`, `cost_micros`, `value_density`, `selected`) for every eligible source, selected or rejected. Default `reliability_first` is unchanged. |
 | 040 | Search Replay | **Delivered (v1)** | `POST /replay/{trace_id}` replays a recorded decision offline with an optional what-if policy. |
 | 041 | Identity & RBAC | **Reject** | managed multi-tenant RBAC/SSO is an explicit v1 non-goal; the workspace token is the only identity. |
 | 042 | Usage, Rate Limiting & Billing | **Partial** | rate limiting and the cost ledger exist. Gap: money billing / invoicing. |
@@ -121,7 +125,7 @@ per turn #81.
 | 036 | 文档智能 | **Delivered (v1)** | 摄取时计算确定性抽取式摘要 + 关键词，随版本持久化（migration v14），`document inspect` 与 `GET /documents/:id` 可见。刻意只做抽取式——不生成文本。 |
 | 037 | 多语言检索 | **Delivered (v1)** | 通过精选双向术语词典（`searchos-query::crosslingual`，34 条领域术语对）实现确定性跨语言召回：中文查询生成一条翻译召回列表（`intelligence.cross_lingual = true`，可选启用），与原始结果用加权 RRF 融合——原查询绝不被替换，外部计划里的跨语言变体与其余扩展**共享同一查询预算**。无 LLM、无网络，完全可复现可审计。差距：只做术语级翻译，不做完整语法机器翻译；词典是起步集，不是通用词典。 |
 | 038 | 证据图 | **Delivered (v1)** | 响应上的 `duplicate_of` / `same_content` 边，由合并结果构建。 |
-| 039 | Provider 智能 | **Partial** | 多 key 轮换（ADR-029）、健康检查、结果驱动的熔断、实时 p50/p95。差距：按质量信号选 provider。 |
+| 039 | Provider 智能 | **Delivered (v1)** | 多 key 轮换（ADR-029）、健康检查、结果驱动的熔断、实时 p50/p95，以及**按质量信号选 provider**：`federation.selection = cost_adaptive` 按单位成本的 `expected_quality`（观测成功率 × 声明信任 × 达到 ≥3 个判定样本后的结果质量）排序；`/search/plan` 对每个合格来源（无论选中与否）输出 `source_scores`（`expected_quality`、`cost_micros`、`value_density`、`selected`）。默认 `reliability_first` 不变。 |
 | 040 | 检索重放 | **Delivered (v1)** | `POST /replay/{trace_id}` 离线重放已记录决策，可带假设策略。 |
 | 041 | 身份与 RBAC | **Reject** | 托管多租户 RBAC/SSO 是明确的 v1 非目标；工作区 token 是唯一身份。 |
 | 042 | 用量、限流与计费 | **Partial** | 限流与成本账本已有。差距：金额计费/开票。 |

@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/status-v0.1.1%20implemented-6f7277" alt="status" />
+  <img src="https://img.shields.io/badge/status-v0.2.0%20implemented-6f7277" alt="status" />
   <img src="https://img.shields.io/badge/rust-1.94%2B-orange?logo=rust" alt="rust" />
   <img src="https://img.shields.io/badge/next.js-16-black?logo=nextdotjs" alt="nextjs" />
   <img src="https://img.shields.io/badge/license-MIT-36f555" alt="license" />
@@ -60,6 +60,9 @@ SearchOS fixes this with one unifying infrastructure.
 - **Search-agent surface** — bounded iterative acquisition (the query and cost caps stay
   cumulative), `coverage_gaps` in every response, `POST /search/plan` (plan without
   spending), `POST /search/follow-up` and MCP `research`/`plan` for multi-turn research.
+- **Agent registry** — declared, workspace-scoped agent identities with a normalized
+  slug, display name, description and enabled lifecycle flag; readable over HTTP and
+  CLI and shared by analytics, traces and the cost ledger.
 - **Extensible core** — manifest lifecycle, permissions, fault-isolated discovery and
   quarantine; native providers and site crawlers are compiled into the binary.
 - **Cost-aware routing** — a scoring model that balances quality, freshness, latency, cost,
@@ -159,17 +162,16 @@ for regions where crates.io is slow). See [`docs/deployment.md`](docs/deployment
 Prebuilt images are published for every release:
 
 ```bash
-docker pull ghcr.io/huifer/searchos-gateway:0.1.1     # linux/amd64 + linux/arm64
-docker pull ghcr.io/huifer/searchos-console:0.1.1
+docker pull ghcr.io/huifer/searchos-gateway:0.2.0     # linux/amd64 + linux/arm64
+docker pull ghcr.io/huifer/searchos-console:0.2.0
 ```
 
 They are pushed by the release workflow with its own `GITHUB_TOKEN`, so no
-registry secret is needed, and they are **anonymously pullable** — verified
-against the published `v0.1.1` artifacts: `docker pull` works without
-`docker login`, and the gateway image answers `/health`, `/metrics` and a
-full ingest → search round trip straight from the registry. `docker-compose.yml`
-uses these exact names and tags, so `docker compose pull` + `docker compose
-up -d` runs the release artifacts without a local build.
+registry secret is needed, and they are **anonymously accessible** — the
+`v0.2.0` release run 44453555713 published both images, and anonymous
+`docker manifest inspect` reports `linux/amd64` + `linux/arm64` for both.
+`docker-compose.yml` uses these exact names and tags, so `docker compose pull`
++ `docker compose up -d` runs the release artifacts without a local build.
 
 ## Releasing
 
@@ -180,8 +182,8 @@ grep '^version' Cargo.toml
 # 2. Add a section to CHANGELOG.md for the new version
 
 # 3. Tag and push — the release workflow takes over
-git tag v0.1.1
-git push origin v0.1.1
+git tag v0.2.0
+git push origin v0.2.0
 ```
 
 `.github/workflows/release.yml` then runs the same gates as CI, builds the
@@ -256,7 +258,7 @@ CI runs fmt / clippy / test plus the console typecheck + build on every push and
 
 The phased plan below is **historical**: every Wave 0–4 item in
 [`docs/feature-roadmap.md`](docs/feature-roadmap.md) is closed and verified, and
-this repository is released as **v0.1.1**. The tables in
+this repository is released as **v0.2.0**. The tables in
 [`docs/roadmap.md`](docs/roadmap.md) are retained for rationale, not as a status
 list; the release notes are in [`CHANGELOG.md`](CHANGELOG.md).
 
@@ -269,12 +271,13 @@ list; the release notes are in [`CHANGELOG.md`](CHANGELOG.md).
 | P4 | Extension system |
 | P5 | AI search intelligence |
 | P6 | Agent integration (MCP, TypeScript / Python SDK) |
-| P7 | Production & release (shipped as v0.1.1) |
+| P7 | Production & release (shipped as v0.2.0) |
 
 ## Documentation
 
 - [Architecture](docs/architecture.md)
-- [Canonical RFC Suite (16 RFCs + annexes 17–24, RFC-026..029)](docs/rfc/README.md)
+- [Canonical RFC Suite (RFC-001…087 + annexes 17–30)](docs/rfc/README.md)
+  - [RFC Coverage Matrix — the authoritative per-RFC status](docs/rfc-coverage.md)
   - [RFC-001: Product Architecture](docs/rfc/rfc-001-product-architecture.md)
   - [RFC-004: Search Decision Engine](docs/rfc/rfc-004-search-decision-engine.md)
   - [Part 23: Decision Engine Engineering Baseline (RFC-004 v1.1)](docs/rfc/part-23-decision-engineering-baseline.md)
@@ -298,19 +301,24 @@ list; the release notes are in [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Current limitations
 
-Deliberate v0.1.1 boundaries, not failed checks. The full non-goal list is in
-[`docs/feature-roadmap.md`](docs/feature-roadmap.md) §6.
+Deliberate boundaries, not failed checks. The full non-goal list is in
+[`docs/feature-roadmap.md`](docs/feature-roadmap.md) §6; per-RFC status lives in
+[`docs/rfc-coverage.md`](docs/rfc-coverage.md).
 
-- **Local embeddings are deterministic, not semantic.** The runtime uses
-  `HashingEmbedder` for vector, memory and semantic-cache vectors
-  (`crates/searchos-core/src/runtime.rs`). A non-`local`
-  `memory.embedding.provider` logs a warning and falls back; no remote embedding
-  model or model-version migration is wired. Treat vector similarity and
-  semantic-cache reuse as lexical-hash proximity, not model semantics.
-- **No reranker provider is attached.** The `Reranker` port and `NeverReranker`
-  exist, but per RFC-007 §7.7 reranking does not run by default and
-  `HybridRetriever` is built without one. `intelligence.reranking` currently gates
-  the RRF result cache, not a model reranker.
+- **Local embeddings are deterministic, not semantic.** The default Local Mode
+  runtime uses `HashingEmbedder` for vector, memory and semantic-cache vectors.
+  A remote [OI]-compatible embedding provider is supported when configured
+  (batching, dimension validation and a dimension-aware LanceDB rebuild); the
+  local fallback should still be treated as lexical-hash proximity, not model
+  semantics.
+- **Reranking is attached.** `FeatureReranker` is wired by default (offline
+  title/body/phrase/recency features); a `RemoteReranker` cross-encoder endpoint
+  is supported and billed as a `Reranking` cost event. `NeverReranker` remains
+  for tests and explicit opt-out.
+- **Agent registry enforcement is not wired.** The registry declares identities,
+  descriptions and `enabled`, and stores an advisory per-minute budget. The rate
+  limiter remains the executor; search admission does not yet reject disabled
+  agents or enforce the advisory quota.
 - **SDKs are TypeScript and Python.** Rust consumers depend on the workspace
   crates directly; there is no separate `sdk/rust` client.
 - **MCP is stdio-only** (ADR-031); `/crawl` and `/map` are out of v1.
