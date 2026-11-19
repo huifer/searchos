@@ -61,7 +61,7 @@ export interface SearchResultItem {
 }
 
 /** RFC-038: a relation between two pieces of evidence. */
-export type EvidenceRelation = "duplicate_of" | "same_content";
+export type EvidenceRelation = "duplicate_of" | "same_content" | "contradicts";
 
 export interface EvidenceGraphEdge {
   from: string;

@@ -213,6 +213,9 @@ pub enum EvidenceRelation {
     /// The `from` URL carries the same normalized content as `to` (a
     /// syndicated / re-published copy — corroboration accounting, RFC-074).
     SameContent,
+    /// The `from` URL and `to` URL carry materially different claims for the
+    /// same canonical resource. Both survive; the gate reports Conflict.
+    Contradicts,
 }
 
 /// One directed edge of the evidence graph.

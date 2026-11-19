@@ -15,6 +15,12 @@ multi-arch images, and attaches the matching section of this file.
 
 ### Added
 
+- **Contradiction graph (RFC-059).** A retained evidence conflict is now a
+  graph edge, not only an opaque warning string: `MergeReport.conflict_links`
+  records older→newer and `build_evidence_graph` emits `contradicts` edges
+  (raw and canonical endpoints). Both sides stay auditable and the quality gate
+  still reports `Conflict`. The TypeScript SDK carries the new relation.
+  Detection remains the deterministic text-difference heuristic.
 - **Publisher Trust v1 (RFC-032).** The append-only feedback stream now
   derives a publisher-level trust read model grouped by canonical host:
   `trust = relevant / judged` once a publisher has at least two judgements,

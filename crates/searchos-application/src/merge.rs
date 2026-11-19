@@ -16,6 +16,11 @@ pub struct MergeReport {
     pub duplicates_removed: usize,
     /// Same canonical URL / source with materially different content.
     pub conflicts: Vec<String>,
+    /// RFC-059: contradiction graph edges from the older claim to the kept
+    /// newer claim. Both sides remain auditable; the newer copy wins the
+    /// primary evidence slot but the older claim is never erased.
+    #[serde(default)]
+    pub conflict_links: Vec<(String, String)>,
     /// Distinct hosts among merged evidence (independent-source count).
     pub independent_sources: usize,
     pub merged_count: usize,
@@ -105,6 +110,15 @@ pub fn merge_evidence(
                 let conflict = format!("conflicting_versions:{}", key);
                 if !report.conflicts.contains(&conflict) {
                     report.conflicts.push(conflict);
+                }
+                if ev.fetched_at > prev.fetched_at {
+                    report
+                        .conflict_links
+                        .push((prev.url.clone(), ev.url.clone()));
+                } else {
+                    report
+                        .conflict_links
+                        .push((ev.url.clone(), prev.url.clone()));
                 }
             }
             // Keep the freshest version as the primary record; the older
@@ -235,6 +249,24 @@ pub fn build_evidence_graph(
             );
         }
     }
+    // RFC-059: retained conflicts are graph edges, not just opaque warning
+    // strings. Older → newer is deterministic and mirrors the merge choice.
+    for (older, newer) in &report.conflict_links {
+        let older_canonical = canonical_url(older);
+        let newer_canonical = canonical_url(newer);
+        push(
+            &mut edges,
+            older_canonical,
+            newer_canonical.clone(),
+            EvidenceRelation::Contradicts,
+        );
+        push(
+            &mut edges,
+            older.clone(),
+            newer.clone(),
+            EvidenceRelation::Contradicts,
+        );
+    }
     let mut nodes: Vec<String> = Vec::new();
     for edge in &edges {
         if !nodes.contains(&edge.from) {
@@ -325,6 +357,42 @@ mod tests {
         assert_eq!(merged.len(), 1);
         assert_eq!(report.conflicts.len(), 1);
         assert!(report.conflicts[0].contains("conflicting_versions"));
+        // RFC-059: the retained conflict is a graph edge, older → newer.
+        assert_eq!(
+            report.conflict_links,
+            vec![("https://a.com/x".to_string(), "https://a.com/x".to_string())]
+        );
+    }
+
+    #[test]
+    fn contradiction_graph_retains_both_sides_of_a_conflict() {
+        let (merged, report) = merge_evidence(
+            vec![ev(
+                "https://a.com/x?utm_source=old",
+                "tokio version 1.20 released",
+                10,
+            )],
+            vec![ev(
+                "https://a.com/x?utm_source=new",
+                "axum framework pricing changed",
+                1,
+            )],
+        );
+        assert_eq!(report.conflicts.len(), 1);
+        let graph = build_evidence_graph(&merged, &report);
+        assert!(graph
+            .nodes
+            .iter()
+            .any(|n| n == "https://a.com/x?utm_source=old"));
+        assert!(graph
+            .nodes
+            .iter()
+            .any(|n| n == "https://a.com/x?utm_source=new"));
+        assert!(graph.edges.iter().any(|e| {
+            e.relation == searchos_domain::response::EvidenceRelation::Contradicts
+                && e.from == "https://a.com/x?utm_source=old"
+                && e.to == "https://a.com/x?utm_source=new"
+        }));
     }
 
     #[test]

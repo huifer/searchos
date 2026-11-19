@@ -13,8 +13,8 @@ today, and if so, how far?* It supersedes the scattered status notes in
 the detailed evidence log for RFC-062…087) and the historical planning tables
 in [`feature-roadmap.md`](feature-roadmap.md) / [`roadmap.md`](roadmap.md).
 
-**Current totals:** 74 Delivered · 9 Partial · 4 Reject (87 numbered slots; the
-four Rejects are frozen v1 non-goals, so 74 of 83 in-scope slots are fully
+**Current totals:** 75 Delivered · 8 Partial · 4 Reject (87 numbered slots; the
+four Rejects are frozen v1 non-goals, so 75 of 83 in-scope slots are fully
 delivered).
 
 **Legend**
@@ -74,7 +74,7 @@ per turn #81.
 | 056 | Partial Streaming | **Partial** | SSE dashboard event stream exists. Gap: per-result token streaming. |
 | 057 | Temporal Knowledge | **Delivered (v1)** | `as_of` historical views: freshness judged at an instant, future documents excluded. |
 | 058 | Entity Resolution | **Delivered (v1)** | entity alias registry, `POST /entities/resolve`, `entity_id` on results. |
-| 059 | Contradiction Detection | **Partial** | conflicting claims are retained and force `QualityStatus::Conflict`. Gap: a contradiction graph over claims. |
+| 059 | Contradiction Detection | **Delivered (v1)** | conflicting versions are retained and force `QualityStatus::Conflict`; `MergeReport.conflict_links` records older→newer, and `build_evidence_graph` emits `EvidenceRelation::Contradicts` edges (both raw and canonical endpoints) instead of only an opaque warning string. Response `evidence_graph` + TypeScript SDK carry the new relation. Gap: contradiction detection is still the deterministic text-difference heuristic, not claim-level semantic analysis. |
 | 060 | Agent Registry | **Delivered (v1)** | Declared, workspace-scoped agent identities over additive migration v19: normalized slug ids (trim + lowercase, `[a-z0-9._-]`, ≤64 chars), display name, description, enabled lifecycle flag and advisory request budget. Storage `AgentRepo` upserts while preserving `created_at`, lists by workspace, enables/disables; HTTP `GET/POST /agents`, `GET /agents/:id`, `POST /agents/:id/enabled`; CLI `agent list|register|show|enable|disable`; OpenAPI + both SDKs. Disabled agents keep analytics/trace history. Gap: enforcement of the quota flag and of `enabled` at search admission is not wired (the rate limiter remains the executor). |
 | 061 | SDK | **Delivered** | TypeScript + Python clients covering every OpenAPI path, refreshed to 0.2.0. |
 | 062 | Federated Search Architecture | **Delivered (v1)** | `SearchSource` kernel, planner with auditable rejection chain, executor with per-source deadline/isolation, `execute` mode with service-side billing, `GET /sources`. |
@@ -145,7 +145,7 @@ per turn #81.
 | 056 | 部分流式 | **Partial** | 看板 SSE 事件流已有。差距：按结果/按 token 的流式返回。 |
 | 057 | 时态知识 | **Delivered (v1)** | `as_of` 历史视图：在某一时刻判定新鲜度，未来文档被排除。 |
 | 058 | 实体消解 | **Delivered (v1)** | 实体别名注册表、`POST /entities/resolve`、结果上的 `entity_id`。 |
-| 059 | 矛盾检测 | **Partial** | 冲突声明被保留并强制 `QualityStatus::Conflict`。差距：声明之上的矛盾图。 |
+| 059 | 矛盾检测 | **Delivered (v1)** | 冲突版本被保留并强制 `QualityStatus::Conflict`；`MergeReport.conflict_links` 记录 older→newer，`build_evidence_graph` 输出 `EvidenceRelation::Contradicts` 边（raw + canonical 端点），不再只是提示字符串。响应 `evidence_graph` 与 TypeScript SDK 已携带新关系。差距：矛盾检测仍是确定性文本差异启发式，不是声明级语义分析。 |
 | 060 | Agent 注册表 | **Delivered (v1)** | 基于增量 migration v19 的、按工作区声明的 agent 身份：规范化 slug（trim + 小写、`[a-z0-9._-]`、≤64 字符）、显示名、描述、enabled 生命周期标记与建议性请求配额。存储层 `AgentRepo` upsert 时保留 `created_at`，支持按工作区列出、启用/禁用；HTTP `GET/POST /agents`、`GET /agents/:id`、`POST /agents/:id/enabled`；CLI `agent list|register|show|enable|disable`；OpenAPI 与两个 SDK 同步。禁用 agent 保留分析与 trace 历史。差距：配额与 `enabled` 尚未接到搜索准入强制（限流器仍是执行者）。 |
 | 061 | SDK | **Delivered** | TypeScript + Python 客户端覆盖全部 OpenAPI 路径，已刷新到 0.2.0。 |
 | 062 | 联邦检索架构 | **Delivered (v1)** | `SearchSource` 内核、带审计拒绝链的 planner、带按来源截止时间/隔离的 executor、`execute` 模式在服务端计费、`GET /sources`。 |
