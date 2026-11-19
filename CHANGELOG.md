@@ -25,7 +25,6 @@ multi-arch images, and attaches the matching section of this file.
   to it. The API reference and CLI reference were refreshed with every
   endpoint and command group added since 0.1.1.
 
-### Added
 
 - **Structured extraction (RFC-049).** Prose in, structures out: fenced
   code blocks (with their language), markdown tables flattened into
@@ -123,7 +122,6 @@ multi-arch images, and attaches the matching section of this file.
   document insights, the RFC-087 redaction report, and a `PUT` transport in
   the TypeScript client.
 
-### Added
 
 - **Final RFC Master Index (RFC-001…087).** A bilingual
   [`RFC Master Index`](docs/rfc/rfc-master-index.md) freezes the architecture
@@ -690,7 +688,6 @@ multi-arch images, and attaches the matching section of this file.
   change visibility (`/user/packages` resolves to the bot identity, so the
   call answers 404), so it needs a classic PAT with `write:packages`.
 
-### Fixed
 
 - **Image naming / tag mismatch (real user-facing bug)**: `release.yml` derived
   names from `${GITHUB_REPOSITORY}`, publishing
