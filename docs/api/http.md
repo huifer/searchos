@@ -61,6 +61,7 @@
 | GET | `/deletions` | Deletion audit trail (RFC-087) |
 | POST | `/memory/lifecycle` | Report (or apply) memory lifecycle actions (RFC-070) |
 | GET | `/sources` | Federated source catalog with reliability + latency (RFC-063) |
+| GET | `/publishers` | Publisher-level trust from judged results (RFC-032) |
 | GET | `/health` | Status + index consistency |
 | GET | `/metrics` | Prometheus text exposition 0.0.4 (same auth as the rest) |
 
@@ -357,6 +358,7 @@ return `404` and are absent from `docs/openapi.yaml`).
 | GET | `/deletions` | 删除审计轨迹（RFC-087） |
 | POST | `/memory/lifecycle` | 报告（或执行）记忆生命周期动作（RFC-070） |
 | GET | `/sources` | 联邦来源目录，含可靠性与延迟（RFC-063） |
+| GET | `/publishers` | 按人工判定结果计算的发布方级信任（RFC-032） |
 | GET | `/health` | 状态 + 索引一致性 |
 | GET | `/metrics` | Prometheus text exposition 0.0.4（鉴权方式与其他端点相同） |
 

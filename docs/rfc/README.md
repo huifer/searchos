@@ -165,5 +165,5 @@ RFC 不允许仅描述功能目标而缺少可验证的接口、数据结构和�
 3. **质量评估边界**：SearchOS 验证证据质量，不保证上层 LLM 最终答案绝对正确。
 
 **RFC Suite Version:** 1.0 (+ Annexes 17–30; RFC-001…087 final catalogue) · v0.2.0 released
-**Status:** Delivered engineering baseline. `docs/rfc-coverage.md` is the authoritative per-RFC status: 73 Delivered, 10 Partial, 4 frozen Reject after RFC-060 and the RFC-039 quality-signal selection closeout.
-**Next Step:** close the remaining Partial gaps in priority order (032 publisher trust, 042 billing, 050 source discovery, 051 crawl frontier, 054 job scheduling, 056 streaming, 059 contradiction graph, 081–083 external-process/sandboxed extensions). Keep the Part 23 acceptance tests and the RFC-060/v0.2.0 gates green on every change; the four Reject RFCs and LLM answer generation stay non-goals.
+**Status:** Delivered engineering baseline. `docs/rfc-coverage.md` is the authoritative per-RFC status: 74 Delivered, 9 Partial, 4 frozen Reject after RFC-060, the RFC-039 quality-signal selection closeout, and the RFC-032 publisher-trust catalog.
+**Next Step:** close the remaining Partial gaps in priority order (042 billing, 050 source discovery, 051 crawl frontier, 054 job scheduling, 056 streaming, 059 contradiction graph, 081–083 external-process/sandboxed extensions). Keep the Part 23 acceptance tests and the v0.2.0 gates green on every change; the four Reject RFCs and LLM answer generation stay non-goals.

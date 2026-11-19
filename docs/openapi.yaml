@@ -1321,6 +1321,24 @@ paths:
               schema: { type: string }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
+  /publishers:
+    get:
+      tags: [Search]
+      summary: Publisher-level trust from judged results (RFC-032)
+      description: >-
+        Derived from the append-only feedback stream, grouped by canonical
+        publisher host. `trust` is `relevant / judged` only once the sample
+        floor is met; below it `trust` is null (unknown, not bad).
+      parameters:
+        - { name: workspace_id, in: query, schema: { type: string, default: default } }
+      responses:
+        '200':
+          description: Publisher trust rows and the sample floor.
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
   /watch/run:
     post:
       tags: [Search]

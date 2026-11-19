@@ -327,6 +327,12 @@ class SearchOSClient:
             parse="text",
         )
 
+    # -- Publisher trust (RFC-032) ---------------------------------------------
+
+    def publisher_trust(self, workspace_id: str = "default") -> list[dict[str, Any]]:
+        """Per-publisher trust from judged results (unknown below the sample floor)."""
+        return self._get("/publishers", {"workspace_id": workspace_id}).get("publishers", [])
+
     # -- Search Watch (RFC-035) -----------------------------------------------
 
     def watch_run(self) -> dict[str, Any]:

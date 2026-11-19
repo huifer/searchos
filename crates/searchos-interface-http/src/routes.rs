@@ -473,6 +473,8 @@ pub fn api_route_table() -> Vec<RouteSpec> {
         RouteSpec::new("GET", "/feedback", get(list_feedback)),
         RouteSpec::new("GET", "/feedback/qrels", get(feedback_qrels)),
         RouteSpec::new("GET", "/feedback/dataset", get(feedback_dataset)),
+        // RFC-032: publisher-level trust derived from judged results.
+        RouteSpec::new("GET", "/publishers", get(list_publishers)),
         // RFC-035: deterministic quality watchdog (run + append-only history).
         RouteSpec::new("POST", "/watch/run", post(watch_run)),
         RouteSpec::new("GET", "/watch/snapshots", get(watch_snapshots)),
@@ -2241,6 +2243,27 @@ async fn feedback_dataset(
         [("content-type", "application/x-ndjson")],
         jsonl,
     ))
+}
+
+async fn list_publishers(
+    State(state): State<AppState>,
+    Query(query): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    state.authorize(&headers)?;
+    let workspace = query
+        .get("workspace_id")
+        .cloned()
+        .unwrap_or_else(|| "default".into());
+    state.authorize_workspace(&headers, &workspace)?;
+    let publishers = searchos_storage_sqlite::repos::FeedbackRepo::new(&state.runtime.sqlite)
+        .publisher_trust(Some(&workspace))
+        .map_err(|e| ApiError::from_domain(&e))?;
+    Ok(Json(serde_json::json!({
+        "publishers": publishers,
+        "min_samples": searchos_domain::publisher::MIN_PUBLISHER_TRUST_SAMPLES,
+        "workspace_id": workspace,
+    })))
 }
 
 async fn watch_run(
@@ -4061,6 +4084,41 @@ mod tests {
         .await;
         assert_eq!(shown["agent"]["id"], "claude-code");
         assert_eq!(shown["agent"]["enabled"], false);
+    }
+
+    #[tokio::test]
+    async fn publisher_trust_endpoint_scores_hosts_from_feedback() {
+        let (st, _d) = state().await;
+        let repo = searchos_storage_sqlite::repos::FeedbackRepo::new(&st.runtime.sqlite);
+        let stamp = chrono::Utc::now().to_rfc3339();
+        for (i, verdict) in ["canonical", "helpful", "related"].iter().enumerate() {
+            let url = format!("https://publisher.example.com/{i}");
+            repo.append(
+                &format!("fb_{i}"),
+                &stamp,
+                "default",
+                None,
+                "query",
+                &url,
+                verdict,
+                None,
+                "query",
+                &url,
+            )
+            .unwrap();
+        }
+        let app = router(st);
+        let body = call(app, "/publishers?workspace_id=default").await;
+        let row = body["publishers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["publisher"] == "publisher.example.com")
+            .unwrap_or_else(|| panic!("publisher row missing: {body}"));
+        assert_eq!(row["judged"], 3);
+        assert_eq!(row["relevant"], 2);
+        assert!(row["trust"].as_f64().unwrap() > 0.66);
+        assert_eq!(body["min_samples"], 2);
     }
 
     #[tokio::test]

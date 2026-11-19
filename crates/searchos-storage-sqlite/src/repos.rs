@@ -3348,6 +3348,73 @@ mod tests {
     }
 
     #[test]
+    fn publisher_trust_groups_feedback_by_host_and_respects_the_sample_floor() {
+        let s = store();
+        let repo = FeedbackRepo::new(&s);
+        let stamp = now();
+        for (i, verdict) in ["canonical", "helpful", "related"].iter().enumerate() {
+            let url = format!("https://docs.example.com/page-{i}");
+            repo.append(
+                &format!("fb_{i}"),
+                &stamp,
+                "ws",
+                None,
+                "query",
+                &url,
+                verdict,
+                None,
+                "query",
+                &url,
+            )
+            .unwrap();
+        }
+        repo.append(
+            "fb_single",
+            &stamp,
+            "ws",
+            None,
+            "query",
+            "https://single.example.com/a",
+            "canonical",
+            None,
+            "query",
+            "https://single.example.com/a",
+        )
+        .unwrap();
+        repo.append(
+            "fb_other_ws",
+            &stamp,
+            "other",
+            None,
+            "query",
+            "https://docs.example.com/page-x",
+            "irrelevant",
+            None,
+            "query",
+            "https://docs.example.com/page-x",
+        )
+        .unwrap();
+
+        let rows = repo.publisher_trust(Some("ws")).unwrap();
+        assert_eq!(rows.len(), 2);
+        let docs = rows
+            .iter()
+            .find(|row| row.publisher == "docs.example.com")
+            .unwrap();
+        assert_eq!(docs.judged, 3);
+        assert_eq!(docs.relevant, 2);
+        assert!((docs.trust.unwrap() - 2.0 / 3.0).abs() < 1e-6);
+        let single = rows
+            .iter()
+            .find(|row| row.publisher == "single.example.com")
+            .unwrap();
+        assert_eq!(single.trust, None, "one judgement is unknown, not bad");
+        assert!(repo.publisher_trust(Some("other")).unwrap()[0]
+            .trust
+            .is_none());
+    }
+
+    #[test]
     fn search_cache_ttl_and_policy() {
         let s = store();
         let repo = SearchCacheRepo::new(&s);
@@ -6085,6 +6152,53 @@ impl<'a> FeedbackRepo<'a> {
                 })
                 .map_err(e)?;
             rows.collect::<Result<Vec<_>, _>>().map_err(e)
+        })
+    }
+
+    /// RFC-032: publisher-level trust derived from the append-only feedback
+    /// stream. A publisher below the sample floor is reported with
+    /// `trust: null`, never as untrustworthy.
+    pub fn publisher_trust(
+        &self,
+        workspace: Option<&str>,
+    ) -> Result<Vec<searchos_domain::publisher::PublisherTrust>, SearchOsError> {
+        self.store.with_conn(|c| {
+            let mut stmt = c
+                .prepare(
+                    "SELECT COALESCE(canonical_url, url), verdict
+                     FROM search_feedback
+                     WHERE (?1 IS NULL OR workspace_id = ?1)
+                     ORDER BY created_at DESC, id DESC
+                     LIMIT 10000",
+                )
+                .map_err(e)?;
+            let rows = stmt
+                .query_map(params![workspace], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                })
+                .map_err(e)?;
+            let mut counts: HashMap<String, (u32, u32)> = HashMap::new();
+            for row in rows {
+                let (url, verdict) = row.map_err(e)?;
+                let publisher = searchos_document::canonical::source_host(&url);
+                let entry = counts.entry(publisher).or_insert((0, 0));
+                entry.0 = entry.0.saturating_add(1);
+                if matches!(verdict.as_str(), "canonical" | "helpful") {
+                    entry.1 = entry.1.saturating_add(1);
+                }
+            }
+            let mut out: Vec<searchos_domain::publisher::PublisherTrust> = counts
+                .into_iter()
+                .map(|(publisher, (judged, relevant))| {
+                    searchos_domain::publisher::PublisherTrust::new(publisher, judged, relevant)
+                })
+                .collect();
+            out.sort_by(|a, b| {
+                b.judged
+                    .cmp(&a.judged)
+                    .then_with(|| a.publisher.cmp(&b.publisher))
+            });
+            Ok(out)
         })
     }
 }

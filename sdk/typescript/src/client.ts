@@ -723,6 +723,13 @@ export class SearchOSClient {
     ) as Promise<string>;
   }
 
+  // -- Publisher trust (RFC-032) --------------------------------------------
+
+  /** Per-publisher trust from judged results; unknown below the sample floor. */
+  publisherTrust(workspaceId = "default"): Promise<Record<string, unknown>> {
+    return this.get("/publishers", { workspace_id: workspaceId });
+  }
+
   // -- Search Watch (RFC-035) -----------------------------------------------
 
   /** Run every applicable check and append one snapshot. */

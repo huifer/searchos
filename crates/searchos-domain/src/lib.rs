@@ -22,6 +22,7 @@ pub mod memory;
 pub mod plan;
 pub mod promotion;
 pub mod provider;
+pub mod publisher;
 pub mod request;
 pub mod response;
 pub mod retrieval;
@@ -48,6 +49,7 @@ pub use promotion::{
     EvidenceItem, EvidenceOrigin, ExternalAcquisition, PromotionState, QueryOrigin,
 };
 pub use provider::ProviderCapabilities;
+pub use publisher::{PublisherTrust, MIN_PUBLISHER_TRUST_SAMPLES};
 pub use request::{
     FederationLimits, FreshnessRequirement, SearchBudget, SearchConstraints, SearchIntent,
     SearchMode, SearchRequest,

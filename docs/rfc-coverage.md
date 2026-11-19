@@ -13,8 +13,8 @@ today, and if so, how far?* It supersedes the scattered status notes in
 the detailed evidence log for RFC-062…087) and the historical planning tables
 in [`feature-roadmap.md`](feature-roadmap.md) / [`roadmap.md`](roadmap.md).
 
-**Current totals:** 73 Delivered · 10 Partial · 4 Reject (87 numbered slots; the
-four Rejects are frozen v1 non-goals, so 73 of 83 in-scope slots are fully
+**Current totals:** 74 Delivered · 9 Partial · 4 Reject (87 numbered slots; the
+four Rejects are frozen v1 non-goals, so 74 of 83 in-scope slots are fully
 delivered).
 
 **Legend**
@@ -118,7 +118,7 @@ per turn #81.
 | 029 | 本地数据导入（已交付文件） | **Delivered** | `IngestService`、`POST /ingest{,/file,/batch}`、`GET /ingest/jobs/:id`、CLI `ingest`。*规划中的*「Research Workspace」范围已并入 071。 |
 | 030 | 知识管理 | **Delivered (v1)** | 文档生命周期（创建/版本/重建索引/软删除）+ 工作区**知识集合**（确定性 id、存活成员计数、HTTP + CLI）。差距：集合之上的标签/层级分类。 |
 | 031 | 外部证据沉淀（已交付文件） | **Delivered** | 沉淀状态机、robots/抓取失败跳过原因、单任务上限、复用统计、`GET /evidence/*`。*规划中的*「Freshness Scheduler」范围由 057 + 新鲜度画像部分覆盖。 |
-| 032 | 来源信任 | **Partial** | 已有内容社群与原始发布者判定（074）、按来源的可靠性与延迟（080）。差距：发布方级别的信任评分。 |
+| 032 | 来源信任 | **Delivered (v1)** | 内容社群与原始发布方判定（074）、来源级可靠性/延迟（080）、质量信号选源（039），以及发布方级信任评分：按规范发布方 host 聚合只追加反馈为 `PublisherTrust`；达到 ≥2 个判定才有 `trust = relevant/judged`，`related` 不算 relevant，低样本发布方是 `trust: null`（未知，不是坏）。HTTP `GET /publishers`、CLI `publisher list`、OpenAPI + 两个 SDK。差距：信任已暴露可审计，但尚未参与 `results` 重排。 |
 | 033 | 在线反馈 | **Delivered (v1)** | 对检索结果的只追加人工判断（`canonical`=3 / `helpful`=2 / `related`=1 / `irrelevant`/`wrong`=0），通过 `POST /feedback` 和 CLI `feedback add|list|qrels|dataset` 录入；聚合只接受达到 `min_agreement` 票且**无平票**的判断——矛盾对被标记为 `disputed` 并排除，绝不平均出一个伪造的标签。`GET /feedback/qrels` 与 `/feedback/dataset` 导出分级 `EvaluationDataset` JSONL，直接喂给 `searchos eval run` 和 `watch.dataset_path`——学习闭环就此合拢。工作区隔离，备注绝不发给 provider。差距：没有收集判断的 UI；v1 只用反馈产出 qrels，不做模型训练。 |
 | 034 | 策略管理 | **Delivered (v1)** | 版本化只追加策略、生效指针、回滚；`GET/PUT /policies*`、CLI `policy`。 |
 | 035 | 检索监控订阅 | **Delivered (v1 + 分发)** | 基于分析读模型的确定性质量看门狗：可选的质量/失败率/趋势阈值、可选标注数据集排序检查、只追加快照（migration v16）、`searchos watch run|history`、`POST /watch/run`、`GET /watch/snapshots`。信号不可用即为 `skipped`（绝不当作通过），趋势只有在前后两次快照都达到 `min_sample` 时才触发，退化是结果而不是 HTTP 错误。**分发**：`watch.notify_on` 指定触发状态（默认 `regressed`+`degraded`），驱动日志通知器与可选 webhook（只发报告，不含文档正文、查询或备注），`watch.schedule_interval_seconds` 让网关内置调度并能干净停机。通知失败会记录在本次运行里，绝不抛出。差距：没有按通知器的重试/退避，也没有邮件/Slack 原生格式（仅 webhook JSON）。 |

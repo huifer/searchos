@@ -233,6 +233,11 @@ enum Command {
         #[command(subcommand)]
         cmd: FeedbackCmd,
     },
+    /// Publisher-level trust from judged results (RFC-032)
+    Publisher {
+        #[command(subcommand)]
+        cmd: PublisherCmd,
+    },
     /// Deterministic structured extraction (RFC-049)
     Structures {
         /// Text to parse (stdin when neither text nor file is given)
@@ -584,6 +589,16 @@ enum StatsCmd {
 enum ConfigCmd {
     /// Validate the effective configuration (exit 2 on errors)
     Validate,
+}
+
+#[derive(Subcommand)]
+enum PublisherCmd {
+    /// Score publishers from append-only feedback judgements
+    List {
+        /// Workspace scope
+        #[arg(long, default_value = "default")]
+        workspace: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1867,6 +1882,20 @@ async fn run(cli: Cli) -> Result<(), SearchOsError> {
                 }
             }
         }
+        Command::Publisher { cmd } => match cmd {
+            PublisherCmd::List { workspace } => {
+                let rt = runtime(cli_ref).await?;
+                let rows = repos::FeedbackRepo::new(&rt.sqlite).publisher_trust(Some(workspace))?;
+                print(
+                    &serde_json::json!({
+                        "publishers": rows,
+                        "min_samples": searchos_domain::publisher::MIN_PUBLISHER_TRUST_SAMPLES,
+                    }),
+                    format,
+                );
+                Ok(())
+            }
+        },
         Command::Watch { cmd } => {
             let cli_ref = &cli;
             let rt = runtime(cli_ref).await?;

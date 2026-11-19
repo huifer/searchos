@@ -15,6 +15,13 @@ multi-arch images, and attaches the matching section of this file.
 
 ### Added
 
+- **Publisher Trust v1 (RFC-032).** The append-only feedback stream now
+  derives a publisher-level trust read model grouped by canonical host:
+  `trust = relevant / judged` once a publisher has at least two judgements,
+  `canonical`/`helpful` count as relevant while `related` does not, and a
+  low-sample publisher is reported as `trust: null` (unknown, not bad).
+  HTTP `GET /publishers`, CLI `publisher list`, OpenAPI and both SDKs. The
+  score is auditable; applying it to result ordering remains future work.
 - **Agent Registry v1 (RFC-060).** A declared, workspace-scoped identity for
   the `agent_id` that analytics, the cost ledger and decision traces already
   use: normalized slug ids (`[a-z0-9._-]`, ≤64 chars, trim + lowercase),

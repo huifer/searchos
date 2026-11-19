@@ -76,6 +76,7 @@ searchos entity register "Canonical Name" [--alias "Alias"] [--source operator|h
 searchos entity resolve "free text to resolve"
 searchos research run "deep question" [--workspace default] [--rounds 3] [--max-cost 0.05]
 searchos research show <session-id>
+searchos publisher list [--workspace default]
 ```
 
 `policy` is versioned and append-only: a rollback moves the LIVE pointer
