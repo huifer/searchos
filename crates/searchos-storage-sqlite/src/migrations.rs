@@ -907,6 +907,28 @@ CREATE TABLE IF NOT EXISTS source_quality (
 );
 "#,
     },
+    // v19 - RFC-060 agent registry. The Part-17 baseline already has an
+    // `agents` projection (id, workspace_id, name, agent_type, created_at),
+    // so this migration is ADDITIVE: it extends that table instead of
+    // redefining it. `CREATE TABLE IF NOT EXISTS agents` would be skipped on
+    // every database and the index below would fail on `updated_at`.
+    // `agent_id` was free-form in every request; these columns are what an
+    // operator can audit, disable and (with enforcement) require.
+    Migration {
+        version: 19,
+        name: "agent_registry",
+        sql: r#"
+ALTER TABLE agents ADD COLUMN description TEXT;
+ALTER TABLE agents ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE agents ADD COLUMN max_requests_per_minute INTEGER;
+ALTER TABLE agents ADD COLUMN updated_at TEXT;
+UPDATE agents
+SET updated_at = COALESCE(NULLIF(updated_at, ''), created_at)
+WHERE updated_at IS NULL OR updated_at = '';
+CREATE INDEX IF NOT EXISTS idx_agents_workspace_enabled
+    ON agents(workspace_id, enabled, updated_at DESC);
+"#,
+    },
 ];
 
 /// Applies pending migrations to a connection. Each version is atomic: SQL

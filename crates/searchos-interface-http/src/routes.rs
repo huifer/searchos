@@ -421,6 +421,11 @@ pub fn api_route_table() -> Vec<RouteSpec> {
             "/collections/{id}/documents",
             get(collection_documents),
         ),
+        // RFC-060: declared agent identities (audit/disable lifecycle).
+        RouteSpec::new("GET", "/agents", get(list_agents)),
+        RouteSpec::new("POST", "/agents", post(upsert_agent)),
+        RouteSpec::new("GET", "/agents/{id}", get(get_agent)),
+        RouteSpec::new("POST", "/agents/{id}/enabled", post(set_agent_enabled)),
         // RFC-058: entity alias registry (read + register + resolve).
         RouteSpec::new("GET", "/entities", get(list_entities)),
         RouteSpec::new("POST", "/entities", post(register_entity)),
@@ -2683,6 +2688,143 @@ async fn collection_documents(
     ))
 }
 
+/// RFC-060: list declared agents, newest update first.
+async fn list_agents(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    state.authorize(&headers)?;
+    let workspace = params.get("workspace_id").map(|s| s.as_str());
+    if let Some(ws) = workspace {
+        state.authorize_workspace(&headers, ws)?;
+    }
+    let rows = searchos_storage_sqlite::repos::AgentRepo::new(&state.runtime.sqlite)
+        .list(workspace)
+        .map_err(|e| ApiError::from_domain(&e))?;
+    Ok(Json(serde_json::json!({ "agents": rows })))
+}
+
+/// RFC-060: create or update a declared agent. The id is normalized; a
+/// display name defaults to the id. Quota is advisory metadata in v1.
+async fn upsert_agent(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    state.authorize(&headers)?;
+    let id = body
+        .get("id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "VALIDATION_FAILED", "missing id"))?;
+    let workspace = body
+        .get("workspace_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("default");
+    state.authorize_workspace(&headers, workspace)?;
+    let mut agent = searchos_domain::agent::Agent::new(
+        workspace,
+        id,
+        body.get("name")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        body.get("description")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        match body.get("max_requests_per_minute") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(value) => {
+                let quota = value.as_u64().ok_or_else(|| {
+                    ApiError::new(
+                        StatusCode::BAD_REQUEST,
+                        "VALIDATION_FAILED",
+                        "max_requests_per_minute must be a positive integer",
+                    )
+                })?;
+                Some(u32::try_from(quota).map_err(|_| {
+                    ApiError::new(
+                        StatusCode::BAD_REQUEST,
+                        "VALIDATION_FAILED",
+                        "max_requests_per_minute is out of range",
+                    )
+                })?)
+            }
+        },
+    )
+    .map_err(|message| {
+        ApiError::from_domain(&SearchOsError::Validation(
+            searchos_domain::ValidationError {
+                field: "id".into(),
+                message,
+            },
+        ))
+    })?;
+    if let Some(enabled) = body.get("enabled").and_then(|v| v.as_bool()) {
+        agent.enabled = enabled;
+    }
+    let existed = searchos_storage_sqlite::repos::AgentRepo::new(&state.runtime.sqlite)
+        .get(workspace, agent.id.as_str())
+        .map_err(|e| ApiError::from_domain(&e))?
+        .is_some();
+    let saved = searchos_storage_sqlite::repos::AgentRepo::new(&state.runtime.sqlite)
+        .upsert(&agent)
+        .map_err(|e| ApiError::from_domain(&e))?;
+    Ok(Json(
+        serde_json::json!({ "agent": saved, "created": !existed }),
+    ))
+}
+
+/// RFC-060: one declared agent.
+async fn get_agent(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    state.authorize(&headers)?;
+    let workspace = params
+        .get("workspace_id")
+        .map(|s| s.as_str())
+        .unwrap_or("default");
+    state.authorize_workspace(&headers, workspace)?;
+    let agent = searchos_storage_sqlite::repos::AgentRepo::new(&state.runtime.sqlite)
+        .get(workspace, &id)
+        .map_err(|e| ApiError::from_domain(&e))?
+        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "UNKNOWN_AGENT", id))?;
+    Ok(Json(serde_json::json!({ "agent": agent })))
+}
+
+/// RFC-060: enable/disable an agent. History keeps its `agent_id`; only new
+/// work is affected once enforcement is wired to this flag.
+async fn set_agent_enabled(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    state.authorize(&headers)?;
+    let enabled = body
+        .get("enabled")
+        .and_then(|v| v.as_bool())
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "VALIDATION_FAILED",
+                "missing enabled",
+            )
+        })?;
+    let workspace = body
+        .get("workspace_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("default");
+    state.authorize_workspace(&headers, workspace)?;
+    let agent = searchos_storage_sqlite::repos::AgentRepo::new(&state.runtime.sqlite)
+        .set_enabled(workspace, &id, enabled)
+        .map_err(|e| ApiError::from_domain(&e))?
+        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "UNKNOWN_AGENT", id))?;
+    Ok(Json(serde_json::json!({ "agent": agent })))
+}
+
 /// RFC-058: the current alias read model.
 async fn list_entities(
     State(state): State<AppState>,
@@ -3842,6 +3984,83 @@ mod tests {
         .await;
         assert_eq!(status, 200);
         assert_eq!(docs["documents"].as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn agent_registry_endpoints_normalize_upsert_and_disable() {
+        let (st, _d) = state().await;
+        let app = router(st);
+        use tower::ServiceExt;
+        let call = |app: axum::Router, method: &str, uri: &str, body: serde_json::Value| {
+            let (method, uri) = (method.to_string(), uri.to_string());
+            async move {
+                let resp = app
+                    .oneshot(
+                        axum::http::Request::builder()
+                            .method(method.as_str())
+                            .uri(uri)
+                            .header("content-type", "application/json")
+                            .body(axum::body::Body::from(body.to_string()))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                let status = resp.status().as_u16();
+                let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+                    .await
+                    .unwrap();
+                (
+                    status,
+                    serde_json::from_slice::<serde_json::Value>(&bytes)
+                        .unwrap_or(serde_json::Value::Null),
+                )
+            }
+        };
+
+        let (status, created) = call(
+            app.clone(),
+            "POST",
+            "/agents",
+            serde_json::json!({
+                "id": " Claude-Code ",
+                "name": "Claude Code",
+                "description": "nightly research",
+                "max_requests_per_minute": 30
+            }),
+        )
+        .await;
+        assert_eq!(status, 200, "{created}");
+        assert_eq!(created["created"], true);
+        assert_eq!(created["agent"]["id"], "claude-code");
+        assert_eq!(created["agent"]["max_requests_per_minute"], 30);
+
+        let (_, list) = call(
+            app.clone(),
+            "GET",
+            "/agents?workspace_id=default",
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(list["agents"].as_array().unwrap().len(), 1, "{list}");
+
+        let (_, disabled) = call(
+            app.clone(),
+            "POST",
+            "/agents/claude-code/enabled",
+            serde_json::json!({ "enabled": false }),
+        )
+        .await;
+        assert_eq!(disabled["agent"]["enabled"], false, "{disabled}");
+
+        let (_, shown) = call(
+            app,
+            "GET",
+            "/agents/claude-code?workspace_id=default",
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(shown["agent"]["id"], "claude-code");
+        assert_eq!(shown["agent"]["enabled"], false);
     }
 
     #[tokio::test]

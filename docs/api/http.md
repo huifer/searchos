@@ -48,6 +48,10 @@
 | GET | `/collections/:id/documents` | Live document ids in a collection (RFC-030) |
 | POST | `/collections/:id/documents` | Add a document to a collection (RFC-030) |
 | DELETE | `/collections/:id/documents/:document_id` | Remove a document from a collection (RFC-030) |
+| GET | `/agents` | Declared agent identities, newest update first (RFC-060) |
+| POST | `/agents` | Create or update a declared agent (RFC-060) |
+| GET | `/agents/:id` | One declared agent (RFC-060) |
+| POST | `/agents/:id/enabled` | Enable or disable an agent; history is kept (RFC-060) |
 | POST | `/replay/:trace_id` | Offline replay of a recorded decision; optional what-if policy (RFC-040) |
 | POST | `/evaluation/replay` | Batch evaluation over recent traces (RFC-086) |
 | GET | `/policies` | Versioned policies + the live one (RFC-034) |

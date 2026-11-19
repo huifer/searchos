@@ -631,6 +631,26 @@ The SearchOS implementation (`~/git_repo/searchos`) is verified by these command
   never assume cargo's layout; "green locally, red in CI" on an artifact
   path usually means a pre-existing local build masked it.
 
+- **RFC-060 Agent Registry v1 (2026-11-19, untagged working tree):** the
+  earlier half-finished v19 that redeclared `agents` was replaced with an
+  ADDITIVE migration over the Part-17 `agents` projection: ALTER adds
+  `description`, `enabled`, `max_requests_per_minute`, `updated_at`, then
+  backfills `updated_at` from `created_at` and indexes
+  `(workspace_id, enabled, updated_at DESC)`. Lesson reconfirmed: never
+  `CREATE TABLE IF NOT EXISTS` over a table that an earlier migration
+  already created — the IF NOT EXISTS silently skips and the next index
+  fails with `no such column`. Domain normalizes operator slugs
+  (`Claude-Code` → `claude-code`, `[a-z0-9._-]`, ≤64); `AgentRepo.upsert`
+  preserves `created_at` and calls `ensure_workspace` because `agents` has
+  a workspace FK. Gates: storage
+  `agent_registry_upsert_update_and_workspace_filter`, HTTP
+  `agent_registry_endpoints_normalize_upsert_and_disable`, domain 4 tests,
+  plus compatibility/runtime/integration/e2e, clippy, SDK builds. Live
+  smoke: fresh CLI init reports schema v19; `agent register Claude-Code →
+  show/list/disable`; gateway `POST /agents` normalizes and lists under the
+  bearer token. Coverage: RFC-060 moved Partial → Delivered (v1); quota and
+  enabled-at-search-admission enforcement remain explicit gaps.
+
 **Known environment notes:**
 - LanceDB requires `protoc` at build time (`brew install protobuf`).
 - Live network tests (fetch of https://example.com) tolerate sandbox timeouts by design.

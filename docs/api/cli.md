@@ -65,6 +65,12 @@ searchos collection create "Reading List" [--workspace default] [--description "
 searchos collection add <collection-id> <document-id>
 searchos collection remove <collection-id> <document-id>
 searchos collection documents <collection-id>
+searchos agent list [--workspace <id>]
+searchos agent register <slug> [--workspace default] [--name "..."]
+                          [--description "..."] [--max-requests-per-minute 30]
+searchos agent show <slug> [--workspace default]
+searchos agent enable <slug> [--workspace default]
+searchos agent disable <slug> [--workspace default]
 searchos entity list
 searchos entity register "Canonical Name" [--alias "Alias"] [--source operator|heuristic]
 searchos entity resolve "free text to resolve"
@@ -76,8 +82,11 @@ searchos research show <session-id>
 back to an earlier version, it never deletes history. `collection` is a
 curation view over documents — membership never changes what retrieval can
 see, and soft-deleted documents are hidden from member lists while their
-membership row is kept. `entity` is an alias registry: `resolve` maps free
-text to a stable entity id. `research` runs bounded rounds; every round is a
+membership row is kept. `agent` declares a workspace-scoped identity with a
+stable normalized slug; disabling keeps analytics/trace history and the
+request budget is advisory in v1. `entity` is an alias registry: `resolve`
+maps free text to a stable entity id. `research` runs bounded rounds; every
+round is a
 full search recorded as a turn of the research session.
 
 ## Providers / profiles / cost / trace

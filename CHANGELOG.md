@@ -13,6 +13,23 @@ multi-arch images, and attaches the matching section of this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Agent Registry v1 (RFC-060).** A declared, workspace-scoped identity for
+  the `agent_id` that analytics, the cost ledger and decision traces already
+  use: normalized slug ids (`[a-z0-9._-]`, ≤64 chars, trim + lowercase),
+  display name, description, an `enabled` lifecycle flag and an advisory
+  per-minute request budget. Migration v19 is **additive** — the Part-17
+  baseline already owns the `agents` table, so it adds the registry columns
+  instead of redefining the table (a second `CREATE TABLE IF NOT EXISTS`
+  would skip the existing schema and fail on the new index). Storage
+  `AgentRepo` upserts without rewriting `created_at`, lists by workspace and
+  enables/disables; HTTP `GET/POST /agents`, `GET /agents/{id}`,
+  `POST /agents/{id}/enabled`; CLI `agent list|register|show|enable|disable`;
+  OpenAPI and both SDKs. Disabling an agent keeps its history; quota and
+  search-admission enforcement remain out of the v1 slice (the rate limiter
+  is still the executor).
+
 ## [0.2.0] - 2026-11-16
 
 ### Added

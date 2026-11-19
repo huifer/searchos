@@ -40,6 +40,8 @@ tags:
     description: Quality-gated search over local knowledge and external providers
   - name: Knowledge
     description: URL extraction, local ingestion and the document lifecycle
+  - name: Agents
+    description: RFC-060 declared agent identities and their lifecycle
   - name: Memory
     description: Namespaced agent memory (workspace-isolated)
   - name: Cost
@@ -488,6 +490,114 @@ paths:
           schema: { type: string }
       responses:
         '204': { description: Removed }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /agents:
+    get:
+      tags: [Agents]
+      summary: List declared agents (RFC-060)
+      parameters:
+        - name: workspace_id
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Declared agent identities, newest update first.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agents:
+                    type: array
+                    items: { $ref: '#/components/schemas/Agent' }
+    post:
+      tags: [Agents]
+      summary: Create or update a declared agent (RFC-060)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id:
+                  type: string
+                  pattern: '^[a-z0-9._-]{1,64}$'
+                  description: Operator-chosen slug; input is trimmed and lowercased.
+                workspace_id: { type: string, default: default }
+                name: { type: string }
+                description: { type: string }
+                enabled: { type: boolean, default: true }
+                max_requests_per_minute:
+                  type: integer
+                  minimum: 1
+                  description: Advisory in v1; stored and surfaced, not silently enforced.
+      responses:
+        '200':
+          description: The saved agent and whether this call created it.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agent: { $ref: '#/components/schemas/Agent' }
+                  created: { type: boolean }
+        '400': { $ref: '#/components/responses/ValidationError' }
+  /agents/{id}:
+    get:
+      tags: [Agents]
+      summary: One declared agent (RFC-060)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: workspace_id
+          in: query
+          schema: { type: string, default: default }
+      responses:
+        '200':
+          description: The agent.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agent: { $ref: '#/components/schemas/Agent' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /agents/{id}/enabled:
+    post:
+      tags: [Agents]
+      summary: Enable or disable an agent (RFC-060)
+      description: |
+        Disabled agents keep their history in analytics and traces; only new
+        work is affected once enforcement is wired to this flag.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              properties:
+                enabled: { type: boolean }
+                workspace_id: { type: string, default: default }
+      responses:
+        '200':
+          description: The updated agent.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agent: { $ref: '#/components/schemas/Agent' }
         '404': { $ref: '#/components/responses/NotFound' }
 
   /entities:
@@ -2470,6 +2580,18 @@ components:
               capabilities:
                 type: object
                 additionalProperties: { type: boolean }
+    Agent:
+      type: object
+      required: [id, workspace_id, name, enabled, created_at, updated_at]
+      properties:
+        id: { type: string }
+        workspace_id: { type: string }
+        name: { type: string }
+        description: { type: string, nullable: true }
+        enabled: { type: boolean }
+        max_requests_per_minute: { type: integer, nullable: true, minimum: 1 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
     SystemStatus:
       type: object
       properties:

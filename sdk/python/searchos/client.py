@@ -382,6 +382,27 @@ class SearchOSClient:
     def collection_documents(self, collection_id: str) -> list[str]:
         return self._get(f"/collections/{collection_id}/documents").get("documents", [])
 
+    # -- Agents (RFC-060) ------------------------------------------------------
+
+    def list_agents(self, workspace_id: str | None = None) -> list[dict[str, Any]]:
+        query = {"workspace_id": workspace_id} if workspace_id else None
+        return self._get("/agents", query).get("agents", [])
+
+    def upsert_agent(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Create or update a declared agent identity."""
+        return self._post("/agents", body).get("agent", {})
+
+    def get_agent(self, agent_id: str, workspace_id: str = "default") -> dict[str, Any]:
+        return self._get(f"/agents/{agent_id}", {"workspace_id": workspace_id}).get("agent", {})
+
+    def set_agent_enabled(
+        self, agent_id: str, enabled: bool, workspace_id: str = "default"
+    ) -> dict[str, Any]:
+        return self._post(
+            f"/agents/{agent_id}/enabled",
+            {"enabled": enabled, "workspace_id": workspace_id},
+        ).get("agent", {})
+
     # -- Replay / simulation / evaluation (RFC-040/075/086) --------------------
 
     def replay_trace(

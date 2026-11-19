@@ -184,6 +184,11 @@ enum Command {
         #[command(subcommand)]
         cmd: CollectionCmd,
     },
+    /// Agent registry (RFC-060)
+    Agent {
+        #[command(subcommand)]
+        cmd: AgentCmd,
+    },
     /// Entity alias registry (RFC-058)
     Entity {
         #[command(subcommand)]
@@ -418,6 +423,57 @@ enum CollectionCmd {
     Documents {
         /// Collection id
         collection: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum AgentCmd {
+    /// List declared agents, newest update first
+    List {
+        /// Workspace that owns the agents; omit for all visible workspaces
+        #[arg(long)]
+        workspace: Option<String>,
+    },
+    /// Create or update a declared agent
+    Register {
+        /// Operator-chosen slug (normalized to lowercase)
+        id: String,
+        /// Workspace that owns the agent
+        #[arg(long, default_value = "default")]
+        workspace: String,
+        /// Display name (defaults to the id)
+        #[arg(long)]
+        name: Option<String>,
+        /// Optional description
+        #[arg(long)]
+        description: Option<String>,
+        /// Advisory request budget per minute (not silently enforced in v1)
+        #[arg(long)]
+        max_requests_per_minute: Option<u32>,
+    },
+    /// Show one declared agent
+    Show {
+        /// Agent id (from `agent list`)
+        id: String,
+        /// Workspace that owns the agent
+        #[arg(long, default_value = "default")]
+        workspace: String,
+    },
+    /// Enable an agent
+    Enable {
+        /// Agent id
+        id: String,
+        /// Workspace that owns the agent
+        #[arg(long, default_value = "default")]
+        workspace: String,
+    },
+    /// Disable an agent (history is kept; only new work is affected)
+    Disable {
+        /// Agent id
+        id: String,
+        /// Workspace that owns the agent
+        #[arg(long, default_value = "default")]
+        workspace: String,
     },
 }
 
@@ -1540,6 +1596,64 @@ async fn run(cli: Cli) -> Result<(), SearchOsError> {
                     &serde_json::json!({ "collection": collection, "documents": docs }),
                     format,
                 );
+                Ok(())
+            }
+        },
+        Command::Agent { cmd } => match cmd {
+            AgentCmd::List { workspace } => {
+                let rt = runtime(cli_ref).await?;
+                let rows = repos::AgentRepo::new(&rt.sqlite).list(workspace.as_deref())?;
+                print(&serde_json::to_value(rows).unwrap_or_default(), format);
+                Ok(())
+            }
+            AgentCmd::Register {
+                id,
+                workspace,
+                name,
+                description,
+                max_requests_per_minute,
+            } => {
+                let rt = runtime(cli_ref).await?;
+                let agent = searchos_domain::agent::Agent::new(
+                    workspace,
+                    id,
+                    name.clone(),
+                    description.clone(),
+                    *max_requests_per_minute,
+                )
+                .map_err(|message| SearchOsError::validation("id", message))?;
+                let saved = repos::AgentRepo::new(&rt.sqlite).upsert(&agent)?;
+                print(&serde_json::to_value(saved).unwrap_or_default(), format);
+                Ok(())
+            }
+            AgentCmd::Show { id, workspace } => {
+                let rt = runtime(cli_ref).await?;
+                let agent = repos::AgentRepo::new(&rt.sqlite)
+                    .get(workspace, id)?
+                    .ok_or_else(|| {
+                        SearchOsError::validation("id", format!("unknown agent {id}"))
+                    })?;
+                print(&serde_json::to_value(agent).unwrap_or_default(), format);
+                Ok(())
+            }
+            AgentCmd::Enable { id, workspace } => {
+                let rt = runtime(cli_ref).await?;
+                let agent = repos::AgentRepo::new(&rt.sqlite)
+                    .set_enabled(workspace, id, true)?
+                    .ok_or_else(|| {
+                        SearchOsError::validation("id", format!("unknown agent {id}"))
+                    })?;
+                print(&serde_json::to_value(agent).unwrap_or_default(), format);
+                Ok(())
+            }
+            AgentCmd::Disable { id, workspace } => {
+                let rt = runtime(cli_ref).await?;
+                let agent = repos::AgentRepo::new(&rt.sqlite)
+                    .set_enabled(workspace, id, false)?
+                    .ok_or_else(|| {
+                        SearchOsError::validation("id", format!("unknown agent {id}"))
+                    })?;
+                print(&serde_json::to_value(agent).unwrap_or_default(), format);
                 Ok(())
             }
         },

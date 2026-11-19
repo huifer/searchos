@@ -57,6 +57,193 @@ pub fn ensure_agent(
     })
 }
 
+/// RFC-060: declared agent identities. This is the operator-owned registry
+/// over the additive columns added to the Part-17 `agents` projection. It is
+/// workspace-scoped in behaviour; the legacy table's `id` primary key means
+/// the same slug is one identity across workspaces, exactly like the old
+/// analytics/cost dimension.
+pub struct AgentRepo<'a> {
+    store: &'a SqliteStore,
+}
+
+impl<'a> AgentRepo<'a> {
+    pub fn new(store: &'a SqliteStore) -> Self {
+        Self { store }
+    }
+
+    fn parse_time(raw: String) -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::parse_from_rfc3339(&raw)
+            .map(|t| t.with_timezone(&chrono::Utc))
+            .unwrap_or_else(|_| chrono::Utc::now())
+    }
+
+    fn read(
+        c: &Connection,
+        workspace_id: &str,
+        id: &str,
+    ) -> Result<Option<searchos_domain::agent::Agent>, rusqlite::Error> {
+        c.query_row(
+            "SELECT id, workspace_id, name, description, enabled,
+                    max_requests_per_minute, created_at, updated_at
+             FROM agents WHERE id = ?1 AND workspace_id = ?2",
+            params![id, workspace_id],
+            |r| {
+                Ok(searchos_domain::agent::Agent {
+                    id: searchos_domain::ids::AgentId::new(r.get::<_, String>(0)?),
+                    workspace_id: r.get(1)?,
+                    name: r.get(2)?,
+                    description: r.get(3)?,
+                    enabled: r.get::<_, i64>(4)? != 0,
+                    max_requests_per_minute: r.get::<_, Option<i64>>(5)?.map(|v| v.max(0) as u32),
+                    created_at: Self::parse_time(r.get(6)?),
+                    updated_at: Self::parse_time(r.get(7)?),
+                })
+            },
+        )
+        .optional()
+    }
+
+    /// Creates or updates an agent. `created_at` is preserved on update and
+    /// the domain update already preserved it; the caller cannot rewrite it.
+    pub fn upsert(
+        &self,
+        agent: &searchos_domain::agent::Agent,
+    ) -> Result<searchos_domain::agent::Agent, SearchOsError> {
+        // The Part-17 `agents` table has a workspace FK. Registering an
+        // agent is the operator's first act on a fresh database, so make the
+        // workspace explicit instead of relying on an earlier search/ingest.
+        ensure_workspace(
+            self.store,
+            &searchos_domain::ids::WorkspaceId::new(agent.workspace_id.clone()),
+            &agent.workspace_id,
+        )?;
+        self.store.with_conn(|c| {
+            let tx = c.unchecked_transaction().map_err(e)?;
+            let existing = Self::read(&tx, &agent.workspace_id, agent.id.as_str()).map_err(e)?;
+            let created_at = existing
+                .as_ref()
+                .map(|existing| existing.created_at)
+                .unwrap_or(agent.created_at);
+            if existing.is_some() {
+                tx.execute(
+                    "UPDATE agents SET name = ?1, description = ?2, enabled = ?3,
+                            max_requests_per_minute = ?4, updated_at = ?5
+                     WHERE id = ?6 AND workspace_id = ?7",
+                    params![
+                        agent.name,
+                        agent.description,
+                        agent.enabled as i64,
+                        agent.max_requests_per_minute.map(|v| v as i64),
+                        agent.updated_at.to_rfc3339(),
+                        agent.id.as_str(),
+                        agent.workspace_id,
+                    ],
+                )
+                .map_err(e)?;
+            } else {
+                tx.execute(
+                    "INSERT INTO agents
+                     (id, workspace_id, name, description, enabled,
+                      max_requests_per_minute, created_at, updated_at)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+                    params![
+                        agent.id.as_str(),
+                        agent.workspace_id,
+                        agent.name,
+                        agent.description,
+                        agent.enabled as i64,
+                        agent.max_requests_per_minute.map(|v| v as i64),
+                        created_at.to_rfc3339(),
+                        agent.updated_at.to_rfc3339(),
+                    ],
+                )
+                .map_err(e)?;
+            }
+            tx.commit().map_err(e)?;
+            Ok(searchos_domain::agent::Agent {
+                id: agent.id.clone(),
+                workspace_id: agent.workspace_id.clone(),
+                name: agent.name.clone(),
+                description: agent.description.clone(),
+                enabled: agent.enabled,
+                max_requests_per_minute: agent.max_requests_per_minute,
+                created_at,
+                updated_at: agent.updated_at,
+            })
+        })
+    }
+
+    pub fn get(
+        &self,
+        workspace_id: &str,
+        id: &str,
+    ) -> Result<Option<searchos_domain::agent::Agent>, SearchOsError> {
+        self.store
+            .with_conn(|c| Self::read(c, workspace_id, id).map_err(e))
+    }
+
+    /// All registered agents, optionally scoped to one workspace.
+    pub fn list(
+        &self,
+        workspace: Option<&str>,
+    ) -> Result<Vec<searchos_domain::agent::Agent>, SearchOsError> {
+        self.store.with_conn(|c| {
+            let mut stmt = c
+                .prepare(
+                    "SELECT id, workspace_id, name, description, enabled,
+                            max_requests_per_minute, created_at, updated_at
+                     FROM agents
+                     WHERE (?1 IS NULL OR workspace_id = ?1)
+                     ORDER BY updated_at DESC, id",
+                )
+                .map_err(e)?;
+            let rows = stmt
+                .query_map(params![workspace], |r| {
+                    Ok(searchos_domain::agent::Agent {
+                        id: searchos_domain::ids::AgentId::new(r.get::<_, String>(0)?),
+                        workspace_id: r.get(1)?,
+                        name: r.get(2)?,
+                        description: r.get(3)?,
+                        enabled: r.get::<_, i64>(4)? != 0,
+                        max_requests_per_minute: r
+                            .get::<_, Option<i64>>(5)?
+                            .map(|v| v.max(0) as u32),
+                        created_at: Self::parse_time(r.get(6)?),
+                        updated_at: Self::parse_time(r.get(7)?),
+                    })
+                })
+                .map_err(e)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(e)
+        })
+    }
+
+    /// Enables/disables an agent. Disabled agents keep their history but are
+    /// not allowed to start new work when enforcement is on.
+    pub fn set_enabled(
+        &self,
+        workspace_id: &str,
+        id: &str,
+        enabled: bool,
+    ) -> Result<Option<searchos_domain::agent::Agent>, SearchOsError> {
+        self.store.with_conn(|c| {
+            let tx = c.unchecked_transaction().map_err(e)?;
+            let updated = tx
+                .execute(
+                    "UPDATE agents SET enabled = ?1, updated_at = ?2
+                     WHERE id = ?3 AND workspace_id = ?4",
+                    params![enabled as i64, now(), id, workspace_id],
+                )
+                .map_err(e)?;
+            if updated == 0 {
+                return Ok(None);
+            }
+            let agent = Self::read(&tx, workspace_id, id).map_err(e)?;
+            tx.commit().map_err(e)?;
+            Ok(agent)
+        })
+    }
+}
+
 /// RFC-040: the original request facts for one decision trace.
 #[derive(Debug, Clone)]
 pub struct RecordedSearchTask {
@@ -3116,6 +3303,48 @@ mod tests {
             summary2.cost_per_successful_query.unwrap().amount_micros,
             5_000
         );
+    }
+
+    #[test]
+    fn agent_registry_upsert_update_and_workspace_filter() {
+        let s = store();
+        let repo = AgentRepo::new(&s);
+        let mut agent =
+            searchos_domain::agent::Agent::new("ws", " Claude-Code ", None, None, None).unwrap();
+        let saved = repo.upsert(&agent).unwrap();
+        assert_eq!(saved.id.as_str(), "claude-code");
+        assert_eq!(saved.name, "claude-code");
+        let created_at = saved.created_at;
+
+        agent
+            .apply_update(
+                Some("Nightly Bot".into()),
+                Some(Some("reporting".into())),
+                Some(Some(30)),
+                Some(false),
+            )
+            .unwrap();
+        let updated = repo.upsert(&agent).unwrap();
+        assert_eq!(updated.name, "Nightly Bot");
+        assert_eq!(updated.description.as_deref(), Some("reporting"));
+        assert_eq!(updated.max_requests_per_minute, Some(30));
+        assert!(!updated.enabled);
+        assert_eq!(updated.created_at, created_at, "upsert preserves creation");
+
+        assert_eq!(repo.list(Some("ws")).unwrap().len(), 1);
+        assert!(repo.list(Some("other")).unwrap().is_empty());
+        assert_eq!(repo.list(None).unwrap().len(), 1);
+
+        let disabled = repo
+            .set_enabled("ws", "claude-code", false)
+            .unwrap()
+            .unwrap();
+        assert!(!disabled.enabled);
+        assert_eq!(
+            repo.get("ws", "claude-code").unwrap().unwrap().id.as_str(),
+            "claude-code"
+        );
+        assert!(repo.set_enabled("ws", "unknown", true).unwrap().is_none());
     }
 
     #[test]

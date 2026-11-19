@@ -816,6 +816,38 @@ export class SearchOSClient {
     }>;
   }
 
+  // -- Agents (RFC-060) -------------------------------------------------------
+
+  listAgents(workspaceId?: string): Promise<Record<string, unknown>> {
+    return this.get("/agents", workspaceId ? { workspace_id: workspaceId } : undefined);
+  }
+
+  upsertAgent(body: {
+    id: string;
+    workspace_id?: string;
+    name?: string;
+    description?: string;
+    enabled?: boolean;
+    max_requests_per_minute?: number;
+  }): Promise<Record<string, unknown>> {
+    return this.post("/agents", body);
+  }
+
+  getAgent(agentId: string, workspaceId = "default"): Promise<Record<string, unknown>> {
+    return this.get(`/agents/${encodeURIComponent(agentId)}`, { workspace_id: workspaceId });
+  }
+
+  setAgentEnabled(
+    agentId: string,
+    enabled: boolean,
+    workspaceId = "default",
+  ): Promise<Record<string, unknown>> {
+    return this.post(`/agents/${encodeURIComponent(agentId)}/enabled`, {
+      enabled,
+      workspace_id: workspaceId,
+    });
+  }
+
   // -- Replay / simulation / evaluation (RFC-040/075/086) --------------------
 
   /** Offline replay of a recorded decision; optional what-if policy. */
