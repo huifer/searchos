@@ -8,58 +8,11 @@
 //! CI so a broken restore path fails a pull request instead of a recovery
 //! attempt.
 
+mod common;
+
+use common::binary;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-
-/// Locates the real `searchos` binary.
-///
-/// Cargo does not guarantee where a test executable lives: the classic
-/// `target/<profile>/deps/<test>` layout and the newer
-/// `target/<profile>/build/<pkg>/<hash>/out/<test>` layout both occur, so
-/// deriving the binary path from `current_exe()` alone is fragile (it failed
-/// on CI for exactly that reason). Order:
-///
-/// 1. `SEARCHOS_BIN` — set by CI, authoritative when present;
-/// 2. the workspace `target/<profile>/searchos` found by walking up from the
-///    test executable to the `target` directory;
-/// 3. `<current dir>/target/<profile>/searchos` as a last resort.
-fn binary() -> PathBuf {
-    if let Ok(explicit) = std::env::var("SEARCHOS_BIN") {
-        let path = PathBuf::from(explicit);
-        assert!(
-            path.exists(),
-            "SEARCHOS_BIN points at {} but the file does not exist — run `cargo build --bin searchos` first",
-            path.display()
-        );
-        return path;
-    }
-    let exe = std::env::current_exe().expect("current_exe");
-    let mut candidate_dirs: Vec<PathBuf> = Vec::new();
-    // Walk up looking for a directory literally named `target`; the profile
-    // is the component right after it.
-    let components: Vec<_> = exe.components().collect();
-    for (index, component) in components.iter().enumerate() {
-        if component.as_os_str() == "target" {
-            if let Some(profile) = components.get(index + 1) {
-                let mut dir = PathBuf::new();
-                for c in &components[..=index] {
-                    dir.push(c.as_os_str());
-                }
-                candidate_dirs.push(dir.join(profile.as_os_str()).join("searchos"));
-            }
-        }
-    }
-    candidate_dirs.push(PathBuf::from("target/debug/searchos"));
-    candidate_dirs.push(PathBuf::from("target/release/searchos"));
-    for bin in &candidate_dirs {
-        if bin.exists() {
-            return bin.clone();
-        }
-    }
-    panic!(
-        "searchos binary not found (looked at {candidate_dirs:?}) — run `cargo build --bin searchos` first, or set SEARCHOS_BIN",
-    );
-}
 
 fn run(bin: &Path, data_dir: &Path, args: &[&str]) -> Output {
     Command::new(bin)

@@ -4,22 +4,11 @@
 //! exercise the Part-18 command contract. They require `cargo build` to
 //! have produced target/debug/searchos; CI runs them after the build.
 
+mod common;
+
+use common::binary;
 use std::path::PathBuf;
 use std::process::Command;
-
-fn binary() -> PathBuf {
-    let exe = std::env::current_exe().unwrap();
-    // target/debug/deps/searchos-e2e-<hash> → target/debug/searchos
-    let deps = exe.parent().unwrap();
-    let target = deps.parent().unwrap();
-    let bin = target.join("searchos");
-    assert!(
-        bin.exists(),
-        "searchos binary not found at {}",
-        bin.display()
-    );
-    bin
-}
 
 fn cmd(bin: &PathBuf, data_dir: &PathBuf, args: &[&str]) -> std::process::Output {
     Command::new(bin)

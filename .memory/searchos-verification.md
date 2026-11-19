@@ -606,7 +606,9 @@ The SearchOS implementation (`~/git_repo/searchos`) is verified by these command
   back to `target/debug|release`. Lesson: a test that locates a sibling
   artifact must not assume cargo's layout, and "green locally, red in CI" on
   an artifact-path assertion usually means a pre-existing build artifact
-  masked the bug.
+  masked the bug. `cli_smoke.rs` and `gateway_lifecycle.rs` had the SAME
+  copied locator, so the fix is shared: `tests/e2e/tests/common/mod.rs`
+  (`mod common; use common::binary;` in each suite).
 
 **Known environment notes:**
 - LanceDB requires `protoc` at build time (`brew install protobuf`).

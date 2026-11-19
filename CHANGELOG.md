@@ -625,13 +625,15 @@ multi-arch images, and attaches the matching section of this file.
 
 ### Fixed
 
-- **The e2e backup drill is layout-independent.** `backup_restore` derived
+- **The e2e suites are layout-independent.** `backup_restore`, `cli_smoke`
+  and `gateway_lifecycle` derived
   the `searchos` binary path from its own executable's location, which only
   works on the classic `target/<profile>/deps/` layout. On CI cargo placed the
   test executable under `target/<profile>/build/<pkg>/<hash>/out/`, so the
-  drill failed with "binary not found" while every local run passed. The
-  harness now honours `SEARCHOS_BIN` (set by CI), then walks up to the
-  `target` directory, then falls back to `target/debug` / `target/release`.
+  suites failed with "binary not found" while every local run passed. The
+  locator now lives in `tests/e2e/tests/common/mod.rs`, honours
+  `SEARCHOS_BIN` (set by CI), then walks up to the `target` directory, then
+  falls back to `target/debug` / `target/release`.
 - **Queries are no longer parsed as Tantivy syntax.** User text is analyzed
   into literal terms (matching the Elasticsearch `multi_match` contract) and
   OR'd across title+body under a Must-wrapped block. A query containing a

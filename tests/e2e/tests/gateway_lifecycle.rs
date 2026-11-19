@@ -4,23 +4,13 @@
 //! so they prove the production process behaviour rather than the in-process
 //! handler behaviour covered by the HTTP crate's unit tests.
 
+mod common;
+
+use common::binary;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
-
-fn binary() -> PathBuf {
-    let exe = std::env::current_exe().unwrap();
-    let deps = exe.parent().unwrap();
-    let target = deps.parent().unwrap();
-    let bin = target.join("searchos");
-    assert!(
-        bin.exists(),
-        "searchos binary not found at {}",
-        bin.display()
-    );
-    bin
-}
 
 /// A port that was free at the moment it was picked.
 fn free_port() -> u16 {
