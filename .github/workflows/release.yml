@@ -59,6 +59,11 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo build --workspace --locked
       - run: cargo test --workspace --locked
+        env:
+          # The e2e backup drill spawns the real binary; CI sets the path
+          # explicitly because cargo does not guarantee where a test
+          # executable lives (build/<pkg>/<hash>/out on newer layouts).
+          SEARCHOS_BIN: ${{ github.workspace }}/target/debug/searchos
       - name: Console
         working-directory: web
         run: |

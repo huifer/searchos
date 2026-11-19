@@ -593,6 +593,21 @@ The SearchOS implementation (`~/git_repo/searchos`) is verified by these command
   (`structures_endpoint_extracts_blocks_and_records`,
   `structures_endpoint_requires_text_or_url`).
 
+- **CI backup-drill real bug (2026-11-16, found by the v0.2.0 release run):**
+  `tests/e2e/tests/backup_restore.rs` derived the binary path as
+  `current_exe()/../../searchos`, which is only valid for the classic
+  `target/<profile>/deps/<test>` layout. On GitHub CI the test executable
+  lives at `target/<profile>/build/<pkg>/<hash>/out/<test>`, so the drill
+  failed with "binary not found" even though `cargo build --bin searchos`
+  had run — every LOCAL run passed because `target/debug/searchos` already
+  existed. Fix: `binary()` now checks `SEARCHOS_BIN` first (CI sets it in
+  `ci.yml` test/backup-drill jobs and in `release.yml` gates), then walks up
+  to the `target` component and uses `target/<profile>/searchos`, then falls
+  back to `target/debug|release`. Lesson: a test that locates a sibling
+  artifact must not assume cargo's layout, and "green locally, red in CI" on
+  an artifact-path assertion usually means a pre-existing build artifact
+  masked the bug.
+
 **Known environment notes:**
 - LanceDB requires `protoc` at build time (`brew install protobuf`).
 - Live network tests (fetch of https://example.com) tolerate sandbox timeouts by design.

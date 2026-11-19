@@ -54,6 +54,11 @@ jobs:
       - name: Build (unlocks e2e suite)
         run: cargo build --workspace --locked
       - name: Unit + integration + suites
+        env:
+          # The e2e backup drill spawns the real binary. Cargo does not
+          # guarantee where a test executable lives, so the harness reads
+          # this explicit path instead of deriving one.
+          SEARCHOS_BIN: ${{ github.workspace }}/target/debug/searchos
         run: cargo test --workspace --locked
       - name: Assert test catalogue did not drift
         run: |
@@ -115,6 +120,8 @@ jobs:
       - name: Build binary
         run: cargo build --locked --bin searchos
       - name: Run the backup/restore drill
+        env:
+          SEARCHOS_BIN: ${{ github.workspace }}/target/debug/searchos
         run: cargo test -p searchos-e2e-tests --test backup_restore --locked
 
   # The OpenAPI document is the frozen external contract. This job fails when
