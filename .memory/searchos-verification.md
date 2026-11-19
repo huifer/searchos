@@ -610,6 +610,27 @@ The SearchOS implementation (`~/git_repo/searchos`) is verified by these command
   copied locator, so the fix is shared: `tests/e2e/tests/common/mod.rs`
   (`mod common; use common::binary;` in each suite).
 
+- **v0.2.0 RELEASED (2026-11-19):** tag `v0.2.0` → release run 44453555713,
+  ALL jobs green: verify (19m56s), amd64 image (30m3s), arm64 image (24m54s),
+  artifacts (23m6s), images-manifest, release. GitHub Release published with
+  `checksums.txt` + `searchos-0.2.0-linux-x86_64`; images
+  `ghcr.io/huifer/searchos-{gateway,console}:0.2.0` (multi-arch manifest).
+  Version surfaces agree: Cargo workspace 0.2.0 = OpenAPI info.version =
+  both SDK manifests = CHANGELOG `[0.2.0]` (2026-11-16). CI `test` job also
+  green at 21m10s, reproducing the local 865-test suite.
+  **Two release-blocking CI failures were real bugs, not flakes:** the e2e
+  suites (`backup_restore`, `cli_smoke`, `gateway_lifecycle`) derived the
+  binary path as `current_exe()/../../searchos`, valid only for the classic
+  `target/<profile>/deps/` layout; CI placed test executables under
+  `target/<profile>/build/<pkg>/<hash>/out/`, so all three failed with
+  "binary not found" while local runs passed (the binary was already built).
+  Fix: shared `tests/e2e/tests/common/mod.rs` locator — `SEARCHOS_BIN` first
+  (set in ci.yml test/backup-drill jobs and release.yml verify), then walk up
+  to `target` and use `target/<profile>/searchos`, then
+  `target/debug|release`. Lesson: a test locating a sibling artifact must
+  never assume cargo's layout; "green locally, red in CI" on an artifact
+  path usually means a pre-existing local build masked it.
+
 **Known environment notes:**
 - LanceDB requires `protoc` at build time (`brew install protobuf`).
 - Live network tests (fetch of https://example.com) tolerate sandbox timeouts by design.
