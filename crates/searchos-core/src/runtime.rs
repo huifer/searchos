@@ -32,6 +32,71 @@ use searchos_storage_sqlite::store::SqliteStore;
 
 use crate::config::{SearchOsConfig, CONSUMED_CONFIG_FIELDS, DEPRECATED_CONFIG_FIELDS};
 
+/// RFC-082: bridges external-process crawler extensions into the fetch path.
+/// The application layer only sees the port; the process host and registry
+/// stay here so a hung or crashing child cannot take the fetch path down.
+struct ExtensionCrawlerBridge {
+    extensions: Arc<searchos_extension::ExtensionRegistry>,
+    processes: Arc<searchos_extension::ExternalProcessRegistry>,
+}
+
+#[async_trait::async_trait]
+impl searchos_application::fetch_service::ExternalCrawlerPort for ExtensionCrawlerBridge {
+    fn claims_host(&self, host: &str) -> Option<String> {
+        let mut best: Option<(String, usize)> = None;
+        for record in self.extensions.list() {
+            if record.manifest.kind != searchos_extension::ExtensionType::SiteCrawler
+                || record.manifest.runtime != searchos_extension::RuntimeKind::ExternalProcess
+                || !(record.state.usable()
+                    || record.state == searchos_extension::ExtensionState::Registered)
+            {
+                continue;
+            }
+            for domain in &record.manifest.match_domains {
+                let domain = domain.to_lowercase();
+                let priority = if host == domain {
+                    0
+                } else if host.ends_with(&format!(".{domain}")) {
+                    1
+                } else {
+                    continue;
+                };
+                if best.as_ref().map(|(_, p)| priority < *p).unwrap_or(true) {
+                    best = Some((record.manifest.id.clone(), priority));
+                }
+            }
+        }
+        best.map(|(id, _)| id)
+    }
+
+    async fn crawl(
+        &self,
+        crawler_id: &str,
+        url: &str,
+    ) -> Result<Option<searchos_application::fetch_service::ExternalCrawlItem>, SearchOsError> {
+        let Some(host) = self.processes.get(crawler_id) else {
+            return Ok(None);
+        };
+        let items = host
+            .crawl(url)
+            .await
+            .map_err(|e| SearchOsError::Extension(e.to_string()))?;
+        Ok(items.into_iter().next().map(|item| {
+            searchos_application::fetch_service::ExternalCrawlItem {
+                title: item
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
+                content: item
+                    .get("content")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+            }
+        }))
+    }
+}
+
 /// SQLite-backed [`SessionPersistence`] adapter. Kept in the core crate so
 /// the storage layer stays payload-agnostic and dependency-cycle free.
 struct SqliteSessionPersistence {
@@ -931,6 +996,19 @@ impl SearchOsRuntime {
 
         // FetchService is built before the search dependencies because the
         // RFC-031 promotion service captures pages through it.
+        // RFC-082: external crawler extensions answer through the bridge only
+        // when the runtime flag allows external processes at all; the
+        // discovery policy gate already quarantines the manifests otherwise.
+        let external_crawler_port: Option<
+            Arc<dyn searchos_application::fetch_service::ExternalCrawlerPort>,
+        > = if config.extensions.external_process_enabled {
+            Some(Arc::new(ExtensionCrawlerBridge {
+                extensions: Arc::clone(&extensions),
+                processes: Arc::clone(&external_processes),
+            }))
+        } else {
+            None
+        };
         let fetch_service: Arc<dyn searchos_application::fetch_service::FetchService> =
             Arc::new(FetchServiceImpl::with_runtime(
                 guard.clone(),
@@ -938,6 +1016,7 @@ impl SearchOsRuntime {
                 objects.clone(),
                 doc_port.clone(),
                 Some(Arc::clone(&crawlers)),
+                external_crawler_port,
                 fetch_limits.clone(),
             ));
 

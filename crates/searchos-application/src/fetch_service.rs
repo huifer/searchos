@@ -184,6 +184,31 @@ pub trait FetchService: Send + Sync {
     }
 }
 
+/// RFC-082: one item produced by a site-specific crawler extension.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ExternalCrawlItem {
+    pub title: Option<String>,
+    pub content: String,
+}
+
+/// RFC-082: site-specific extraction performed by an external extension
+/// process. The application layer only sees this port; the process host
+/// lives in `searchos-extension` and is bridged by the runtime crate, so a
+/// hung or crashing child can never take the fetch path down with it.
+#[async_trait]
+pub trait ExternalCrawlerPort: Send + Sync {
+    /// The extension id that claims this host, if any (exact or subdomain
+    /// suffix match, same rule as `CrawlerRegistry::select`).
+    fn claims_host(&self, host: &str) -> Option<String>;
+    /// Crawl via the extension. `Ok(None)` means the extension answered but
+    /// produced no usable item for this URL.
+    async fn crawl(
+        &self,
+        crawler_id: &str,
+        url: &str,
+    ) -> Result<Option<ExternalCrawlItem>, SearchOsError>;
+}
+
 /// Concrete fetch service.
 pub struct FetchServiceImpl {
     fetcher: HttpFetcher,
@@ -193,6 +218,8 @@ pub struct FetchServiceImpl {
     doc_port: Arc<dyn DocumentPort>,
     /// Site-specific crawler registry (RFC-010 10.4), wired by the runtime.
     crawlers: Option<Arc<CrawlerRegistry>>,
+    /// RFC-082: external-process crawler extensions, bridged by the runtime.
+    external_crawlers: Option<Arc<dyn ExternalCrawlerPort>>,
     respect_robots: bool,
     unknown_robots_disallow: bool,
     max_concurrent: u32,
@@ -251,6 +278,7 @@ impl FetchServiceImpl {
             objects,
             doc_port,
             crawlers: None,
+            external_crawlers: None,
             respect_robots: false,
             unknown_robots_disallow: true,
             max_concurrent: FetchLimits::default().max_concurrent,
@@ -275,6 +303,7 @@ impl FetchServiceImpl {
             objects,
             doc_port,
             crawlers: None,
+            external_crawlers: None,
             respect_robots: false,
             unknown_robots_disallow: true,
             max_concurrent: FetchLimits::default().max_concurrent,
@@ -288,6 +317,7 @@ impl FetchServiceImpl {
         objects: Arc<dyn ObjectStore>,
         doc_port: Arc<dyn DocumentPort>,
         crawlers: Option<Arc<CrawlerRegistry>>,
+        external_crawlers: Option<Arc<dyn ExternalCrawlerPort>>,
         limits: FetchLimits,
     ) -> Self {
         let respect_robots = limits.respect_robots;
@@ -303,6 +333,7 @@ impl FetchServiceImpl {
             objects,
             doc_port,
             crawlers,
+            external_crawlers,
             respect_robots,
             unknown_robots_disallow,
             max_concurrent,
@@ -387,55 +418,39 @@ impl FetchServiceImpl {
         }
         MetricsRegistry::global().record_crawler(ok);
     }
-}
 
-#[async_trait]
-impl FetchService for FetchServiceImpl {
-    fn limits(&self) -> searchos_fetch::FetchLimits {
-        self.fetcher.limits().clone()
+    /// RFC-082: asks the external crawler port whether an extension claims
+    /// this host and, if so, uses its extraction. Any failure is isolated to
+    /// `None` — the generic fetch below is always the fallback.
+    async fn external_crawl(&self, parsed: &Url) -> Option<ExternalCrawlItem> {
+        let port = self.external_crawlers.as_ref()?;
+        let host = parsed.host_str()?.to_ascii_lowercase();
+        let crawler_id = port.claims_host(&host)?;
+        match port.crawl(&crawler_id, parsed.as_str()).await {
+            Ok(Some(item)) if !item.content.trim().is_empty() => Some(item),
+            Ok(_) => None,
+            Err(e) => {
+                tracing::warn!(
+                    crawler = %crawler_id,
+                    error = %e,
+                    "external crawler failed; falling back to the generic fetch"
+                );
+                None
+            }
+        }
     }
 
-    async fn fetch_and_persist(
+    /// Content-addressed persistence shared by the generic fetch path and the
+    /// external crawler path (RFC-010 / RFC-082). Same versioning, chunking,
+    /// summary and workspace rules for both.
+    async fn persist_extracted(
         &self,
-        url: &str,
+        canonical: &str,
+        _parsed: &Url,
+        raw_url: &str,
+        extracted: searchos_fetch::extract::ExtractedContent,
         workspace_id: &WorkspaceId,
     ) -> Result<FetchedDocument, SearchOsError> {
-        let raw_url = url.trim().to_string();
-        let canonical = Self::canonicalize(&raw_url);
-        let parsed = Url::parse(&canonical)
-            .map_err(|e| SearchOsError::validation("url", format!("invalid canonical URL: {e}")))?;
-        let selected_crawler = self.selected_crawler(&parsed);
-        // Crawler selection, robots.txt and Crawl-delay all run before the
-        // content request (RFC-010 10.4/10.5, G-03).
-        self.enforce_robots(&parsed).await?;
-        let outcome = self.fetcher.fetch(&canonical, None).await;
-        self.record_crawler_outcome(selected_crawler, &outcome);
-        let outcome = outcome.map_err(|v| SearchOsError::Security(format!("ssrf guard: {v}")))?;
-        let extracted = match outcome {
-            FetchOutcome::Ok(content) => content,
-            FetchOutcome::NotModified => {
-                return Err(SearchOsError::Retrieval(
-                    "not modified (no cached copy given)".into(),
-                ))
-            }
-            FetchOutcome::RobotsDisallowed => {
-                return Err(SearchOsError::Security("robots disallowed".into()))
-            }
-            FetchOutcome::Blocked(v) => {
-                return Err(SearchOsError::Security(format!("blocked: {v}")))
-            }
-            FetchOutcome::EmptyContent => {
-                return Err(SearchOsError::Retrieval(
-                    "empty content not indexed (RFC-010 10.7)".into(),
-                ))
-            }
-            FetchOutcome::HttpError { status } => {
-                return Err(SearchOsError::Provider(format!("http {status}")))
-            }
-            FetchOutcome::Error(e) => return Err(SearchOsError::Provider(format!("fetch: {e}"))),
-        };
-
-        // Content-addressed persistence.
         let raw_bytes = extracted.text.as_bytes();
         let raw_ref = self
             .objects
@@ -453,14 +468,14 @@ impl FetchService for FetchServiceImpl {
             .unwrap_or_default();
 
         // Versioning decision against current (RFC-006 6.4).
-        let existing = self.doc_port.find_by_url(&canonical).await?;
+        let existing = self.doc_port.find_by_url(canonical).await?;
         let (doc, _prior_version) = match &existing {
             Some(d) => (d.clone(), self.doc_port.get_current_version(&d.id).await?),
             None => (
                 Document {
                     id: DocumentId::generate(),
                     source_id: SourceId::generate(),
-                    canonical_url: canonical.clone(),
+                    canonical_url: canonical.to_string(),
                     current_version_id: None,
                     content_type: "text/html".into(),
                     language: Some("en".into()),
@@ -512,7 +527,7 @@ impl FetchService for FetchServiceImpl {
                 version_id: version.id.clone(),
                 title: extracted.title.clone(),
                 body: ch.text.clone(),
-                url: canonical.clone(),
+                url: canonical.to_string(),
                 language: doc.language.clone(),
                 workspace_id: workspace_id.to_string(),
                 fetched_at: Utc::now(),
@@ -534,15 +549,80 @@ impl FetchService for FetchServiceImpl {
         Ok(FetchedDocument {
             document_id: doc.id,
             version_id: version.id,
-            canonical_url: canonical,
+            canonical_url: canonical.to_string(),
             content_hash,
             changed,
             title: extracted.title,
             markdown_ref: md_ref,
             chunk_count: domain_chunks.len(),
             from_cache: false,
-            raw_url: Some(raw_url),
+            raw_url: Some(raw_url.to_string()),
         })
+    }
+}
+
+#[async_trait]
+impl FetchService for FetchServiceImpl {
+    fn limits(&self) -> searchos_fetch::FetchLimits {
+        self.fetcher.limits().clone()
+    }
+
+    async fn fetch_and_persist(
+        &self,
+        url: &str,
+        workspace_id: &WorkspaceId,
+    ) -> Result<FetchedDocument, SearchOsError> {
+        let raw_url = url.trim().to_string();
+        let canonical = Self::canonicalize(&raw_url);
+        let parsed = Url::parse(&canonical)
+            .map_err(|e| SearchOsError::validation("url", format!("invalid canonical URL: {e}")))?;
+        // Robots policy applies to the request itself, whoever performs the
+        // extraction (RFC-010 10.5), so it runs before the crawler choice.
+        self.enforce_robots(&parsed).await?;
+        // RFC-082: an external site crawler that claims this host performs the
+        // extraction. Failure is isolated: the generic fetch path below is
+        // always the fallback, so a broken extension degrades to the default
+        // pipeline instead of breaking the URL.
+        if let Some(item) = self.external_crawl(&parsed).await {
+            let extracted = searchos_fetch::extract::ExtractedContent {
+                title: item.title,
+                markdown: item.content.clone(),
+                text: item.content,
+            };
+            return self
+                .persist_extracted(&canonical, &parsed, &raw_url, extracted, workspace_id)
+                .await;
+        }
+        let selected_crawler = self.selected_crawler(&parsed);
+        let outcome = self.fetcher.fetch(&canonical, None).await;
+        self.record_crawler_outcome(selected_crawler, &outcome);
+        let outcome = outcome.map_err(|v| SearchOsError::Security(format!("ssrf guard: {v}")))?;
+        let extracted = match outcome {
+            FetchOutcome::Ok(content) => content,
+            FetchOutcome::NotModified => {
+                return Err(SearchOsError::Retrieval(
+                    "not modified (no cached copy given)".into(),
+                ))
+            }
+            FetchOutcome::RobotsDisallowed => {
+                return Err(SearchOsError::Security("robots disallowed".into()))
+            }
+            FetchOutcome::Blocked(v) => {
+                return Err(SearchOsError::Security(format!("blocked: {v}")))
+            }
+            FetchOutcome::EmptyContent => {
+                return Err(SearchOsError::Retrieval(
+                    "empty content not indexed (RFC-010 10.7)".into(),
+                ))
+            }
+            FetchOutcome::HttpError { status } => {
+                return Err(SearchOsError::Provider(format!("http {status}")))
+            }
+            FetchOutcome::Error(e) => return Err(SearchOsError::Provider(format!("fetch: {e}"))),
+        };
+
+        self.persist_extracted(&canonical, &parsed, &raw_url, extracted, workspace_id)
+            .await
     }
 
     /// Re-indexes the current version of a document under its owning
@@ -1080,5 +1160,92 @@ mod tests {
             FetchManyOutcome::DeadlineExceeded => assert!(report.deadline_exceeded),
             other => panic!("unexpected live outcome: {other:?}"),
         }
+    }
+    /// RFC-082 fake: one extension claiming `ext.example`, failure-injecting
+    /// otherwise.
+    struct FakeExtCrawler {
+        fail: bool,
+    }
+
+    #[async_trait]
+    impl ExternalCrawlerPort for FakeExtCrawler {
+        fn claims_host(&self, host: &str) -> Option<String> {
+            (!self.fail && host == "ext.example").then(|| "ext.demo".to_string())
+        }
+        async fn crawl(
+            &self,
+            _crawler_id: &str,
+            _url: &str,
+        ) -> Result<Option<ExternalCrawlItem>, SearchOsError> {
+            if self.fail {
+                Err(SearchOsError::Extension("extension down for test".into()))
+            } else {
+                Ok(Some(ExternalCrawlItem {
+                    title: Some("Ext Page".into()),
+                    content: "external crawler content body".into(),
+                }))
+            }
+        }
+    }
+
+    fn svc_with_ext(fail: bool) -> FetchServiceImpl {
+        let objects = Arc::new(searchos_storage_fs::LocalObjectStore::new(
+            std::env::temp_dir().join(format!("searchos-ext-{}-{}", fail, std::process::id())),
+        ));
+        let mut svc = FetchServiceImpl::with_guard(
+            Arc::new(UrlGuard::default()),
+            Arc::new(RobotsChecker::new()),
+            objects,
+            Arc::new(MemPort::default()),
+        );
+        svc.external_crawlers = Some(Arc::new(FakeExtCrawler { fail }));
+        svc
+    }
+
+    /// RFC-082: a claimed host is served by the extension's extraction with
+    /// the FULL persistence pipeline (versioning, chunks, summary) and NO
+    /// network fetch.
+    #[tokio::test]
+    async fn external_crawler_extraction_persists_without_a_generic_fetch() {
+        let svc = svc_with_ext(false);
+        let doc = svc
+            .fetch_and_persist("https://ext.example/page", &WorkspaceId::new("ws"))
+            .await
+            .unwrap();
+        assert_eq!(doc.title.as_deref(), Some("Ext Page"));
+        assert!(doc.chunk_count >= 1);
+        // The content is the extension's, verbatim, content-addressed.
+        let blob = searchos_storage_fs::ObjectStore::get(
+            svc.objects.as_ref(),
+            &format!("sha256:{}", doc.content_hash),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&blob),
+            "external crawler content body"
+        );
+    }
+
+    /// RFC-082 isolation: a failed extension call falls back to the generic
+    /// fetch path — the extension's error never surfaces as the fetch error.
+    #[tokio::test]
+    async fn external_crawler_failure_falls_back_to_the_generic_fetch() {
+        let svc = svc_with_ext(true);
+        let result = svc
+            .fetch_and_persist("https://ext.example/page", &WorkspaceId::new("ws"))
+            .await;
+        match result {
+            Ok(_) => {}
+            Err(e) => assert!(
+                !e.to_string().contains("extension down for test"),
+                "extension error must not leak through the fallback: {e}"
+            ),
+        }
+        // Unclaimed hosts never touch the port at all (same offline tolerance).
+        let unclaimed = svc_with_ext(false);
+        let _ = unclaimed
+            .fetch_and_persist("https://other.example/x", &WorkspaceId::new("ws"))
+            .await;
     }
 }

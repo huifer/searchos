@@ -294,3 +294,80 @@ async fn scheduled_jobs_are_not_claimed_early() {
     assert_eq!((done, failed), (0, 0));
     assert_eq!(jobs.get("job_future").unwrap().unwrap().state, "pending");
 }
+
+/// RFC-081/082 end-to-end: an external_process site-crawler manifest in the
+/// extensions directory is launched by the runtime, health-checked, and its
+/// `crawl` op drives document persistence for claimed hosts — with the
+/// generic fetch never contacted.
+#[tokio::test]
+async fn external_crawler_extension_drives_the_fetch_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let ext_dir = dir.path().join("extensions").join("crawler-demo");
+    std::fs::create_dir_all(&ext_dir).unwrap();
+    // Child protocol host: health -> ok, anything else -> one crawl item.
+    let script = ext_dir.join("child.sh");
+    std::fs::write(
+        &script,
+        "#!/bin/sh\nwhile IFS= read -r line; do\n  case \"$line\" in\n    *health*) echo '{\"ok\":true}';;\n    *) echo '{\"ok\":true,\"result\":{\"items\":[{\"title\":\"Ext Page\",\"content\":\"external crawler content about raft consensus\"}]}}';;\n  esac\ndone\n",
+    )
+    .unwrap();
+    let manifest = format!(
+        "id: ext.crawler-demo\nname: Demo Crawler\nversion: 1.0.0\ntype: site_crawler\nruntime: external_process\nentry: sh\nargs:\n  - {}\nmatch_domains:\n  - ext.example\npermissions:\n  budget_timeout_ms: 5000\nhealthcheck: true\n",
+        script.display()
+    );
+    std::fs::write(ext_dir.join("manifest.yaml"), manifest.clone()).unwrap();
+
+    let mut cfg = searchos_core::SearchOsConfig::default();
+    cfg.app.data_dir = dir.path().to_path_buf();
+    cfg.extensions.external_process_enabled = true;
+    cfg.crawler.respect_robots = false; // deterministic: no robots.txt fetch
+    let rt = searchos_core::SearchOsRuntime::init(cfg).await.unwrap();
+
+    // The extension is live in the process registry.
+    assert!(rt.external_processes.get("ext.crawler-demo").is_some());
+
+    let doc = rt
+        .application
+        .fetch_service
+        .fetch_and_persist(
+            "https://ext.example/raft",
+            &searchos_domain::ids::WorkspaceId::new("default"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(doc.title.as_deref(), Some("Ext Page"));
+    assert!(doc.chunk_count >= 1);
+    let blob = searchos_storage_fs::ObjectStore::get(
+        rt.objects.as_ref(),
+        &format!("sha256:{}", doc.content_hash),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&blob),
+        "external crawler content about raft consensus"
+    );
+
+    // When disabled, the same manifest is policy-quarantined at discovery and
+    // the fetch path falls back to the generic pipeline (which fails offline
+    // on a nonexistent host — it must NOT produce the extension's content).
+    let dir2 = tempfile::tempdir().unwrap();
+    let ext_dir2 = dir2.path().join("extensions").join("crawler-demo");
+    std::fs::create_dir_all(&ext_dir2).unwrap();
+    std::fs::write(ext_dir2.join("manifest.yaml"), manifest.clone()).unwrap();
+    let mut cfg2 = searchos_core::SearchOsConfig::default();
+    cfg2.app.data_dir = dir2.path().to_path_buf();
+    cfg2.extensions.external_process_enabled = false;
+    cfg2.crawler.respect_robots = false;
+    let rt2 = searchos_core::SearchOsRuntime::init(cfg2).await.unwrap();
+    assert!(rt2.external_processes.get("ext.crawler-demo").is_none());
+    let quarantined = rt2
+        .extensions
+        .quarantined()
+        .iter()
+        .any(|r| r.manifest.id == "ext.crawler-demo");
+    assert!(
+        quarantined,
+        "disabled runtime must not launch the extension"
+    );
+}

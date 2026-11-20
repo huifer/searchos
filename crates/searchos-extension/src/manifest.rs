@@ -93,6 +93,10 @@ pub struct ExtensionManifest {
     /// interpreted by a shell.
     #[serde(default)]
     pub args: Vec<String>,
+    /// RFC-082: hosts this extension claims (site crawlers). Exact or
+    /// subdomain suffix match, same rule as `CrawlerRegistry::select`.
+    #[serde(default)]
+    pub match_domains: Vec<String>,
     #[serde(default)]
     pub permissions: ExtensionPermissions,
     /// Compatibility: minimum core ABI/host version.

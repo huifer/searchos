@@ -209,6 +209,7 @@ impl ExtensionRegistry {
             runtime: RuntimeKind::Declarative,
             entry: Some("quarantined.yaml".into()),
             args: Vec::new(),
+            match_domains: Vec::new(),
             permissions: Default::default(),
             requires_core: None,
             healthcheck: Some(false),
@@ -331,6 +332,7 @@ mod tests {
                 None
             },
             args: Vec::new(),
+            match_domains: Vec::new(),
             permissions: Default::default(),
             requires_core: None,
             healthcheck: Some(false),
