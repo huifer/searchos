@@ -30,7 +30,10 @@ pub mod validity;
 pub mod watch;
 
 pub use analytics::{AnalyticsQuery, AnalyticsQueryService};
-pub use fetch_service::{FetchService, FetchServiceImpl};
+pub use fetch_service::{
+    FetchManyItem, FetchManyOptions, FetchManyReport, FetchService, FetchServiceImpl,
+    FetchedDocument,
+};
 pub use ingest_service::{
     IngestBatchItem, IngestBatchResult, IngestFailure, IngestJobPort, IngestPayload, IngestRequest,
     IngestService, IngestServiceImpl, IngestedDocument, LOCAL_SOURCE_TYPE_DIRECTORY,
@@ -148,6 +151,17 @@ pub trait CostUseCase: Send + Sync {
         _currency: &str,
     ) -> Result<(), SearchOsError> {
         Ok(())
+    }
+
+    /// RFC-042 invoice view over the ledger, grouped by currency and then
+    /// provider + operation. Estimates are copied, never rewritten.
+    async fn invoices(
+        &self,
+        _workspace: Option<&str>,
+        _from: Option<&str>,
+        _to: Option<&str>,
+    ) -> Result<Vec<searchos_domain::billing::BillingInvoice>, SearchOsError> {
+        Ok(Vec::new())
     }
 }
 

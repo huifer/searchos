@@ -58,7 +58,9 @@ pub mod registry;
 pub mod resource;
 pub mod source;
 
-pub use adapters::{domain_matches, LocalIndexSource, WebSearchProviderSource};
+pub use adapters::{
+    domain_matches, LocalIndexSource, LocalPublisherSource, WebSearchProviderSource,
+};
 pub use execute::{
     ExecutionControls, ExecutionReport, ExecutionScope, FederatedExecutor, SourceExecutionResult,
 };

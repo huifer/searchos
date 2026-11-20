@@ -22,6 +22,69 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use url::Url;
 
+/// RFC-051 batch fetch options. Deterministic bounds; every value has a
+/// sane default so callers can omit the whole object.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FetchManyOptions {
+    /// Persist fetched documents (false = preview only).
+    pub persist: bool,
+    /// Hard cap on the number of urls served in one call.
+    pub max_urls: u32,
+    /// Max queued urls per host; excess is dropped, not retried forever.
+    pub max_per_host: usize,
+    /// Default per-host pacing when robots Crawl-delay is unknown (ms).
+    pub default_interval_ms: u64,
+    /// Wall-clock budget for the whole batch (ms). Remaining urls are
+    /// reported via `queued_remaining`.
+    pub max_total_ms: u64,
+}
+
+impl Default for FetchManyOptions {
+    fn default() -> Self {
+        Self {
+            persist: true,
+            max_urls: 20,
+            max_per_host: 64,
+            default_interval_ms: 250,
+            max_total_ms: 60_000,
+        }
+    }
+}
+
+/// One url's outcome in a batch fetch. Failures are isolated: one blocked
+/// url never aborts the rest of the batch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FetchManyOutcome {
+    Fetched,
+    Failed,
+    Duplicate,
+    InvalidUrl,
+    QueueFull,
+    NotAttempted,
+    DeadlineExceeded,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct FetchManyItem {
+    pub input_index: usize,
+    pub url: String,
+    pub outcome: FetchManyOutcome,
+    pub ok: bool,
+    pub document_id: Option<String>,
+    pub title: Option<String>,
+    pub error: Option<String>,
+}
+
+/// Batch fetch report.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct FetchManyReport {
+    pub items: Vec<FetchManyItem>,
+    /// URLs still queued when the wall-clock deadline hit.
+    pub queued_remaining: usize,
+    pub deadline_exceeded: bool,
+}
+
 /// A persisted fetch result.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct FetchedDocument {
@@ -55,6 +118,58 @@ pub trait FetchService: Send + Sync {
         &self,
         url: &str,
     ) -> Result<searchos_fetch::extract::ExtractedContent, SearchOsError>;
+
+    /// RFC-051: fetch a batch of urls through the cross-host crawl frontier.
+    /// The default falls back to sequential fetches for adapters without a
+    /// frontier.
+    async fn fetch_many(
+        &self,
+        urls: &[String],
+        workspace_id: &WorkspaceId,
+        options: FetchManyOptions,
+    ) -> Result<FetchManyReport, SearchOsError> {
+        let mut items = Vec::new();
+        for (input_index, url) in urls.iter().enumerate() {
+            if input_index >= options.max_urls as usize {
+                items.push(FetchManyItem {
+                    input_index,
+                    url: url.clone(),
+                    outcome: FetchManyOutcome::NotAttempted,
+                    ok: false,
+                    document_id: None,
+                    title: None,
+                    error: Some("max_urls limit reached".into()),
+                });
+                continue;
+            }
+            let item = match self.fetch_and_persist(url, workspace_id).await {
+                Ok(doc) => FetchManyItem {
+                    input_index,
+                    url: url.clone(),
+                    outcome: FetchManyOutcome::Fetched,
+                    ok: true,
+                    document_id: Some(doc.document_id.as_str().to_string()),
+                    title: doc.title,
+                    error: None,
+                },
+                Err(e) => FetchManyItem {
+                    input_index,
+                    url: url.clone(),
+                    outcome: FetchManyOutcome::Failed,
+                    ok: false,
+                    document_id: None,
+                    title: None,
+                    error: Some(e.to_string()),
+                },
+            };
+            items.push(item);
+        }
+        Ok(FetchManyReport {
+            items,
+            queued_remaining: 0,
+            deadline_exceeded: false,
+        })
+    }
     /// Rebuilds the current version's index payloads under the owning
     /// workspace. Used after a refresh so old-workspace chunks are replaced.
     async fn reindex_current_version(
@@ -500,6 +615,198 @@ impl FetchService for FetchServiceImpl {
             Err(v) => Err(SearchOsError::Security(format!("ssrf guard: {v}"))),
         }
     }
+
+    async fn fetch_many(
+        &self,
+        urls: &[String],
+        workspace_id: &WorkspaceId,
+        options: FetchManyOptions,
+    ) -> Result<FetchManyReport, SearchOsError> {
+        use searchos_fetch::frontier::{FetchFrontier, FrontierIdle, FrontierNext};
+        use std::time::{Duration, Instant};
+
+        let max = (options.max_urls as usize).min(urls.len());
+        let mut frontier = FetchFrontier::with_config(
+            options.default_interval_ms.max(1),
+            options.max_per_host.max(1),
+        );
+        let mut items: Vec<Option<FetchManyItem>> = vec![None; urls.len()];
+        for (input_index, url) in urls.iter().take(max).enumerate() {
+            let (outcome, error) = match frontier.push_indexed(url, 0, input_index) {
+                searchos_fetch::FrontierPush::Accepted => continue,
+                searchos_fetch::FrontierPush::Duplicate => (
+                    FetchManyOutcome::Duplicate,
+                    Some("duplicate URL in batch".into()),
+                ),
+                searchos_fetch::FrontierPush::OverCap => (
+                    FetchManyOutcome::QueueFull,
+                    Some("frontier capacity limit reached".into()),
+                ),
+                searchos_fetch::FrontierPush::InvalidUrl => (
+                    FetchManyOutcome::InvalidUrl,
+                    Some("URL must be an absolute HTTP(S) URL with a host".into()),
+                ),
+            };
+            items[input_index] = Some(FetchManyItem {
+                input_index,
+                url: url.clone(),
+                outcome,
+                ok: false,
+                document_id: None,
+                title: None,
+                error,
+            });
+        }
+        for (input_index, url) in urls.iter().enumerate().skip(max) {
+            items[input_index] = Some(FetchManyItem {
+                input_index,
+                url: url.clone(),
+                outcome: FetchManyOutcome::NotAttempted,
+                ok: false,
+                document_id: None,
+                title: None,
+                error: Some("max_urls limit reached".into()),
+            });
+        }
+        let started = Instant::now();
+        let mut processed = 0usize;
+        let mut deadline_exceeded = false;
+        while processed < max {
+            let elapsed_ms = started.elapsed().as_millis() as u64;
+            let remaining_ms = options.max_total_ms.saturating_sub(elapsed_ms);
+            if remaining_ms == 0 {
+                deadline_exceeded = true;
+                break;
+            }
+            match frontier.pop(elapsed_ms) {
+                FrontierNext::Ready(pop) => {
+                    let item = if options.persist {
+                        match tokio::time::timeout(
+                            Duration::from_millis(remaining_ms),
+                            self.fetch_and_persist(&pop.url, workspace_id),
+                        )
+                        .await
+                        {
+                            Ok(Ok(doc)) => FetchManyItem {
+                                input_index: pop.input_index,
+                                url: pop.url.clone(),
+                                outcome: FetchManyOutcome::Fetched,
+                                ok: true,
+                                document_id: Some(doc.document_id.as_str().to_string()),
+                                title: doc.title,
+                                error: None,
+                            },
+                            Ok(Err(e)) => FetchManyItem {
+                                input_index: pop.input_index,
+                                url: pop.url.clone(),
+                                outcome: FetchManyOutcome::Failed,
+                                ok: false,
+                                document_id: None,
+                                title: None,
+                                error: Some(e.to_string()),
+                            },
+                            Err(_) => {
+                                deadline_exceeded = true;
+                                FetchManyItem {
+                                    input_index: pop.input_index,
+                                    url: pop.url.clone(),
+                                    outcome: FetchManyOutcome::DeadlineExceeded,
+                                    ok: false,
+                                    document_id: None,
+                                    title: None,
+                                    error: Some("batch time budget exhausted".into()),
+                                }
+                            }
+                        }
+                    } else {
+                        match tokio::time::timeout(
+                            Duration::from_millis(remaining_ms),
+                            self.fetch_preview(&pop.url),
+                        )
+                        .await
+                        {
+                            Ok(Ok(content)) => FetchManyItem {
+                                input_index: pop.input_index,
+                                url: pop.url.clone(),
+                                outcome: FetchManyOutcome::Fetched,
+                                ok: true,
+                                document_id: None,
+                                title: content.title,
+                                error: None,
+                            },
+                            Ok(Err(e)) => FetchManyItem {
+                                input_index: pop.input_index,
+                                url: pop.url.clone(),
+                                outcome: FetchManyOutcome::Failed,
+                                ok: false,
+                                document_id: None,
+                                title: None,
+                                error: Some(e.to_string()),
+                            },
+                            Err(_) => {
+                                deadline_exceeded = true;
+                                FetchManyItem {
+                                    input_index: pop.input_index,
+                                    url: pop.url.clone(),
+                                    outcome: FetchManyOutcome::DeadlineExceeded,
+                                    ok: false,
+                                    document_id: None,
+                                    title: None,
+                                    error: Some("batch time budget exhausted".into()),
+                                }
+                            }
+                        }
+                    };
+                    let delay = Url::parse(&pop.url)
+                        .ok()
+                        .and_then(|u| self.fetcher.crawl_delay_seconds(&u))
+                        .map(|secs| secs.saturating_mul(1_000));
+                    frontier.note_fetch(&pop.url, started.elapsed().as_millis() as u64, delay);
+                    items[pop.input_index] = Some(item);
+                    processed += 1;
+                    if deadline_exceeded {
+                        break;
+                    }
+                }
+                FrontierNext::Idle(FrontierIdle::Empty) => break,
+                FrontierNext::Idle(FrontierIdle::NotYetReady { wait_ms }) => {
+                    if wait_ms >= remaining_ms {
+                        deadline_exceeded = true;
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(wait_ms.max(1))).await;
+                }
+            }
+        }
+        let queued_remaining = frontier.total_queued();
+        for (input_index, slot) in items.iter_mut().enumerate().take(max) {
+            if slot.is_none() {
+                let url = urls[input_index].clone();
+                *slot = Some(FetchManyItem {
+                    input_index,
+                    url,
+                    outcome: if deadline_exceeded {
+                        FetchManyOutcome::DeadlineExceeded
+                    } else {
+                        FetchManyOutcome::NotAttempted
+                    },
+                    ok: false,
+                    document_id: None,
+                    title: None,
+                    error: Some(if deadline_exceeded {
+                        "batch time budget exhausted".into()
+                    } else {
+                        "not attempted".into()
+                    }),
+                });
+            }
+        }
+        Ok(FetchManyReport {
+            items: items.into_iter().flatten().collect(),
+            queued_remaining,
+            deadline_exceeded,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -680,6 +987,98 @@ mod tests {
                 0,
                 "preview never persists"
             );
+        }
+    }
+
+    /// RFC-051: the frontier path reports every input index exactly once,
+    /// isolates failures, and never attempts beyond max_urls.
+    ///
+    /// Deterministic contract: per-index reporting, duplicate/invalid/
+    /// SSRF-blocked classification. The one live fetch (example.com) is
+    /// network-dependent — under CI load it may time out, exactly like the
+    /// other live smoke tests in this crate, so its outcome is tolerated.
+    #[tokio::test]
+    async fn fetch_many_reports_every_input_index_with_isolated_failures() {
+        let objects = Arc::new(searchos_storage_fs::LocalObjectStore::new(
+            std::env::temp_dir().join(format!("searchos-app-many-{}", std::process::id())),
+        ));
+        let svc = FetchServiceImpl::with_guard(
+            Arc::new(UrlGuard::default()),
+            Arc::new(RobotsChecker::new()),
+            objects,
+            Arc::new(MemPort::default()),
+        );
+        let urls = vec![
+            "https://example.com/".into(),
+            "https://example.com/".into(),  // duplicate
+            "notaurl".into(),               // invalid
+            "https://127.0.0.1:9/x".into(), // SSRF-blocked host -> isolated failure
+        ];
+        let options = FetchManyOptions {
+            persist: false,
+            max_urls: 10,
+            max_per_host: 8,
+            default_interval_ms: 1,
+            max_total_ms: 60_000,
+        };
+        let report = svc
+            .fetch_many(&urls, &WorkspaceId::new("ws"), options)
+            .await
+            .unwrap();
+        assert_eq!(report.items.len(), urls.len(), "every input is reported");
+        for (i, item) in report.items.iter().enumerate() {
+            assert_eq!(item.input_index, i);
+        }
+        // Deterministic classifications.
+        assert_eq!(report.items[1].outcome, FetchManyOutcome::Duplicate);
+        assert_eq!(report.items[2].outcome, FetchManyOutcome::InvalidUrl);
+        assert_eq!(report.items[3].outcome, FetchManyOutcome::Failed);
+        // The live fetch is network-dependent; a deadline must be reported
+        // honestly rather than disguised as success.
+        match report.items[0].outcome {
+            FetchManyOutcome::Fetched | FetchManyOutcome::Failed => {}
+            FetchManyOutcome::DeadlineExceeded => assert!(report.deadline_exceeded),
+            other => panic!("unexpected live outcome: {other:?}"),
+        }
+    }
+
+    /// RFC-051: urls beyond max_urls are reported as NotAttempted, never
+    /// fetched.
+    #[tokio::test]
+    async fn fetch_many_never_attempts_beyond_max_urls() {
+        let objects = Arc::new(searchos_storage_fs::LocalObjectStore::new(
+            std::env::temp_dir().join(format!("searchos-app-many-cap-{}", std::process::id())),
+        ));
+        let svc = FetchServiceImpl::with_guard(
+            Arc::new(UrlGuard::default()),
+            Arc::new(RobotsChecker::new()),
+            objects,
+            Arc::new(MemPort::default()),
+        );
+        let urls = vec![
+            "https://example.com/".into(),
+            "https://example.com/x".into(),
+        ];
+        let options = FetchManyOptions {
+            persist: false,
+            max_urls: 1,
+            max_per_host: 8,
+            default_interval_ms: 1,
+            max_total_ms: 60_000,
+        };
+        let report = svc
+            .fetch_many(&urls, &WorkspaceId::new("ws"), options)
+            .await
+            .unwrap();
+        // The cap contract is deterministic: the second url is never attempted
+        // (it is not queued, so it is not even network-dependent).
+        assert_eq!(report.items[1].outcome, FetchManyOutcome::NotAttempted);
+        assert_eq!(report.queued_remaining, 0);
+        // The single attempted url is network-dependent.
+        match report.items[0].outcome {
+            FetchManyOutcome::Fetched | FetchManyOutcome::Failed => {}
+            FetchManyOutcome::DeadlineExceeded => assert!(report.deadline_exceeded),
+            other => panic!("unexpected live outcome: {other:?}"),
         }
     }
 }

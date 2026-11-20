@@ -123,16 +123,18 @@ impl ExtensionRegistry {
     /// Discovers manifest.yaml files with the permissive default runtime
     /// policy (used by tests and tools).
     pub fn discover(&self, dir: &Path) -> Result<DiscoveryReport, String> {
-        self.discover_with_policy(dir, true, true)
+        self.discover_with_policy(dir, true, true, true)
     }
 
     /// Discovers manifests one-by-one, quarantining only the failing entry.
-    /// `allow_native` / `wasm_enabled` are runtime config fields, not no-ops.
+    /// `allow_native` / `wasm_enabled` / `allow_external_process` are runtime
+    /// config fields, not no-ops.
     pub fn discover_with_policy(
         &self,
         dir: &Path,
         allow_native: bool,
         wasm_enabled: bool,
+        allow_external_process: bool,
     ) -> Result<DiscoveryReport, String> {
         let mut report = DiscoveryReport::default();
         if !dir.exists() {
@@ -172,6 +174,9 @@ impl ExtensionRegistry {
             let policy_error = match manifest.runtime {
                 RuntimeKind::Native if !allow_native => Some("native extensions disabled"),
                 RuntimeKind::Wasm if !wasm_enabled => Some("wasm extensions disabled"),
+                RuntimeKind::ExternalProcess if !allow_external_process => {
+                    Some("external_process extensions disabled")
+                }
                 _ => None,
             };
             if let Some(reason) = policy_error {
@@ -203,6 +208,7 @@ impl ExtensionRegistry {
             kind: crate::manifest::ExtensionType::Intelligence,
             runtime: RuntimeKind::Declarative,
             entry: Some("quarantined.yaml".into()),
+            args: Vec::new(),
             permissions: Default::default(),
             requires_core: None,
             healthcheck: Some(false),
@@ -324,6 +330,7 @@ mod tests {
             } else {
                 None
             },
+            args: Vec::new(),
             permissions: Default::default(),
             requires_core: None,
             healthcheck: Some(false),

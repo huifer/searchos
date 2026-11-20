@@ -436,6 +436,8 @@ pub struct SearchOsRuntime {
         Option<Arc<dyn searchos_application::promotion_service::EvidencePromotionService>>,
     /// RFC-062: the federated source registry (local index + providers).
     pub federation_registry: Arc<searchos_federated::InMemorySourceRegistry>,
+    /// RFC-081: live external-process extension hosts, keyed by manifest id.
+    pub external_processes: Arc<searchos_extension::ExternalProcessRegistry>,
     /// Config fields consumed by the runtime, for `config validate` parity.
     pub config_consumption: BTreeMap<String, String>,
     pub metrics_enabled: bool,
@@ -810,6 +812,7 @@ impl SearchOsRuntime {
                 &config.extensions_path(),
                 config.extensions.allow_native,
                 config.extensions.wasm_enabled,
+                config.extensions.external_process_enabled,
             )
             .unwrap_or_else(|e| {
                 tracing::warn!(%e, "extension discovery failed");
@@ -836,6 +839,32 @@ impl SearchOsRuntime {
             "extensions.quarantined",
             (extension_report.quarantined.len() + crawler_report.quarantined.len()) as u64,
         );
+
+        // RFC-081: launch external-process extensions whose manifests passed
+        // discovery (the policy gate already excludes the runtime when
+        // `external_process_enabled` is false). A child that fails its
+        // health handshake is quarantined in the SAME registry the operator
+        // already audits; the gateway itself always survives.
+        let external_processes = Arc::new(searchos_extension::ExternalProcessRegistry::new());
+        if config.extensions.external_process_enabled {
+            for record in extensions
+                .list()
+                .into_iter()
+                .filter(|r| r.manifest.runtime == searchos_extension::RuntimeKind::ExternalProcess)
+            {
+                match external_processes.launch(&record.manifest).await {
+                    Ok(_) => {
+                        tracing::info!(id = %record.manifest.id, "external process extension started");
+                    }
+                    Err(e) => {
+                        let reason = format!("external process launch failed: {e}");
+                        tracing::warn!(id = %record.manifest.id, %reason);
+                        extensions.quarantine(&record.manifest.id, &reason);
+                        metrics.inc_counter("extensions.load_failed_total");
+                    }
+                }
+            }
+        }
 
         // Multi-layer caches + hybrid BM25/vector retrieval (RFC-007, G-02).
         let cache_ttl = config.search.cache_ttl_seconds;
@@ -1418,6 +1447,7 @@ impl SearchOsRuntime {
             promotion: promotion_for_runtime,
             session_store,
             federation_registry,
+            external_processes,
             config_consumption,
             metrics_enabled: config.observability.metrics_enabled,
             trace_retention_days: config.observability.trace_retention_days,
@@ -1895,6 +1925,186 @@ impl SearchOsRuntime {
         self.fulltext.commit().await?;
         self.invalidate_caches().await;
         Ok(written)
+    }
+
+    /// RFC-050: scans the workspace corpus for publisher hosts and records
+    /// them as discovery proposals. Observations are deduplicated per host;
+    /// re-scanning only bumps the evidence counter.
+    pub async fn discover_sources(
+        &self,
+        workspace: Option<&str>,
+    ) -> Result<serde_json::Value, SearchOsError> {
+        let repo = repos::SourceDiscoveryRepo::new(&self.sqlite);
+        let urls = repo.scan_documents(workspace)?;
+        let mut observed = 0usize;
+        let mut hosts = std::collections::BTreeSet::new();
+        for url in urls {
+            let Some(host) = url::Url::parse(&url)
+                .ok()
+                .and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase()))
+            else {
+                continue;
+            };
+            observed += 1;
+            hosts.insert(host.clone());
+            repo.observe(&host, &url)?;
+        }
+        Ok(serde_json::json!({
+            "documents_scanned": observed,
+            "hosts": hosts.len(),
+            "discoveries": repo.list(Some("discovered"), 100)?,
+        }))
+    }
+
+    /// RFC-050: promotes a discovered publisher into a real federated source
+    /// (a local-index source restricted to that host) and records it in the
+    /// persisted source catalog.
+    pub async fn register_discovered_source(
+        &self,
+        host: &str,
+        workspace: Option<&str>,
+    ) -> Result<serde_json::Value, SearchOsError> {
+        let host = host.trim().to_ascii_lowercase();
+        if host.is_empty() || host.contains('/') || host.contains(' ') {
+            return Err(SearchOsError::validation("host", "must be a bare host"));
+        }
+        let repo = repos::SourceDiscoveryRepo::new(&self.sqlite);
+        let Some(discovery) = repo.get(&host)? else {
+            return Err(SearchOsError::Retrieval(format!(
+                "no discovery for host {host}"
+            )));
+        };
+        let source_id = format!("publisher_{}", host.replace('.', "_"));
+        let scope = match workspace {
+            Some(ws) => searchos_federated::SourceScope::Workspace(ws.to_string()),
+            None => searchos_federated::SourceScope::Global,
+        };
+        let source = searchos_federated::LocalPublisherSource::new(
+            source_id.clone(),
+            host.clone(),
+            Arc::clone(&self.fulltext),
+            scope.clone(),
+            20,
+        );
+        self.federation_registry
+            .register(Arc::new(source) as Arc<dyn searchos_federated::SearchSource>)
+            .map_err(|e| SearchOsError::Internal(format!("register publisher source: {e}")))?;
+        // Persist the catalog row so `GET /sources` reports it too.
+        let descriptor = serde_json::json!({
+            "source_id": source_id,
+            "name": format!("publisher: {host}"),
+            "category": "web_document",
+            "host": host,
+            "discovered_from_documents": discovery.evidence_count,
+            "scope": searchos_federated::scope_label(&scope),
+        });
+        repos::SourceCatalogRepo::new(&self.sqlite).upsert(&repos::SourceCatalogRow {
+            source_id: source_id.clone(),
+            name: format!("publisher: {host}"),
+            category: "web_document".into(),
+            scope: searchos_federated::scope_label(&scope),
+            workspace_id: workspace.map(str::to_string),
+            enabled: true,
+            billable: false,
+            version: "1".into(),
+            health: "healthy".into(),
+            descriptor_json: descriptor.to_string(),
+        })?;
+        repo.mark_registered(&host, &source_id)?;
+        Ok(serde_json::json!({
+            "host": host,
+            "source_id": source_id,
+            "registered": true,
+            "evidence_count": discovery.evidence_count,
+        }))
+    }
+
+    /// RFC-054: claim and execute up to `limit` due background jobs.
+    ///
+    /// Claims are atomic and lease-guarded, so two workers never run the same
+    /// row. Retry classification is the error class: a retryable failure
+    /// returns the row to `pending` with exponential backoff, a
+    /// non-retryable one (bad payload, unsupported kind) is terminal on the
+    /// first attempt — no retry storm.
+    pub async fn process_jobs(&self, limit: u32) -> Result<(u64, u64), SearchOsError> {
+        let repo = repos::JobRepo::new(&self.sqlite);
+        let mut processed = 0u64;
+        let mut failed = 0u64;
+        for _ in 0..limit {
+            let Some(job) = repo.claim_next(120)? else {
+                break;
+            };
+            match self.run_job(&job).await {
+                Ok(()) => {
+                    repo.complete(&job.id)?;
+                    processed += 1;
+                }
+                Err(e) => {
+                    if e.class().retryable {
+                        // 5s, 10s, 20s ... capped at 300s.
+                        let backoff = 5u32
+                            .saturating_mul(1u32 << job.attempts.saturating_sub(1).min(6))
+                            .min(300);
+                        repo.fail(&job.id, &e.to_string(), backoff)?;
+                    } else {
+                        repo.fail_terminal(&job.id, &e.to_string())?;
+                    }
+                    failed += 1;
+                }
+            }
+        }
+        Ok((processed, failed))
+    }
+
+    async fn run_job(&self, job: &repos::BackgroundJob) -> Result<(), SearchOsError> {
+        match job.kind.as_str() {
+            // Re-index one document's current version (the same helper the
+            // console's reindex button uses, so behaviour cannot diverge).
+            "reindex_document" => {
+                let document_id = job
+                    .payload
+                    .get("document_id")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| SearchOsError::validation("document_id", "required"))?;
+                let workspace_id = job
+                    .payload
+                    .get("workspace_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(job.workspace_id.as_str());
+                self.reindex_document(
+                    &searchos_domain::ids::DocumentId::new(document_id),
+                    &searchos_domain::ids::WorkspaceId::new(workspace_id),
+                )
+                .await?;
+                Ok(())
+            }
+            // Polite multi-URL acquisition through the RFC-051 frontier.
+            "fetch_batch" => {
+                let urls: Vec<String> = serde_json::from_value(
+                    job.payload
+                        .get("urls")
+                        .cloned()
+                        .unwrap_or_else(|| serde_json::json!([])),
+                )
+                .map_err(|e| SearchOsError::validation("urls", e.to_string()))?;
+                if urls.is_empty() {
+                    return Err(SearchOsError::validation("urls", "must not be empty"));
+                }
+                self.application
+                    .fetch_service
+                    .fetch_many(
+                        &urls,
+                        &searchos_domain::ids::WorkspaceId::new(job.workspace_id.clone()),
+                        searchos_application::FetchManyOptions::default(),
+                    )
+                    .await?;
+                Ok(())
+            }
+            other => Err(SearchOsError::validation(
+                "kind",
+                format!("unsupported background job kind: {other}"),
+            )),
+        }
     }
 
     /// Outbox drain against an explicit index (tests / backend parity).
@@ -2528,6 +2738,15 @@ impl CostUseCase for SqliteCostSink {
 
     async fn singleflight_saved_micros(&self) -> Result<i64, SearchOsError> {
         repos::SingleflightRepo::new(&self.store).total_saved()
+    }
+
+    async fn invoices(
+        &self,
+        workspace: Option<&str>,
+        from: Option<&str>,
+        to: Option<&str>,
+    ) -> Result<Vec<searchos_domain::billing::BillingInvoice>, SearchOsError> {
+        repos::CostRepo::new(&self.store).invoice(workspace, from, to)
     }
 
     async fn savings(

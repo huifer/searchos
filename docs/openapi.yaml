@@ -180,6 +180,61 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '429': { $ref: '#/components/responses/RateLimited' }
 
+  /fetch/batch:
+    post:
+      tags: [Fetch]
+      summary: Fetch a bounded URL batch through the cross-host crawl frontier
+      description: RFC-051. Failures are isolated per URL; robots policy and host Crawl-delay are respected. URLs beyond max_urls are not attempted.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [urls]
+              properties:
+                urls:
+                  type: array
+                  maxItems: 200
+                  items: { type: string, format: uri }
+                workspace_id: { type: string }
+                persist: { type: boolean, default: true }
+                max_urls: { type: integer, minimum: 1, maximum: 200, default: 20 }
+                max_per_host: { type: integer, minimum: 1, maximum: 1024, default: 64 }
+                default_interval_ms: { type: integer, minimum: 1, default: 250 }
+                max_total_ms: { type: integer, minimum: 1, default: 60000 }
+      responses:
+        '200':
+          description: Per-URL results and any frontier items left at the deadline.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FetchManyReport' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /search/stream:
+    post:
+      tags: [Search]
+      summary: Per-result SSE stream of a search response (RFC-056)
+      description: |
+        Same request body and contract as `POST /search`, returned as Server-Sent Events:
+        `start` (task id + status), one `result` event per evidence item (with its index),
+        `quality` (quality verdict, warnings, coverage gaps), `final` (the complete
+        SearchResponse payload, byte-identical to `POST /search`), `done`.
+        The current pipeline computes the gated response before the first event;
+        this is per-result delivery, not stage or token streaming.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        '200':
+          description: text/event-stream of the search response.
+          content:
+            text/event-stream:
+              schema: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
   /extract:
     post:
       tags: [Knowledge]
@@ -1069,6 +1124,36 @@ paths:
                     type: array
                     items: { type: object, additionalProperties: true }
 
+  /cost/invoices:
+    get:
+      tags: [Cost]
+      summary: Invoice view over the append-only ledger
+      description: RFC-042. Grouped by currency, then provider + operation. Estimated amounts are copied, never rewritten; `unreconciled_events` counts rows with no real bill imported yet.
+      parameters:
+        - name: workspace_id
+          in: query
+          required: false
+          schema: { type: string }
+        - name: from
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: Invoices, one per currency.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  invoices:
+                    type: array
+                    items: { $ref: '#/components/schemas/BillingInvoice' }
+
   /cost/reconcile:
     post:
       tags: [Cost]
@@ -1180,6 +1265,148 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/SystemStatus' }
+
+  /jobs:
+    get:
+      tags: [Jobs]
+      summary: List durable background jobs
+      parameters:
+        - name: workspace_id
+          in: query
+          schema: { type: string }
+        - name: state
+          in: query
+          schema: { type: string, enum: [pending, running, succeeded, failed] }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 500, default: 50 }
+      responses:
+        '200':
+          description: Jobs in newest-first order.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  jobs:
+                    type: array
+                    items: { $ref: '#/components/schemas/BackgroundJob' }
+    post:
+      tags: [Jobs]
+      summary: Enqueue a durable background job
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind]
+              properties:
+                kind: { type: string, maxLength: 64 }
+                payload: { type: object, additionalProperties: true }
+                workspace_id: { type: string }
+                max_attempts: { type: integer, minimum: 1, maximum: 100, default: 3 }
+                run_after: { type: string, format: date-time }
+      responses:
+        '201':
+          description: Enqueued job.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BackgroundJob' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /jobs/{id}:
+    get:
+      tags: [Jobs]
+      summary: Get one background job
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Job row.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BackgroundJob' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /sources/discover:
+    post:
+      tags: [Sources]
+      summary: Scan the corpus for publisher hosts (RFC-050)
+      description: Records candidate publishers discovered from the workspace's own documents. Repeating the scan only bumps the evidence counter; it never duplicates a host.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                workspace_id: { type: string }
+      responses:
+        '200':
+          description: Discovery report.
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+
+  /sources/discoveries:
+    get:
+      tags: [Sources]
+      summary: List source discovery proposals
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string, enum: [discovered, registered, dismissed] }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 500, default: 100 }
+      responses:
+        '200':
+          description: Discovery proposals.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  discoveries:
+                    type: array
+                    items: { $ref: '#/components/schemas/SourceDiscovery' }
+
+  /sources/discoveries/{host}/register:
+    post:
+      tags: [Sources]
+      summary: Promote a discovered publisher into a federated source
+      parameters:
+        - name: host
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Registration result.
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /sources/discoveries/{host}/dismiss:
+    post:
+      tags: [Sources]
+      summary: Dismiss a discovery proposal
+      parameters:
+        - name: host
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Dismissed.
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
 
   /sources:
     get:
@@ -2443,6 +2670,86 @@ components:
             content: { type: string }
             url: { type: string, nullable: true }
         score: { type: number, format: float }
+    SourceDiscovery:
+      type: object
+      required: [host, first_seen_at, last_seen_at, evidence_count, sample_url, status]
+      properties:
+        host: { type: string }
+        first_seen_at: { type: string, format: date-time }
+        last_seen_at: { type: string, format: date-time }
+        evidence_count: { type: integer }
+        sample_url: { type: string, format: uri }
+        status: { type: string, enum: [discovered, registered, dismissed] }
+        registered_source_id: { type: string, nullable: true }
+
+    BackgroundJob:
+      type: object
+      required: [id, kind, workspace_id, payload, state, attempts, max_attempts, run_after, created_at]
+      properties:
+        id: { type: string }
+        kind: { type: string }
+        workspace_id: { type: string }
+        payload: { type: object, additionalProperties: true }
+        state: { type: string, enum: [pending, running, succeeded, failed] }
+        attempts: { type: integer }
+        max_attempts: { type: integer }
+        run_after: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+        started_at: { type: string, format: date-time, nullable: true }
+        finished_at: { type: string, format: date-time, nullable: true }
+        last_error: { type: string, nullable: true }
+
+    FetchManyReport:
+      type: object
+      required: [items, queued_remaining, deadline_exceeded]
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            required: [input_index, url, outcome, ok]
+            properties:
+              input_index: { type: integer }
+              url: { type: string, format: uri }
+              outcome:
+                type: string
+                enum: [fetched, failed, duplicate, invalid_url, queue_full, not_attempted, deadline_exceeded]
+              ok: { type: boolean }
+              document_id: { type: string, nullable: true }
+              title: { type: string, nullable: true }
+              error: { type: string, nullable: true }
+        queued_remaining: { type: integer }
+        deadline_exceeded: { type: boolean }
+
+    BillingInvoice:
+      type: object
+      description: RFC-042 invoice view over the append-only cost ledger, one invoice per currency.
+      required: [currency, lines, total_estimated_micros, total_actual_micros, events, unreconciled_events, fully_reconciled, generated_at]
+      properties:
+        currency: { type: string }
+        lines:
+          type: array
+          items: { $ref: '#/components/schemas/BillingLine' }
+        total_estimated_micros: { type: integer, format: int64 }
+        total_actual_micros: { type: integer, format: int64 }
+        events: { type: integer }
+        unreconciled_events: { type: integer }
+        fully_reconciled: { type: boolean }
+        generated_at: { type: string, format: date-time }
+
+    BillingLine:
+      type: object
+      description: One provider + operation line on an invoice.
+      required: [provider, operation, events, unreconciled_events, estimated_micros, actual_micros, currency]
+      properties:
+        provider: { type: string }
+        operation: { type: string }
+        events: { type: integer }
+        unreconciled_events: { type: integer }
+        estimated_micros: { type: integer, format: int64 }
+        actual_micros: { type: integer, format: int64 }
+        currency: { type: string }
+
     SavingsReport:
       type: object
       properties:

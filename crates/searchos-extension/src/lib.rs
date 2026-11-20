@@ -9,10 +9,12 @@
 //! → Dependency → Initialize → Health Check → Registered → Active;
 //! failures → Degraded / Quarantined / Disabled.
 
+pub mod external;
 pub mod lifecycle;
 pub mod manifest;
 pub mod snapshot;
 
+pub use external::{ExternalHostError, ExternalProcessHost, ExternalProcessRegistry, HostState};
 pub use lifecycle::{
     DiscoveryReport, ExtensionRecord, ExtensionRegistry, ExtensionState, ValidationError,
 };

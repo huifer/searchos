@@ -8,13 +8,16 @@ description = "Extension manifests, lifecycle, permissions, version snapshots (R
 
 [dependencies]
 serde = { workspace = true }
+serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 thiserror = { workspace = true }
 searchos-crawler = { workspace = true }
 searchos-provider = { workspace = true }
 searchos-domain = { workspace = true }
 chrono = { workspace = true }
+tokio = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
+tokio = { workspace = true }
 tempfile = "3"

@@ -260,6 +260,11 @@ enum Command {
         #[command(subcommand)]
         cmd: EvidenceCmd,
     },
+    /// RFC-054 durable background jobs
+    Jobs {
+        #[command(subcommand)]
+        cmd: JobsCmd,
+    },
     /// Trace operations
     Trace {
         #[command(subcommand)]
@@ -710,6 +715,8 @@ enum CostCmd {
     Savings,
     /// Budget reserve → settle audit trail
     Reservations,
+    /// RFC-042 invoice view grouped by currency and provider + operation
+    Invoices,
     /// Import a real provider bill for a cost event (estimates stay unchanged)
     Reconcile {
         /// cost_events row id
@@ -746,6 +753,45 @@ enum EvidenceCmd {
         /// Workspace scope (default: all)
         #[arg(long)]
         workspace: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum JobsCmd {
+    /// List background jobs (newest first)
+    List {
+        /// Workspace scope (default: all)
+        #[arg(long)]
+        workspace: Option<String>,
+        /// Filter by state: pending | running | succeeded | failed
+        #[arg(long)]
+        state: Option<String>,
+        /// Maximum jobs to list
+        #[arg(long, default_value = "50")]
+        limit: u32,
+    },
+    /// Enqueue a background job
+    Enqueue {
+        /// Job kind: reindex_document | fetch_batch
+        #[arg(long)]
+        kind: String,
+        /// Payload JSON (e.g. '{"document_id":"doc_1"}')
+        #[arg(long)]
+        payload: String,
+        /// Workspace that owns the job
+        #[arg(long, default_value = "default")]
+        workspace: String,
+        /// Maximum attempts before the job fails permanently
+        #[arg(long, default_value = "3")]
+        max_attempts: u32,
+        /// RFC3339 time the job becomes claimable
+        #[arg(long)]
+        run_after: Option<String>,
+    },
+    /// Show one job
+    Show {
+        /// Background job id
+        id: String,
     },
 }
 
@@ -2084,6 +2130,20 @@ async fn run(cli: Cli) -> Result<(), SearchOsError> {
                     let rows = rt.application.cost_service.reservations(50).await?;
                     print(&rows, format);
                 }
+                CostCmd::Invoices => {
+                    let invoices = rt
+                        .application
+                        .cost_service
+                        .invoices(None, None, None)
+                        .await?;
+                    print(
+                        &serde_json::json!({
+                            "invoices": invoices,
+                            "is_estimate_note": "estimated amounts are copied, never rewritten",
+                        }),
+                        format,
+                    );
+                }
                 CostCmd::Reconcile {
                     event,
                     actual,
@@ -2161,6 +2221,46 @@ async fn run(cli: Cli) -> Result<(), SearchOsError> {
                     Ok(())
                 }
             }
+        }
+        Command::Jobs { cmd } => {
+            let rt = runtime(cli_ref).await?;
+            let repo = repos::JobRepo::new(&rt.sqlite);
+            match cmd {
+                JobsCmd::List {
+                    workspace,
+                    state,
+                    limit,
+                } => {
+                    let jobs = repo.list(workspace.as_deref(), state.as_deref(), *limit)?;
+                    print(&serde_json::json!({ "jobs": jobs }), format);
+                }
+                JobsCmd::Enqueue {
+                    kind,
+                    payload,
+                    workspace,
+                    max_attempts,
+                    run_after,
+                } => {
+                    let payload: serde_json::Value = serde_json::from_str(payload)
+                        .map_err(|e| SearchOsError::validation("payload", e.to_string()))?;
+                    let job = repo.enqueue(
+                        &format!("job_{}", repos::next_job_id()),
+                        kind,
+                        workspace,
+                        &payload,
+                        *max_attempts,
+                        run_after.as_deref(),
+                    )?;
+                    print(&serde_json::to_value(job).unwrap_or_default(), format);
+                }
+                JobsCmd::Show { id } => {
+                    let job = repo
+                        .get(id)?
+                        .ok_or_else(|| SearchOsError::Retrieval(format!("job {id} not found")))?;
+                    print(&serde_json::to_value(job).unwrap_or_default(), format);
+                }
+            }
+            Ok(())
         }
         Command::Trace { cmd } => {
             let rt = runtime(cli_ref).await?;

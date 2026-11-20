@@ -405,3 +405,142 @@ pub fn domain_matches(host: &str, domain: &str) -> bool {
     let domain = domain.to_lowercase();
     host == domain || host.ends_with(&format!(".{domain}"))
 }
+
+/// RFC-050: a local-index source restricted to ONE publisher host.
+///
+/// Auto-discovered publishers become real, selectable sources instead of
+/// inert catalog rows: this adapter answers only with documents whose
+/// canonical URL belongs to the discovered host. It never fetches anything,
+/// so it stays non-billable and failure-isolated like the plain local index.
+pub struct LocalPublisherSource {
+    descriptor: SearchSourceDescriptor,
+    index: std::sync::Arc<dyn SearchIndex>,
+    host: String,
+}
+
+impl LocalPublisherSource {
+    pub fn new(
+        id: impl Into<String>,
+        host: impl Into<String>,
+        index: std::sync::Arc<dyn SearchIndex>,
+        scope: SourceScope,
+        priority: i32,
+    ) -> Self {
+        let host = host.into().to_lowercase();
+        let descriptor = SearchSourceDescriptor {
+            source_id: SourceId::new(id),
+            name: format!("publisher: {host}"),
+            category: SourceCategory::WebDocument,
+            version: "1".into(),
+            enabled: true,
+            priority,
+            capabilities: SourceCapabilities {
+                lexical_search: true,
+                semantic_search: false,
+                metadata_filter: true,
+                time_filter: true,
+                freshness_metadata: true,
+                provenance_metadata: true,
+                permission_filtering: true,
+                ..Default::default()
+            },
+            reliability: ReliabilityProfile {
+                success_rate: 1.0,
+                metadata_trust: 0.8,
+                consecutive_failures: 0,
+                circuit_open: false,
+                ..ReliabilityProfile::default()
+            },
+            cost: SourceCostProfile {
+                estimated_cost_micros: 0,
+                currency: "USD".into(),
+                billable: false,
+            },
+            latency: SourceLatencyProfile {
+                p50_ms: 5,
+                p95_ms: 40,
+                timeout_ms: 2_000,
+            },
+            scope,
+            satisfies_requirements: Vec::new(),
+        };
+        Self {
+            descriptor,
+            index,
+            host,
+        }
+    }
+
+    /// The publisher host this source is restricted to.
+    pub fn host(&self) -> &str {
+        &self.host
+    }
+}
+
+#[async_trait]
+impl SearchSource for LocalPublisherSource {
+    fn descriptor(&self) -> SearchSourceDescriptor {
+        self.descriptor.clone()
+    }
+
+    async fn search(
+        &self,
+        request: SourceSearchRequest,
+        _context: SourceExecutionContext,
+    ) -> Result<SourceSearchResponse, SourceError> {
+        let started = std::time::Instant::now();
+        // If the caller constrains domains, this source can only serve the
+        // intersection: a publisher source never widens a domain policy.
+        if !request.required_domains.is_empty()
+            && !request
+                .required_domains
+                .iter()
+                .any(|d| domain_matches(&self.host, d))
+        {
+            return Ok(SourceSearchResponse {
+                source_id: self.descriptor.source_id.clone(),
+                status: SourceExecutionStatus::Skipped,
+                candidates: Vec::new(),
+                failure: None,
+                estimated_cost_micros: 0,
+                latency_ms: started.elapsed().as_millis() as u64,
+            });
+        }
+        let mut query = LocalIndexSource::retrieval_query(&request, request.max_results.max(1));
+        query.required_domains = vec![self.host.clone()];
+        let candidates = self
+            .index
+            .search(&query)
+            .await
+            .map_err(|error| map_index_error(&error))?;
+        let mapped: Vec<SourceCandidate> = candidates
+            .into_iter()
+            .filter(|candidate| {
+                url::Url::parse(&candidate.url)
+                    .ok()
+                    .and_then(|url| url.host_str().map(|h| h.to_ascii_lowercase()))
+                    .map(|host| domain_matches(&host, &self.host))
+                    .unwrap_or(false)
+            })
+            .map(|candidate| SourceCandidate {
+                source_id: self.descriptor.source_id.clone(),
+                canonical_ref: candidate.url.clone(),
+                title: candidate.title.clone(),
+                snippet: candidate.snippet.clone(),
+                raw_score: Some(candidate.score),
+                observed_at: candidate.fetched_at,
+                published_at: None,
+                satisfies_requirements: Vec::new(),
+                permission_verified: true,
+            })
+            .collect();
+        Ok(SourceSearchResponse {
+            source_id: self.descriptor.source_id.clone(),
+            status: SourceExecutionStatus::Success,
+            candidates: mapped,
+            failure: None,
+            estimated_cost_micros: 0,
+            latency_ms: started.elapsed().as_millis() as u64,
+        })
+    }
+}

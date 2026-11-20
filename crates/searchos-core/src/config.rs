@@ -301,12 +301,16 @@ pub struct ExtensionsConfig {
     pub allow_native: bool,
     /// WASM runtime is a later phase (ADR-024).
     pub wasm_enabled: bool,
+    /// External child processes are opt-in because they execute code outside
+    /// the gateway process. Per-extension manifests still require a timeout.
+    pub external_process_enabled: bool,
 }
 impl Default for ExtensionsConfig {
     fn default() -> Self {
         Self {
             allow_native: true,
             wasm_enabled: false,
+            external_process_enabled: false,
         }
     }
 }
@@ -958,6 +962,7 @@ pub const ALL_CONFIG_FIELDS: &[&str] = &[
     "crawler.crawl_delay_cap_seconds",
     "extensions.allow_native",
     "extensions.wasm_enabled",
+    "extensions.external_process_enabled",
     "security.ssrf_protection",
     "security.max_response_bytes",
     "security.max_redirects",
@@ -1090,6 +1095,7 @@ pub const CONSUMED_CONFIG_FIELDS: &[&str] = &[
     "crawler.crawl_delay_cap_seconds",
     "extensions.allow_native",
     "extensions.wasm_enabled",
+    "extensions.external_process_enabled",
     "security.ssrf_protection",
     "security.max_response_bytes",
     "security.max_redirects",

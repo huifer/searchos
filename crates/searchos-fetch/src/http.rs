@@ -143,6 +143,16 @@ impl HttpFetcher {
         format!("{host}:{port}")
     }
 
+    /// Crawl-delay robots.txt declares for this url's host (seconds), if
+    /// robots.txt has already been loaded for the host. RFC-051: the crawl
+    /// frontier uses this to pace per-host bursts.
+    pub fn crawl_delay_seconds(&self, url: &url::Url) -> Option<u64> {
+        let host_key = Self::host_key(url);
+        self.robots
+            .crawl_delay(&host_key, "searchos")
+            .map(|d| d.as_secs())
+    }
+
     /// Fetches /robots.txt once per host:port when needed and returns the
     /// RFC 9309 decision. Unknown is returned for 5xx / network failures;
     /// 4xx means "no robots.txt" and is treated as allow.

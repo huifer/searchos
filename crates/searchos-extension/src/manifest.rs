@@ -47,13 +47,16 @@ impl ExtensionType {
     }
 }
 
-/// Runtime kinds (RFC-011 11.2).
+/// Runtime kinds (RFC-011 11.2). `ExternalProcess` is the RFC-081 half of
+/// the frozen "Both" decision: a separate process speaking the line-delimited
+/// JSON protocol in [`crate::external`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeKind {
     Declarative,
     Native,
     Wasm,
+    ExternalProcess,
 }
 
 /// Explicit permission grants (RFC-011 11.5).
@@ -82,10 +85,14 @@ pub struct ExtensionManifest {
     pub kind: ExtensionType,
     /// Runtime: declarative | native | wasm.
     pub runtime: RuntimeKind,
-    /// Entry point: crate name for native, rule file for declarative,
-    /// module for wasm.
+    /// Entry point: crate name for native, rule file for declarative, or
+    /// executable path for an external process.
     #[serde(default)]
     pub entry: Option<String>,
+    /// Arguments for an external process. Passed directly to `Command`, never
+    /// interpreted by a shell.
+    #[serde(default)]
+    pub args: Vec<String>,
     #[serde(default)]
     pub permissions: ExtensionPermissions,
     /// Compatibility: minimum core ABI/host version.
@@ -120,6 +127,23 @@ impl ExtensionManifest {
         }
         if self.runtime == RuntimeKind::Declarative && self.entry.is_none() {
             return Err("declarative extensions must declare an entry rule file".into());
+        }
+        if self.runtime == RuntimeKind::ExternalProcess {
+            // The entry IS the command line; without it there is nothing to
+            // spawn. A process extension also needs an execution budget so a
+            // hung child is killed by the host (RFC-083).
+            if self
+                .entry
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or("")
+                .is_empty()
+            {
+                return Err("external_process extensions must declare an entry command".into());
+            }
+            if self.permissions.budget_timeout_ms.is_none() {
+                return Err("external_process extensions must declare a budget timeout".into());
+            }
         }
         Ok(())
     }

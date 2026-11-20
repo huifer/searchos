@@ -9,6 +9,7 @@
 //! Only serde/chrono/uuid/sha2 are used for serialization, time and hashing.
 
 pub mod agent;
+pub mod billing;
 pub mod collection;
 pub mod context;
 pub mod cost;
@@ -28,6 +29,7 @@ pub mod response;
 pub mod retrieval;
 
 pub use agent::{normalize_agent_id, Agent, MAX_AGENT_ID_LEN};
+pub use billing::{BillingInvoice, BillingLine};
 pub use collection::{Collection, CollectionId, CollectionSummary};
 pub use context::{ContextBlockSummary, ContextBudget, ContextDrop, ContextSnippet, ContextStatus};
 pub use cost::{

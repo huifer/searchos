@@ -8,10 +8,12 @@
 //! - [`http`] — fetcher with conditional GET (ETag / If-Modified-Since).
 
 pub mod extract;
+pub mod frontier;
 pub mod guard;
 pub mod http;
 pub mod robots;
 
+pub use frontier::{FetchFrontier, FrontierIdle, FrontierNext, FrontierPop, FrontierPush};
 pub use guard::{UrlGuard, UrlViolation};
 pub use http::{FetchLimits, FetchOutcome, HttpFetcher};
 pub use robots::{RobotsChecker, RobotsDecision};

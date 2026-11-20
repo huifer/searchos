@@ -208,3 +208,89 @@ async fn agent_sessions_survive_runtime_restart() {
         .unwrap();
     assert!(rt3.session_store.get("persist-1").is_none());
 }
+
+/// RFC-054: durable background jobs execute through the runtime — a
+/// reindex_document job completes, an unsupported kind is terminal on the
+/// first attempt (no retry storm), and claim_next never hands one row to two
+/// workers.
+#[tokio::test]
+async fn background_jobs_run_through_the_runtime() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = searchos_core::SearchOsConfig::default();
+    cfg.app.data_dir = dir.path().to_path_buf();
+    let rt = searchos_core::SearchOsRuntime::init(cfg).await.unwrap();
+
+    // Seed a document so reindex has something to do.
+    let mut req =
+        searchos_application::ingest_service::IngestRequest::new(WorkspaceId::new("default"));
+    req.source_key = Some("notes/job-reindex".into());
+    let doc = rt
+        .application
+        .ingest_service
+        .ingest_text(req, "content for the reindex job")
+        .await
+        .unwrap();
+    rt.process_outbox(10).await.unwrap();
+
+    let jobs = searchos_storage_sqlite::repos::JobRepo::new(&rt.sqlite);
+    jobs.enqueue(
+        "job_reindex",
+        "reindex_document",
+        "default",
+        &serde_json::json!({ "document_id": doc.document_id.as_str() }),
+        1,
+        None,
+    )
+    .unwrap();
+    jobs.enqueue(
+        "job_bad",
+        "no_such_kind",
+        "default",
+        &serde_json::json!({}),
+        5,
+        None,
+    )
+    .unwrap();
+
+    let (done, failed) = rt.process_jobs(10).await.unwrap();
+    assert_eq!(done, 1, "reindex job succeeds");
+    assert_eq!(failed, 1, "unsupported kind counts as a failure");
+    let reindexed = jobs.get("job_reindex").unwrap().unwrap();
+    assert_eq!(reindexed.state, "succeeded");
+    let bad = jobs.get("job_bad").unwrap().unwrap();
+    assert_eq!(
+        bad.state, "failed",
+        "non-retryable kind is terminal on the FIRST attempt"
+    );
+    assert_eq!(bad.attempts, 1, "no retry storm");
+    assert!(bad.last_error.as_deref().unwrap().contains("unsupported"));
+
+    // Everything terminal: another drain is a no-op.
+    let (done2, failed2) = rt.process_jobs(10).await.unwrap();
+    assert_eq!((done2, failed2), (0, 0));
+}
+
+/// RFC-054: run_after schedules a job into the future; it is not claimable
+/// before its time.
+#[tokio::test]
+async fn scheduled_jobs_are_not_claimed_early() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = searchos_core::SearchOsConfig::default();
+    cfg.app.data_dir = dir.path().to_path_buf();
+    let rt = searchos_core::SearchOsRuntime::init(cfg).await.unwrap();
+    let jobs = searchos_storage_sqlite::repos::JobRepo::new(&rt.sqlite);
+    jobs.enqueue(
+        "job_future",
+        "reindex_document",
+        "default",
+        &serde_json::json!({ "document_id": "missing" }),
+        1,
+        Some("2099-01-01T00:00:00Z"),
+    )
+    .unwrap();
+    let claimed = jobs.claim_next(120).unwrap();
+    assert!(claimed.is_none(), "future job must not be claimed early");
+    let (done, failed) = rt.process_jobs(4).await.unwrap();
+    assert_eq!((done, failed), (0, 0));
+    assert_eq!(jobs.get("job_future").unwrap().unwrap().state, "pending");
+}

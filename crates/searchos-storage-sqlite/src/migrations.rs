@@ -929,6 +929,60 @@ CREATE INDEX IF NOT EXISTS idx_agents_workspace_enabled
     ON agents(workspace_id, enabled, updated_at DESC);
 "#,
     },
+    // v20 - RFC-054 general job scheduler. A durable, append-visible queue
+    // for background work: rows are claimed atomically (state pending ->
+    // running), completed, or failed with a retry budget. Payloads are
+    // opaque JSON so new job kinds never need a migration.
+    Migration {
+        version: 20,
+        name: "background_jobs",
+        sql: r#"
+CREATE TABLE IF NOT EXISTS background_jobs (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'pending',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    max_attempts INTEGER NOT NULL DEFAULT 3,
+    run_after TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    started_at TEXT,
+    finished_at TEXT,
+    lease_until TEXT,
+    last_error TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_jobs_claim
+    ON background_jobs(state, run_after, created_at);
+CREATE INDEX IF NOT EXISTS idx_jobs_workspace
+    ON background_jobs(workspace_id, created_at DESC);
+"#,
+    },
+    // v21 - RFC-050 automatic source discovery. Candidate publishers observed
+    // in the system's own corpus; promotion registers them as real sources.
+    Migration {
+        version: 21,
+        name: "source_discoveries",
+        sql: r#"
+CREATE TABLE IF NOT EXISTS source_discoveries (
+    host TEXT PRIMARY KEY,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    evidence_count INTEGER NOT NULL DEFAULT 1,
+    sample_url TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'discovered',
+    registered_source_id TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_discoveries_status
+    ON source_discoveries(status, evidence_count DESC);
+CREATE TABLE IF NOT EXISTS source_discovery_observations (
+    host TEXT NOT NULL,
+    url TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    PRIMARY KEY(host, url)
+);
+"#,
+    },
 ];
 
 /// Applies pending migrations to a connection. Each version is atomic: SQL

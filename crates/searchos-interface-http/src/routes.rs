@@ -385,10 +385,14 @@ pub fn api_route_table() -> Vec<RouteSpec> {
         RouteSpec::new("GET", "/health", get(health)),
         RouteSpec::new("GET", "/metrics", get(metrics)),
         RouteSpec::new("POST", "/search", post(search)),
+        // RFC-056: per-result SSE rendering (search contract is shared).
+        RouteSpec::new("POST", "/search/stream", post(search_stream)),
         // Agent-facing search surface (plan before spending, follow-up turns).
         RouteSpec::new("POST", "/search/plan", post(search_plan)),
         RouteSpec::new("POST", "/search/follow-up", post(search_follow_up)),
         RouteSpec::new("POST", "/extract", post(extract)),
+        // RFC-051: polite cross-host batch fetch through the crawl frontier.
+        RouteSpec::new("POST", "/fetch/batch", post(fetch_batch)),
         RouteSpec::new("POST", "/ingest", post(ingest)),
         RouteSpec::new("POST", "/ingest/file", post(ingest_file)),
         RouteSpec::new("POST", "/ingest/batch", post(ingest_batch)),
@@ -456,6 +460,8 @@ pub fn api_route_table() -> Vec<RouteSpec> {
         RouteSpec::new("GET", "/cost/providers", get(cost_providers)),
         RouteSpec::new("GET", "/cost/savings", get(cost_savings)),
         RouteSpec::new("GET", "/cost/reservations", get(cost_reservations)),
+        // RFC-042: invoice view over the append-only ledger.
+        RouteSpec::new("GET", "/cost/invoices", get(cost_invoices)),
         RouteSpec::new("POST", "/cost/reconcile", post(cost_reconcile)),
         RouteSpec::new("GET", "/stats/search", get(stats_search)),
         RouteSpec::new("GET", "/stats/savings", get(stats_savings)),
@@ -464,8 +470,25 @@ pub fn api_route_table() -> Vec<RouteSpec> {
         RouteSpec::new("GET", "/trace/{trace_id}", get(get_decision)),
         RouteSpec::new("GET", "/traces", get(list_traces)),
         RouteSpec::new("GET", "/system/status", get(system_status)),
+        // RFC-054: durable background jobs (scheduler surface).
+        RouteSpec::new("POST", "/jobs", post(enqueue_job)),
+        RouteSpec::new("GET", "/jobs", get(list_jobs)),
+        RouteSpec::new("GET", "/jobs/{id}", get(get_job)),
         // RFC-063: the federated source catalog (read-only observability).
         RouteSpec::new("GET", "/sources", get(list_sources)),
+        // RFC-050: automatic source discovery + promotion.
+        RouteSpec::new("POST", "/sources/discover", post(discover_sources)),
+        RouteSpec::new("GET", "/sources/discoveries", get(list_source_discoveries)),
+        RouteSpec::new(
+            "POST",
+            "/sources/discoveries/{host}/register",
+            post(register_discovered_source),
+        ),
+        RouteSpec::new(
+            "POST",
+            "/sources/discoveries/{host}/dismiss",
+            post(dismiss_discovered_source),
+        ),
         // RFC-049: deterministic structured extraction.
         RouteSpec::new("POST", "/structures", post(extract_structures)),
         // RFC-033: human feedback -> graded qrels -> evaluation dataset.
@@ -724,6 +747,41 @@ pub(crate) async fn run_outbox_worker(
     }
 }
 
+/// RFC-054: durable background-job worker tick loop. Shared with the outbox
+/// worker's shape: log-and-continue on failure, one final drain on shutdown.
+pub(crate) async fn run_job_worker(
+    runtime: Arc<SearchOsRuntime>,
+    mut stop: tokio::sync::watch::Receiver<bool>,
+) {
+    let mut ticker = tokio::time::interval(Duration::from_millis(1_000));
+    loop {
+        tokio::select! {
+            _ = ticker.tick() => {
+                match runtime.process_jobs(8).await {
+                    Ok((0, 0)) => {}
+                    Ok((done, failed)) => {
+                        tracing::debug!(done, failed, "background jobs processed");
+                    }
+                    Err(e) => tracing::warn!(error = %e, "background job worker tick failed"),
+                }
+            }
+            _ = stop.changed() => {
+                if *stop.borrow() {
+                    break;
+                }
+            }
+        }
+    }
+    // Final drain: finish anything claimable within the shutdown window.
+    match runtime.process_jobs(64).await {
+        Ok((done, failed)) if done > 0 || failed > 0 => {
+            tracing::info!("shutdown job drain: {done} completed, {failed} failed");
+        }
+        Ok(_) => {}
+        Err(e) => tracing::warn!(error = %e, "shutdown job drain failed"),
+    }
+}
+
 /// Binds and serves the gateway.
 ///
 /// Graceful shutdown (RFC-015 15.4): on SIGTERM/SIGINT the listener stops
@@ -748,6 +806,15 @@ pub async fn serve(state: AppState) -> Result<(), String> {
     let worker_runtime = Arc::clone(&state.runtime);
     let worker = tokio::spawn(async move {
         run_outbox_worker(worker_runtime, stop_rx_worker).await;
+    });
+
+    // RFC-054: durable background-job worker. It only acts on explicitly
+    // enqueued rows, so an always-on tick is safe; unknown kinds fail
+    // terminally instead of retrying forever.
+    let (job_stop_tx, job_stop_rx) = tokio::sync::watch::channel(false);
+    let job_runtime = Arc::clone(&state.runtime);
+    let job_worker = tokio::spawn(async move {
+        run_job_worker(job_runtime, job_stop_rx).await;
     });
 
     // RFC-035: optional built-in watch schedule. `schedule_interval_seconds
@@ -793,6 +860,13 @@ pub async fn serve(state: AppState) -> Result<(), String> {
             Ok(Err(e)) => tracing::warn!("watch scheduler task failed: {e}"),
             Err(_) => tracing::warn!("timed out waiting for the watch scheduler to stop"),
         }
+    }
+    // RFC-054: stop the job worker with a final drain.
+    let _ = job_stop_tx.send(true);
+    match tokio::time::timeout(Duration::from_secs(5), job_worker).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => tracing::warn!("job worker task failed: {e}"),
+        Err(_) => tracing::warn!("timed out waiting for the job worker to stop"),
     }
     searchos_observability::MetricsRegistry::global().inc_counter("shutdown.graceful_total");
     tracing::info!("gateway shut down cleanly");
@@ -1177,6 +1251,67 @@ async fn search(
     Ok(Json(value).into_response())
 }
 
+/// `POST /search/stream` — RFC-056 per-result SSE stream.
+///
+/// The search pipeline currently computes the full gated response before the
+/// first evidence event. Once available, results are emitted individually so
+/// clients can render them progressively; this does not claim stage/token
+/// streaming.
+async fn search_stream(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Response, ApiError> {
+    let response = search(State(state), headers, Json(body)).await?;
+    let bytes = axum::body::to_bytes(response.into_body(), 16 * 1024 * 1024)
+        .await
+        .map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "INTERNAL_ERROR",
+                e.to_string(),
+            )
+        })?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "INTERNAL_ERROR",
+            e.to_string(),
+        )
+    })?;
+    let mut events = Vec::new();
+    events.push((
+        "start",
+        serde_json::json!({"task_id": value.get("task_id"), "status": value.get("status")}),
+    ));
+    if let Some(results) = value.get("results").and_then(|v| v.as_array()) {
+        for (index, result) in results.iter().enumerate() {
+            events.push((
+                "result",
+                serde_json::json!({"index": index, "result": result}),
+            ));
+        }
+    }
+    events.push((
+        "quality",
+        serde_json::json!({
+            "quality": value.get("quality"),
+            "status": value.get("status"),
+            "warnings": value.get("warnings"),
+            "coverage_gaps": value.get("coverage_gaps"),
+        }),
+    ));
+    events.push(("final", value));
+    events.push(("done", serde_json::json!({"complete": true})));
+    let stream = futures_util::stream::iter(events.into_iter().map(|(event, data)| {
+        let data = serde_json::to_string(&data).unwrap_or_else(|_| "{}".into());
+        Ok::<SseEvent, std::convert::Infallible>(SseEvent::default().event(event).data(data))
+    }));
+    Ok(Sse::new(stream)
+        .keep_alive(KeepAlive::default())
+        .into_response())
+}
+
 /// Tavily-compatible `/search` path (RFC-012 12.7, ADR-006). Tavily DTOs
 /// never enter the core; unsupported knobs are reported back explicitly.
 async fn tavily_search(
@@ -1228,6 +1363,69 @@ pub struct ExtractDto {
     /// When false only previews (no persistence).
     #[serde(default)]
     pub persist: Option<bool>,
+}
+
+/// `POST /fetch/batch` — RFC-051 batch fetch through the crawl frontier.
+#[derive(Debug, serde::Deserialize)]
+pub struct FetchBatchDto {
+    pub urls: Vec<String>,
+    #[serde(default)]
+    pub workspace_id: Option<String>,
+    #[serde(default)]
+    pub persist: Option<bool>,
+    #[serde(default)]
+    pub max_urls: Option<u32>,
+    #[serde(default)]
+    pub max_per_host: Option<usize>,
+    #[serde(default)]
+    pub default_interval_ms: Option<u64>,
+    #[serde(default)]
+    pub max_total_ms: Option<u64>,
+}
+
+async fn fetch_batch(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(dto): Json<FetchBatchDto>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    state.authorize(&headers)?;
+    if dto.urls.is_empty() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "VALIDATION_FAILED",
+            "urls must not be empty",
+        ));
+    }
+    let ws = dto
+        .workspace_id
+        .clone()
+        .map(WorkspaceId::new)
+        .unwrap_or_else(|| WorkspaceId::new("default"));
+    state.authorize_workspace(&headers, ws.as_str())?;
+    let mut options = searchos_application::FetchManyOptions::default();
+    if let Some(v) = dto.persist {
+        options.persist = v;
+    }
+    if let Some(v) = dto.max_urls {
+        options.max_urls = v.clamp(1, 200);
+    }
+    if let Some(v) = dto.max_per_host {
+        options.max_per_host = v.clamp(1, 1_024);
+    }
+    if let Some(v) = dto.default_interval_ms {
+        options.default_interval_ms = v.max(1);
+    }
+    if let Some(v) = dto.max_total_ms {
+        options.max_total_ms = v.max(1);
+    }
+    let report = state
+        .runtime
+        .application
+        .fetch_service
+        .fetch_many(&dto.urls, &ws, options)
+        .await
+        .map_err(|e| ApiError::from_domain(&e))?;
+    Ok(Json(serde_json::to_value(report).unwrap_or_default()))
 }
 
 async fn extract(
@@ -3337,6 +3535,39 @@ async fn cost_reservations(
     Ok(Json(rows))
 }
 
+/// Query for `GET /cost/invoices` (RFC-042).
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct CostInvoiceQueryDto {
+    pub workspace_id: Option<String>,
+    /// Inclusive lower bound on `occurred_at` (RFC 3339).
+    pub from: Option<String>,
+    /// Inclusive upper bound on `occurred_at` (RFC 3339).
+    pub to: Option<String>,
+}
+
+/// `GET /cost/invoices` — RFC-042 invoice view over the append-only ledger,
+/// grouped by currency then provider + operation. Estimates are copied,
+/// never rewritten; `unreconciled_events` counts rows with no real bill.
+async fn cost_invoices(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<CostInvoiceQueryDto>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    state.authorize(&headers)?;
+    let scope = state.workspace_scope(&headers, q.workspace_id.as_deref())?;
+    let invoices = state
+        .runtime
+        .application
+        .cost_service
+        .invoices(scope.as_deref(), q.from.as_deref(), q.to.as_deref())
+        .await
+        .map_err(|e| ApiError::from_domain(&e))?;
+    Ok(Json(serde_json::json!({
+        "invoices": invoices,
+        "note": "invoice view over the append-only ledger; estimated amounts are never rewritten",
+    })))
+}
+
 /// `POST /cost/reconcile` — provider billing import (RFC-006 6.7).
 #[derive(Debug, serde::Deserialize)]
 pub struct ReconcileDto {
@@ -3378,6 +3609,187 @@ async fn cost_reconcile(
         "source": source,
         "currency": currency,
     })))
+}
+
+// ---------------------------------------------------------------------------
+// RFC-054 durable background jobs.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, serde::Deserialize)]
+pub struct EnqueueJobDto {
+    pub kind: String,
+    /// Opaque JSON consumed by the job handler.
+    #[serde(default)]
+    pub payload: serde_json::Value,
+    #[serde(default)]
+    pub workspace_id: Option<String>,
+    #[serde(default)]
+    pub max_attempts: Option<u32>,
+    /// RFC 3339 time the job becomes claimable; default: now.
+    #[serde(default)]
+    pub run_after: Option<String>,
+}
+
+async fn enqueue_job(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(dto): Json<EnqueueJobDto>,
+) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
+    state.authorize(&headers)?;
+    let ws = dto
+        .workspace_id
+        .clone()
+        .map(WorkspaceId::new)
+        .unwrap_or_else(|| WorkspaceId::new("default"));
+    state.authorize_workspace(&headers, ws.as_str())?;
+    let kind = dto.kind.trim();
+    if kind.is_empty()
+        || kind.len() > 64
+        || !kind.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "VALIDATION_FAILED",
+            "kind must be 1-64 ascii alphanumeric or '_'",
+        ));
+    }
+    let job = searchos_storage_sqlite::repos::JobRepo::new(&state.runtime.sqlite)
+        .enqueue(
+            &format!("job_{}", searchos_domain::ids::CostEventId::generate()),
+            kind,
+            ws.as_str(),
+            &dto.payload,
+            dto.max_attempts.unwrap_or(3),
+            dto.run_after.as_deref(),
+        )
+        .map_err(|e| ApiError::from_domain(&e))?;
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::to_value(job).unwrap_or_default()),
+    ))
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct JobListQueryDto {
+    pub workspace_id: Option<String>,
+    pub state: Option<String>,
+    pub limit: Option<u32>,
+}
+
+async fn list_jobs(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<JobListQueryDto>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    state.authorize(&headers)?;
+    let scope = state.workspace_scope(&headers, q.workspace_id.as_deref())?;
+    let jobs = searchos_storage_sqlite::repos::JobRepo::new(&state.runtime.sqlite)
+        .list(scope.as_deref(), q.state.as_deref(), q.limit.unwrap_or(50))
+        .map_err(|e| ApiError::from_domain(&e))?;
+    Ok(Json(serde_json::json!({ "jobs": jobs })))
+}
+
+async fn get_job(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    state.authorize(&headers)?;
+    let job = searchos_storage_sqlite::repos::JobRepo::new(&state.runtime.sqlite)
+        .get(&id)
+        .map_err(|e| ApiError::from_domain(&e))?;
+    let Some(job) = job else {
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            "NOT_FOUND",
+            format!("job {id} not found"),
+        ));
+    };
+    Ok(Json(serde_json::to_value(job).unwrap_or_default()))
+}
+
+// ---------------------------------------------------------------------------
+// RFC-050 automatic source discovery.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct DiscoverSourcesDto {
+    #[serde(default)]
+    pub workspace_id: Option<String>,
+}
+
+/// `POST /sources/discover` — scan the workspace corpus for publisher hosts.
+async fn discover_sources(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Option<Json<DiscoverSourcesDto>>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    state.authorize(&headers)?;
+    let requested = body.and_then(|Json(dto)| dto.workspace_id);
+    let scope = state.workspace_scope(&headers, requested.as_deref())?;
+    let report = state
+        .runtime
+        .discover_sources(scope.as_deref())
+        .await
+        .map_err(|e| ApiError::from_domain(&e))?;
+    Ok(Json(report))
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct SourceDiscoveryQueryDto {
+    /// `discovered` | `registered` | `dismissed`
+    pub status: Option<String>,
+    pub limit: Option<u32>,
+}
+
+async fn list_source_discoveries(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<SourceDiscoveryQueryDto>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    state.authorize(&headers)?;
+    let rows = searchos_storage_sqlite::repos::SourceDiscoveryRepo::new(&state.runtime.sqlite)
+        .list(q.status.as_deref(), q.limit.unwrap_or(100))
+        .map_err(|e| ApiError::from_domain(&e))?;
+    Ok(Json(serde_json::json!({ "discoveries": rows })))
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct RegisterDiscoveredSourceDto {
+    #[serde(default)]
+    pub workspace_id: Option<String>,
+}
+
+/// `POST /sources/discoveries/{host}/register` — promote a discovered
+/// publisher into a real federated source.
+async fn register_discovered_source(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(host): Path<String>,
+    body: Option<Json<RegisterDiscoveredSourceDto>>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    state.authorize(&headers)?;
+    let requested = body.and_then(|Json(dto)| dto.workspace_id);
+    let scope = state.workspace_scope(&headers, requested.as_deref())?;
+    let report = state
+        .runtime
+        .register_discovered_source(&host, scope.as_deref())
+        .await
+        .map_err(|e| ApiError::from_domain(&e))?;
+    Ok(Json(report))
+}
+
+/// `POST /sources/discoveries/{host}/dismiss` — drop a proposal.
+async fn dismiss_discovered_source(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(host): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    state.authorize(&headers)?;
+    searchos_storage_sqlite::repos::SourceDiscoveryRepo::new(&state.runtime.sqlite)
+        .dismiss(&host)
+        .map_err(|e| ApiError::from_domain(&e))?;
+    Ok(Json(serde_json::json!({ "host": host, "dismissed": true })))
 }
 
 // ---------------------------------------------------------------------------
@@ -4119,6 +4531,319 @@ mod tests {
         assert_eq!(row["relevant"], 2);
         assert!(row["trust"].as_f64().unwrap() > 0.66);
         assert_eq!(body["min_samples"], 2);
+    }
+
+    #[tokio::test]
+    async fn cost_invoices_endpoint_groups_and_counts_unreconciled() {
+        use searchos_domain::cost::{CostEvent, CostOperation};
+        let (st, _d) = state().await;
+        let repo = searchos_storage_sqlite::repos::CostRepo::new(&st.runtime.sqlite);
+        let append = |provider: &str, estimated: &str, actual: Option<&str>| {
+            let task = searchos_domain::ids::TaskId::generate();
+            let ws = searchos_domain::ids::WorkspaceId::new("default");
+            searchos_storage_sqlite::repos::TaskRepo::new(&st.runtime.sqlite)
+                .insert(
+                    &task,
+                    &ws,
+                    None,
+                    "q",
+                    "q",
+                    "fp",
+                    "general",
+                    "1.0.0",
+                    "local_first",
+                    &searchos_domain::ids::TraceId::generate(),
+                )
+                .unwrap();
+            let ev = CostEvent {
+                id: searchos_domain::ids::CostEventId::generate(),
+                task_id: task,
+                workspace_id: ws,
+                agent_id: None,
+                operation: CostOperation::WebSearch,
+                provider_id: Some(provider.into()),
+                input_units: 1,
+                output_units: 0,
+                estimated_cost: searchos_domain::cost::Money::parse(estimated, "USD").unwrap(),
+                actual_cost: actual.map(|a| searchos_domain::cost::Money::parse(a, "USD").unwrap()),
+                duration_ms: 5,
+                occurred_at: chrono::Utc::now(),
+                trace_id: None,
+                shared: false,
+                pricing_model_version: "1".into(),
+                status: Default::default(),
+                error_code: None,
+            };
+            repo.append(&ev).unwrap();
+        };
+        append("tavily", "0.005", None);
+        append("tavily", "0.005", Some("0.006"));
+        let app = router(st);
+        let body = call(app, "/cost/invoices").await;
+        let invoices = body["invoices"].as_array().unwrap();
+        assert_eq!(invoices.len(), 1, "one currency per invoice: {body}");
+        let inv = &invoices[0];
+        assert_eq!(inv["currency"], "USD");
+        assert_eq!(inv["events"], 2);
+        assert_eq!(inv["unreconciled_events"], 1);
+        assert_eq!(inv["total_estimated_micros"], 10_000);
+        assert_eq!(inv["total_actual_micros"], 6_000);
+        assert_eq!(inv["fully_reconciled"], false);
+        assert_eq!(inv["lines"][0]["provider"], "tavily");
+    }
+
+    #[tokio::test]
+    async fn fetch_batch_rejects_empty_urls_and_reports_per_item_outcomes() {
+        let (st, _d) = state().await;
+        let app = router(st);
+        let (status, body) = call_post(app, "/fetch/batch", serde_json::json!({"urls": []})).await;
+        assert_eq!(status, 400, "{body}");
+        assert_eq!(body["error"]["code"], "VALIDATION_FAILED");
+
+        let (st, _d) = state().await;
+        let app = router(st);
+        let (status, body) = call_post(
+            app,
+            "/fetch/batch",
+            serde_json::json!({
+                "urls": ["notaurl", "https://example.com/", "https://example.com/"],
+                "persist": false,
+                "max_urls": 5,
+                "default_interval_ms": 1,
+            }),
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+        let items = body["items"].as_array().unwrap();
+        assert_eq!(items.len(), 3, "every input reported: {body}");
+        assert_eq!(items[0]["input_index"], 0);
+        assert_eq!(items[0]["outcome"], "invalid_url");
+        assert_eq!(items[1]["outcome"], "fetched");
+        assert_eq!(items[2]["outcome"], "duplicate");
+        assert_eq!(body["queued_remaining"], 0);
+    }
+
+    #[tokio::test]
+    async fn background_jobs_enqueue_list_get_and_terminal_failure() {
+        let (st, _d) = state().await;
+        let runtime = Arc::clone(&st.runtime);
+        let (status, created) = call_post(
+            router(st),
+            "/jobs",
+            serde_json::json!({
+                "kind": "unsupported_kind",
+                "workspace_id": "default",
+                "payload": {"x": 1},
+                "max_attempts": 4
+            }),
+        )
+        .await;
+        assert_eq!(status, 201, "{created}");
+        let id = created["id"].as_str().unwrap();
+        assert_eq!(created["state"], "pending");
+        assert_eq!(created["attempts"], 0);
+
+        let listed = call(
+            router(AppState::new(Arc::clone(&runtime))),
+            "/jobs?state=pending",
+        )
+        .await;
+        assert!(listed["jobs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|job| job["id"] == id));
+
+        let (done, failed) = runtime.process_jobs(1).await.unwrap();
+        assert_eq!((done, failed), (0, 1));
+        let fetched = call(router(AppState::new(runtime)), &format!("/jobs/{id}")).await;
+        assert_eq!(fetched["state"], "failed");
+        assert_eq!(fetched["attempts"], 1);
+        assert!(fetched["last_error"]
+            .as_str()
+            .unwrap()
+            .contains("unsupported"));
+    }
+
+    #[tokio::test]
+    async fn source_discovery_scans_documents_and_promotes_a_publisher() {
+        let (st, _d) = state().await;
+        // Seed a URL document from a publisher host.
+        let doc = st
+            .runtime
+            .application
+            .fetch_service
+            .fetch_and_persist(
+                "https://publisher.example.com/post",
+                &WorkspaceId::new("default"),
+            )
+            .await;
+        // Network may be unavailable in CI: fall back to a stored document row
+        // so the discovery path itself is still exercised.
+        if doc.is_err() {
+            let repo = searchos_storage_sqlite::repos::DocumentRepo::new(&st.runtime.sqlite);
+            let ws = WorkspaceId::new("default");
+            searchos_storage_sqlite::repos::ensure_workspace(&st.runtime.sqlite, &ws, "default")
+                .unwrap();
+            repo.save_versioned(
+                &searchos_domain::document::Document {
+                    id: searchos_domain::ids::DocumentId::generate(),
+                    source_id: searchos_domain::ids::SourceId::new("src_discovery"),
+                    canonical_url: "https://publisher.example.com/post".into(),
+                    current_version_id: None,
+                    content_type: "text/html".into(),
+                    language: None,
+                    source_type: "url".into(),
+                    title: None,
+                    workspace_id: "default".into(),
+                    created_at: chrono::Utc::now(),
+                    updated_at: chrono::Utc::now(),
+                },
+                &searchos_domain::document::DocumentVersion {
+                    id: searchos_domain::ids::DocumentVersionId::generate(),
+                    document_id: searchos_domain::ids::DocumentId::generate(),
+                    content_hash: "hash_discovery".into(),
+                    raw_content_ref: "ref".into(),
+                    markdown_ref: None,
+                    published_at: None,
+                    fetched_at: chrono::Utc::now(),
+                    extractor_version: "1".into(),
+                    crawler_version: None,
+                    summary: None,
+                    keywords: Vec::new(),
+                },
+                &[],
+                &[],
+                &ws,
+            )
+            .unwrap();
+        }
+
+        let (status, report) = call_post(
+            router(AppState::new(Arc::clone(&st.runtime))),
+            "/sources/discover",
+            serde_json::json!({"workspace_id": "default"}),
+        )
+        .await;
+        assert_eq!(status, 200, "{report}");
+        assert!(
+            report["hosts"].as_u64().unwrap() >= 1,
+            "publisher host discovered: {report}"
+        );
+
+        let listed = call(
+            router(AppState::new(Arc::clone(&st.runtime))),
+            "/sources/discoveries?status=discovered",
+        )
+        .await;
+        let host = listed["discoveries"][0]["host"].as_str().unwrap();
+        assert_eq!(host, "publisher.example.com");
+
+        let (status, registered) = call_post(
+            router(AppState::new(Arc::clone(&st.runtime))),
+            &format!("/sources/discoveries/{host}/register"),
+            serde_json::json!({"workspace_id": "default"}),
+        )
+        .await;
+        assert_eq!(status, 200, "{registered}");
+        assert_eq!(registered["registered"], true);
+        assert_eq!(registered["source_id"], "publisher_publisher_example_com");
+
+        // The promoted source is live in the federated registry AND persisted
+        // in the catalog.
+        let catalog = call(
+            router(AppState::new(Arc::clone(&st.runtime))),
+            "/sources?persisted=true",
+        )
+        .await;
+        assert!(
+            catalog["sources"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|s| s["source_id"] == "publisher_publisher_example_com"),
+            "promoted source in the persisted catalog: {catalog}"
+        );
+        let live = call(router(AppState::new(st.runtime)), "/sources").await;
+        assert!(
+            live["sources"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|s| s["source_id"] == "publisher_publisher_example_com"),
+            "promoted source live in the registry: {live}"
+        );
+    }
+
+    #[tokio::test]
+    async fn search_stream_emits_per_result_events_and_a_final_payload() {
+        use tower::ServiceExt;
+        let (st, _d) = state().await;
+        // Seed one local document so there is at least one result.
+        let mut req = searchos_application::ingest_service::IngestRequest::new(
+            searchos_domain::ids::WorkspaceId::new("default"),
+        );
+        req.source_key = Some("notes/stream".into());
+        st.runtime
+            .application
+            .ingest_service
+            .ingest_text(req, "streaming evidence about tokio runtime scheduling")
+            .await
+            .unwrap();
+        st.runtime.process_outbox(16).await.unwrap();
+
+        let resp = router(st)
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/search/stream")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(
+                        serde_json::json!({
+                            "query": "tokio runtime scheduling",
+                            "mode": "local_only",
+                            "workspace_id": "default",
+                            "max_results": 5
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status().as_u16(), 200);
+        assert_eq!(
+            resp.headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or(""),
+            "text/event-stream"
+        );
+        let bytes = axum::body::to_bytes(resp.into_body(), 4 << 20)
+            .await
+            .unwrap();
+        let text = String::from_utf8(bytes.to_vec()).unwrap();
+        assert!(text.contains("event: start"), "{text}");
+        assert!(text.contains("event: quality"), "{text}");
+        assert!(text.contains("event: final"), "{text}");
+        assert!(text.contains("event: done"), "{text}");
+        // The final event carries the same task id the header event announced.
+        let final_data = text
+            .lines()
+            .skip_while(|l| !l.starts_with("event: final"))
+            .nth(1)
+            .and_then(|l| l.strip_prefix("data: "))
+            .unwrap();
+        let final_json: serde_json::Value = serde_json::from_str(final_data).unwrap();
+        assert!(final_json["task_id"].as_str().is_some());
+        assert!(final_json.get("results").is_some());
+        if final_json["results"]
+            .as_array()
+            .map(|a| !a.is_empty())
+            .unwrap_or(false)
+        {
+            assert!(text.contains("event: result"), "{text}");
+        }
     }
 
     #[tokio::test]

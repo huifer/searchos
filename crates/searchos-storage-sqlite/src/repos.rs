@@ -10,7 +10,7 @@ use searchos_domain::ids::{DocumentId, DocumentVersionId, SourceId, WorkspaceId}
 use searchos_domain::promotion::{EvidenceItem, ExternalAcquisition, PromotionState};
 use searchos_domain::retrieval::{IndexedDocument, RetrievalCandidate, SearchCacheKey};
 use searchos_domain::SearchOsError;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::store::SqliteStore;
 
@@ -20,6 +20,16 @@ fn now() -> String {
 
 fn e(sql_err: rusqlite::Error) -> SearchOsError {
     SearchOsError::Storage(sql_err.to_string())
+}
+
+/// RFC-054: opaque unique job id for CLI callers (no uuid dep in the CLI).
+pub fn next_job_id() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("{}{:04x}", nanos, (std::process::id() as u128) & 0xffff)
 }
 
 /// Ensures a workspace row exists; returns its id.
@@ -1941,6 +1951,59 @@ impl<'a> CostRepo<'a> {
         })
     }
 
+    /// RFC-042: invoice view over the append-only ledger, grouped by
+    /// currency and then by provider + operation. Estimates are copied, never
+    /// rewritten; `unreconciled_events` counts rows with no real bill.
+    pub fn invoice(
+        &self,
+        workspace: Option<&str>,
+        from: Option<&str>,
+        to: Option<&str>,
+    ) -> Result<Vec<searchos_domain::billing::BillingInvoice>, SearchOsError> {
+        self.store.with_conn(|c| {
+            let mut stmt = c
+                .prepare(
+                    "SELECT currency, COALESCE(provider_id,'local') AS provider, operation,
+                            count(*),
+                            sum(CASE WHEN actual_cost_micros IS NULL THEN 1 ELSE 0 END),
+                            COALESCE(sum(estimated_cost_micros),0),
+                            COALESCE(sum(actual_cost_micros),0)
+                     FROM cost_events
+                     WHERE (?1 IS NULL OR workspace_id = ?1)
+                       AND (?2 IS NULL OR occurred_at >= ?2)
+                       AND (?3 IS NULL OR occurred_at <= ?3)
+                     GROUP BY currency, COALESCE(provider_id,'local'), operation
+                     ORDER BY currency, provider, operation",
+                )
+                .map_err(e)?;
+            let rows = stmt
+                .query_map(params![workspace, from, to], |r| {
+                    Ok(searchos_domain::billing::BillingLine {
+                        currency: r.get(0)?,
+                        provider: r.get(1)?,
+                        operation: r.get(2)?,
+                        events: r.get::<_, i64>(3)?.max(0) as u32,
+                        unreconciled_events: r.get::<_, i64>(4)?.max(0) as u32,
+                        estimated_micros: r.get(5)?,
+                        actual_micros: r.get(6)?,
+                    })
+                })
+                .map_err(e)?;
+            let mut grouped: BTreeMap<String, Vec<searchos_domain::billing::BillingLine>> =
+                BTreeMap::new();
+            for row in rows {
+                let line = row.map_err(e)?;
+                grouped.entry(line.currency.clone()).or_default().push(line);
+            }
+            Ok(grouped
+                .into_iter()
+                .map(|(currency, lines)| {
+                    searchos_domain::billing::BillingInvoice::new(currency, lines)
+                })
+                .collect())
+        })
+    }
+
     /// Loads events matching a CostQuery (filtering via searchos_cost).
     pub fn query(&self, q: &CostQuery) -> Result<Vec<CostEvent>, SearchOsError> {
         let mut rows = self.store.with_conn(|c| {
@@ -2131,6 +2194,316 @@ impl<'a> ProviderRepo<'a> {
                 .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
                 .map_err(e)?;
             rows.collect::<Result<Vec<_>, _>>().map_err(e)
+        })
+    }
+}
+
+/// RFC-054 durable background job persistence.
+pub struct JobRepo<'a> {
+    store: &'a SqliteStore,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct BackgroundJob {
+    pub id: String,
+    pub kind: String,
+    pub workspace_id: String,
+    pub payload: serde_json::Value,
+    pub state: String,
+    pub attempts: u32,
+    pub max_attempts: u32,
+    pub run_after: String,
+    pub created_at: String,
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+    pub last_error: Option<String>,
+}
+
+impl<'a> JobRepo<'a> {
+    pub fn new(store: &'a SqliteStore) -> Self {
+        Self { store }
+    }
+
+    pub fn enqueue(
+        &self,
+        id: &str,
+        kind: &str,
+        workspace_id: &str,
+        payload: &serde_json::Value,
+        max_attempts: u32,
+        run_after: Option<&str>,
+    ) -> Result<BackgroundJob, SearchOsError> {
+        let created_at = now();
+        let run_after = run_after.unwrap_or(&created_at);
+        let payload_json = serde_json::to_string(payload)
+            .map_err(|e| e.to_string())
+            .map_err(SearchOsError::Storage)?;
+        self.store.with_conn(|c| {
+            c.execute(
+                "INSERT INTO background_jobs (id,kind,workspace_id,payload_json,state,attempts,max_attempts,run_after,created_at)
+                 VALUES (?1,?2,?3,?4,'pending',0,?5,?6,?7)",
+                params![id,kind,workspace_id,payload_json,max_attempts.clamp(1,100),run_after,created_at],
+            ).map_err(e)?;
+            Self::get_conn(c, id)?.ok_or_else(|| SearchOsError::Storage("enqueued job disappeared".into()))
+        })
+    }
+
+    fn get_conn(c: &Connection, id: &str) -> Result<Option<BackgroundJob>, SearchOsError> {
+        c.query_row(
+            "SELECT id,kind,workspace_id,payload_json,state,attempts,max_attempts,run_after,created_at,started_at,finished_at,last_error
+             FROM background_jobs WHERE id=?1",
+            params![id],
+            |r| {
+                let raw: String = r.get(3)?;
+                Ok((
+                    r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, raw,
+                    r.get::<_, String>(4)?, r.get::<_, i64>(5)?, r.get::<_, i64>(6)?,
+                    r.get::<_, String>(7)?, r.get::<_, String>(8)?, r.get::<_, Option<String>>(9)?,
+                    r.get::<_, Option<String>>(10)?, r.get::<_, Option<String>>(11)?,
+                ))
+            },
+        ).optional().map_err(e)?.map(|row| {
+            Ok(BackgroundJob {
+                id: row.0, kind: row.1, workspace_id: row.2,
+                payload: serde_json::from_str(&row.3).map_err(|e| SearchOsError::Storage(e.to_string()))?,
+                state: row.4, attempts: row.5.max(0) as u32, max_attempts: row.6.max(1) as u32,
+                run_after: row.7, created_at: row.8, started_at: row.9, finished_at: row.10, last_error: row.11,
+            })
+        }).transpose()
+    }
+
+    pub fn get(&self, id: &str) -> Result<Option<BackgroundJob>, SearchOsError> {
+        self.store.with_conn(|c| Self::get_conn(c, id))
+    }
+
+    pub fn list(
+        &self,
+        workspace: Option<&str>,
+        state: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<BackgroundJob>, SearchOsError> {
+        self.store.with_conn(|c| {
+            let mut stmt = c.prepare(
+                "SELECT id,kind,workspace_id,payload_json,state,attempts,max_attempts,run_after,created_at,started_at,finished_at,last_error
+                 FROM background_jobs WHERE (?1 IS NULL OR workspace_id=?1) AND (?2 IS NULL OR state=?2)
+                 ORDER BY created_at DESC,id LIMIT ?3"
+            ).map_err(e)?;
+            let ids = stmt.query_map(params![workspace,state,limit.clamp(1,500)], |r| r.get::<_,String>(0)).map_err(e)?;
+            let ids = ids.collect::<Result<Vec<_>,_>>().map_err(e)?;
+            ids.iter().map(|id| Self::get_conn(c,id)?.ok_or_else(|| SearchOsError::Storage("listed job disappeared".into()))).collect()
+        })
+    }
+
+    /// Atomically claims one due job. A crashed worker's expired lease is
+    /// reclaimable; attempts increment on every claim, not every failure.
+    pub fn claim_next(&self, lease_seconds: u32) -> Result<Option<BackgroundJob>, SearchOsError> {
+        let current = now();
+        let lease_until = (chrono::Utc::now()
+            + chrono::Duration::seconds(lease_seconds.clamp(1, 3600) as i64))
+        .to_rfc3339();
+        self.store.with_conn(|c| {
+            let id: Option<String> = c.query_row(
+                "UPDATE background_jobs SET state='running',attempts=attempts+1,started_at=?1,lease_until=?2
+                 WHERE id=(SELECT id FROM background_jobs
+                           WHERE attempts < max_attempts AND run_after <= ?1
+                             AND (state='pending' OR (state='running' AND lease_until <= ?1))
+                           ORDER BY run_after,created_at,id LIMIT 1)
+                   AND attempts < max_attempts
+                 RETURNING id",
+                params![current,lease_until], |r| r.get(0),
+            ).optional().map_err(e)?;
+            match id { Some(id) => Self::get_conn(c,&id), None => Ok(None) }
+        })
+    }
+
+    pub fn complete(&self, id: &str) -> Result<(), SearchOsError> {
+        self.store.with_conn(|c| {
+            c.execute("UPDATE background_jobs SET state='succeeded',finished_at=?2,lease_until=NULL,last_error=NULL WHERE id=?1 AND state='running'", params![id,now()]).map_err(e).map(|_| ())
+        })
+    }
+
+    pub fn fail(
+        &self,
+        id: &str,
+        error: &str,
+        retry_delay_seconds: u32,
+    ) -> Result<(), SearchOsError> {
+        self.store.with_conn(|c| {
+            let run_after = (chrono::Utc::now() + chrono::Duration::seconds(retry_delay_seconds.min(3600) as i64)).to_rfc3339();
+            c.execute(
+                "UPDATE background_jobs SET state=CASE WHEN attempts < max_attempts THEN 'pending' ELSE 'failed' END,
+                 run_after=CASE WHEN attempts < max_attempts THEN ?2 ELSE run_after END,
+                 finished_at=CASE WHEN attempts < max_attempts THEN NULL ELSE ?3 END,
+                 lease_until=NULL,last_error=?4 WHERE id=?1 AND state='running'",
+                params![id,run_after,now(),error],
+            ).map_err(e).map(|_| ())
+        })
+    }
+
+    /// Terminal failure: never retried (bad payload, unsupported kind).
+    pub fn fail_terminal(&self, id: &str, error: &str) -> Result<(), SearchOsError> {
+        self.store.with_conn(|c| {
+            c.execute(
+                "UPDATE background_jobs SET state='failed',finished_at=?2,lease_until=NULL,last_error=?3
+                 WHERE id=?1 AND state='running'",
+                params![id, now(), error],
+            )
+            .map_err(e)
+            .map(|_| ())
+        })
+    }
+}
+
+/// RFC-050 automatic source discovery: candidate publishers observed in the
+/// system's own corpus, with promotion state. One row per host (global dedupe),
+/// so repeated observations across workspaces converge on one proposal.
+pub struct SourceDiscoveryRepo<'a> {
+    store: &'a SqliteStore,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SourceDiscovery {
+    pub host: String,
+    pub first_seen_at: String,
+    pub last_seen_at: String,
+    pub evidence_count: i64,
+    pub sample_url: String,
+    /// `discovered` | `registered` | `dismissed`
+    pub status: String,
+    pub registered_source_id: Option<String>,
+}
+
+impl<'a> SourceDiscoveryRepo<'a> {
+    pub fn new(store: &'a SqliteStore) -> Self {
+        Self { store }
+    }
+
+    /// Records one observation of a publisher host. First sighting keeps its
+    /// timestamp; repeats only bump the counter and last-seen.
+    pub fn observe(&self, host: &str, sample_url: &str) -> Result<(), SearchOsError> {
+        let now = chrono::Utc::now().to_rfc3339();
+        self.store.with_conn(|c| {
+            let inserted = c
+                .execute(
+                    "INSERT OR IGNORE INTO source_discovery_observations(host,url,observed_at)
+                 VALUES (?1,?2,?3)",
+                    params![host, sample_url, now],
+                )
+                .map_err(e)?
+                > 0;
+            if inserted {
+                c.execute(
+                    "INSERT INTO source_discoveries
+                       (host, first_seen_at, last_seen_at, evidence_count, sample_url, status)
+                     VALUES (?1,?2,?2,1,?3,'discovered')
+                     ON CONFLICT(host) DO UPDATE SET
+                        last_seen_at = excluded.last_seen_at,
+                        evidence_count = source_discoveries.evidence_count + 1,
+                        sample_url = excluded.sample_url
+                     WHERE source_discoveries.status != 'dismissed'",
+                    params![host, now, sample_url],
+                )
+                .map_err(e)?;
+            }
+            Ok(())
+        })
+    }
+
+    /// Discovery net: every distinct host seen in this workspace's documents
+    /// (portable/ingested docs have no host and are skipped).
+    pub fn scan_documents(&self, workspace: Option<&str>) -> Result<Vec<String>, SearchOsError> {
+        self.store.with_conn(|c| {
+            let mut stmt = c
+                .prepare(
+                    "SELECT DISTINCT canonical_url FROM documents
+                     WHERE (?1 IS NULL OR workspace_id = ?1)
+                       AND status != 'deleted'
+                       AND canonical_url LIKE 'http%'",
+                )
+                .map_err(e)?;
+            let rows = stmt
+                .query_map(params![workspace], |r| r.get::<_, String>(0))
+                .map_err(e)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(e)
+        })
+    }
+
+    pub fn get(&self, host: &str) -> Result<Option<SourceDiscovery>, SearchOsError> {
+        self.store.with_conn(|c| {
+            c.query_row(
+                "SELECT host, first_seen_at, last_seen_at, evidence_count, sample_url, status, registered_source_id
+                 FROM source_discoveries WHERE host = ?1",
+                params![host],
+                |r| {
+                    Ok(SourceDiscovery {
+                        host: r.get(0)?,
+                        first_seen_at: r.get(1)?,
+                        last_seen_at: r.get(2)?,
+                        evidence_count: r.get(3)?,
+                        sample_url: r.get(4)?,
+                        status: r.get(5)?,
+                        registered_source_id: r.get(6)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(e)
+        })
+    }
+
+    pub fn list(
+        &self,
+        status: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<SourceDiscovery>, SearchOsError> {
+        self.store.with_conn(|c| {
+            let mut stmt = c
+                .prepare(
+                    "SELECT host, first_seen_at, last_seen_at, evidence_count, sample_url, status, registered_source_id
+                     FROM source_discoveries
+                     WHERE (?1 IS NULL OR status = ?1)
+                     ORDER BY evidence_count DESC, host
+                     LIMIT ?2",
+                )
+                .map_err(e)?;
+            let rows = stmt
+                .query_map(params![status, limit.clamp(1, 500)], |r| {
+                    Ok(SourceDiscovery {
+                        host: r.get(0)?,
+                        first_seen_at: r.get(1)?,
+                        last_seen_at: r.get(2)?,
+                        evidence_count: r.get(3)?,
+                        sample_url: r.get(4)?,
+                        status: r.get(5)?,
+                        registered_source_id: r.get(6)?,
+                    })
+                })
+                .map_err(e)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(e)
+        })
+    }
+
+    /// Marks a discovery registered with the given source id.
+    pub fn mark_registered(&self, host: &str, source_id: &str) -> Result<(), SearchOsError> {
+        self.store.with_conn(|c| {
+            c.execute(
+                "UPDATE source_discoveries SET status='registered', registered_source_id=?2
+                 WHERE host=?1",
+                params![host, source_id],
+            )
+            .map_err(e)
+            .map(|_| ())
+        })
+    }
+
+    pub fn dismiss(&self, host: &str) -> Result<(), SearchOsError> {
+        self.store.with_conn(|c| {
+            c.execute(
+                "UPDATE source_discoveries SET status='dismissed' WHERE host=?1",
+                params![host],
+            )
+            .map_err(e)
+            .map(|_| ())
         })
     }
 }
@@ -3303,6 +3676,176 @@ mod tests {
             summary2.cost_per_successful_query.unwrap().amount_micros,
             5_000
         );
+    }
+
+    #[test]
+    fn invoice_groups_by_currency_and_provider_operation() {
+        let s = store();
+        let ws = WorkspaceId::new("ws1");
+        ensure_workspace(&s, &ws, "ws one").unwrap();
+        let cost = CostRepo::new(&s);
+        let task_for = |op: CostOperation| {
+            let task = searchos_domain::ids::TaskId::generate();
+            TaskRepo::new(&s)
+                .insert(
+                    &task,
+                    &ws,
+                    None,
+                    "q",
+                    "q",
+                    "fp",
+                    "general",
+                    "1.0.0",
+                    "local_first",
+                    &searchos_domain::ids::TraceId::generate(),
+                )
+                .unwrap();
+            (task, op)
+        };
+        let ev = |provider: &str, op: CostOperation, estimated: &str, actual: Option<&str>| {
+            let (task, operation) = task_for(op);
+            CostEvent {
+                id: searchos_domain::ids::CostEventId::generate(),
+                task_id: task,
+                workspace_id: ws.clone(),
+                agent_id: None,
+                operation,
+                provider_id: Some(provider.into()),
+                input_units: 1,
+                output_units: 0,
+                estimated_cost: Money::parse(estimated, "USD").unwrap(),
+                actual_cost: actual.map(|a| Money::parse(a, "USD").unwrap()),
+                duration_ms: 10,
+                occurred_at: Utc::now(),
+                trace_id: None,
+                shared: false,
+                pricing_model_version: "1".into(),
+                status: Default::default(),
+                error_code: None,
+            }
+        };
+        cost.append(&ev("tavily", CostOperation::WebSearch, "0.005", None))
+            .unwrap();
+        cost.append(&ev(
+            "tavily",
+            CostOperation::WebSearch,
+            "0.003",
+            Some("0.004"),
+        ))
+        .unwrap();
+        cost.append(&ev("local", CostOperation::LocalBm25, "0.000", None))
+            .unwrap();
+        let invoices = cost.invoice(Some("ws1"), None, None).unwrap();
+        assert_eq!(invoices.len(), 1, "one currency -> one invoice");
+        let invoice = &invoices[0];
+        assert_eq!(invoice.currency, "USD");
+        assert_eq!(
+            invoice.lines.len(),
+            2,
+            "tavily web_search + local local_bm25"
+        );
+        assert_eq!(invoice.total_estimated_micros, 8_000);
+        assert_eq!(
+            invoice.total_actual_micros, 4_000,
+            "only the reconciled bill"
+        );
+        assert_eq!(invoice.events, 3);
+        assert_eq!(invoice.unreconciled_events, 2);
+        assert!(!invoice.fully_reconciled);
+        let ws_invoices = cost.invoice(Some("other"), None, None).unwrap();
+        assert!(ws_invoices.is_empty(), "workspace scoped");
+    }
+
+    #[test]
+    fn background_jobs_claim_complete_retry_and_reclaim_expired_lease() {
+        let s = store();
+        let repo = JobRepo::new(&s);
+        let job = repo
+            .enqueue(
+                "job_retry",
+                "reindex_document",
+                "ws1",
+                &serde_json::json!({"document_id":"doc_1"}),
+                2,
+                None,
+            )
+            .unwrap();
+        assert_eq!(job.state, "pending");
+        assert_eq!(job.attempts, 0);
+
+        let claimed = repo.claim_next(1).unwrap().unwrap();
+        assert_eq!(claimed.id, "job_retry");
+        assert_eq!(claimed.state, "running");
+        assert_eq!(claimed.attempts, 1);
+        assert!(
+            repo.claim_next(1).unwrap().is_none(),
+            "live lease prevents duplicate claim"
+        );
+
+        repo.fail("job_retry", "transient", 0).unwrap();
+        let retry = repo.claim_next(1).unwrap().unwrap();
+        assert_eq!(retry.attempts, 2);
+        repo.fail("job_retry", "still failing", 0).unwrap();
+        let failed = repo.get("job_retry").unwrap().unwrap();
+        assert_eq!(failed.state, "failed");
+        assert_eq!(failed.last_error.as_deref(), Some("still failing"));
+        assert!(
+            repo.claim_next(1).unwrap().is_none(),
+            "attempt cap is terminal"
+        );
+
+        repo.enqueue(
+            "job_success",
+            "test",
+            "ws1",
+            &serde_json::json!({}),
+            1,
+            None,
+        )
+        .unwrap();
+        let success = repo.claim_next(1).unwrap().unwrap();
+        assert_eq!(success.id, "job_success");
+        repo.complete(&success.id).unwrap();
+        assert_eq!(repo.get(&success.id).unwrap().unwrap().state, "succeeded");
+        assert!(repo.claim_next(1).unwrap().is_none());
+
+        repo.enqueue(
+            "job_expired",
+            "test",
+            "ws1",
+            &serde_json::json!({}),
+            3,
+            None,
+        )
+        .unwrap();
+        repo.store
+            .with_conn(|c| {
+                c.execute(
+                    "UPDATE background_jobs SET state='running',attempts=1,lease_until='2000-01-01T00:00:00Z' WHERE id='job_expired'",
+                    [],
+                )
+                .map_err(e)
+                .map(|_| ())
+            })
+            .unwrap();
+        let reclaimed = repo.claim_next(1).unwrap().unwrap();
+        assert_eq!(reclaimed.id, "job_expired");
+        assert_eq!(reclaimed.attempts, 2);
+    }
+
+    #[test]
+    fn job_listing_is_workspace_and_state_scoped() {
+        let s = store();
+        let repo = JobRepo::new(&s);
+        repo.enqueue("a", "one", "ws_a", &serde_json::json!({}), 1, None)
+            .unwrap();
+        repo.enqueue("b", "two", "ws_b", &serde_json::json!({}), 1, None)
+            .unwrap();
+        assert_eq!(
+            repo.list(Some("ws_a"), Some("pending"), 10).unwrap().len(),
+            1
+        );
+        assert!(repo.list(Some("ws_c"), None, 10).unwrap().is_empty());
     }
 
     #[test]
