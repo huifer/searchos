@@ -3,9 +3,9 @@
 > Single authoritative status table for the frozen RFC catalogue.
 > 一个权威的 RFC 覆盖状态表。
 
-**As of:** 2026-11-21 release-closure working tree · **Workspace version:** 0.3.0 · **Latest tagged release:** v0.2.0 (865 tests / 0 failed)
+**As of:** 2026-11-21 release-closure working tree · **Workspace version:** 0.3.0 · **Latest tagged release:** v0.3.0 (CI 12/12; release 6/6)
 
-This tree closes the remaining RFC-042/050/051/054/056/081–083 slices, adds the source-discovery CLI, and makes both SDKs cover all 95 OpenAPI operations. The named HTTP/CLI/e2e/SDK/parity gates are locally green; a final uninterrupted full-workspace run and the v0.3.0 CI receipt remain the release gate.
+This tree closes the remaining RFC-042/050/051/054/056/081–083 slices, adds the source-discovery CLI, and makes both SDKs cover all 95 OpenAPI operations. The named HTTP/CLI/e2e/SDK/parity gates are locally green; the authoritative v0.3.0 receipt is CI run 44876545853 (12/12) and release run 44877752741 (6/6).
 
 This table answers one question per RFC: *is the capability in the repository
 today, and if so, how far?* It supersedes the scattered status notes in

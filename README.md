@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/status-v0.3.0--ready-6f7277" alt="status" />
+  <img src="https://img.shields.io/badge/status-v0.3.0%20implemented-6f7277" alt="status" />
   <img src="https://img.shields.io/badge/rust-1.94%2B-orange?logo=rust" alt="rust" />
   <img src="https://img.shields.io/badge/next.js-16-black?logo=nextdotjs" alt="nextjs" />
   <img src="https://img.shields.io/badge/license-MIT-36f555" alt="license" />
@@ -162,13 +162,13 @@ for regions where crates.io is slow). See [`docs/deployment.md`](docs/deployment
 Prebuilt images are published for every release:
 
 ```bash
-docker pull ghcr.io/huifer/searchos-gateway:0.2.0     # linux/amd64 + linux/arm64
-docker pull ghcr.io/huifer/searchos-console:0.2.0
+docker pull ghcr.io/huifer/searchos-gateway:0.3.0     # linux/amd64 + linux/arm64
+docker pull ghcr.io/huifer/searchos-console:0.3.0
 ```
 
 They are pushed by the release workflow with its own `GITHUB_TOKEN`, so no
 registry secret is needed, and they are **anonymously accessible** — the
-`v0.2.0` release run 44453555713 published both images, and anonymous
+`v0.3.0` release run 44877752741 published both images; anonymous
 `docker manifest inspect` reports `linux/amd64` + `linux/arm64` for both.
 `docker-compose.yml` uses these exact names and tags, so `docker compose pull`
 + `docker compose up -d` runs the release artifacts without a local build.
@@ -258,7 +258,7 @@ CI runs fmt / clippy / test plus the console typecheck + build on every push and
 
 The phased plan below is **historical**: every Wave 0–4 item in
 [`docs/feature-roadmap.md`](docs/feature-roadmap.md) is closed and verified, and
-the latest tagged release is **v0.2.0**; the current tree targets **v0.3.0** and its release is pending. The tables in
+the latest tagged release is **v0.3.0**. The tables in
 [`docs/roadmap.md`](docs/roadmap.md) are retained for rationale, not as a status
 list; the release notes are in [`CHANGELOG.md`](CHANGELOG.md).
 
@@ -271,7 +271,7 @@ list; the release notes are in [`CHANGELOG.md`](CHANGELOG.md).
 | P4 | Extension system |
 | P5 | AI search intelligence |
 | P6 | Agent integration (MCP, TypeScript / Python SDK) |
-| P7 | Production & release (v0.2.0 shipped; v0.3.0 release pending) |
+| P7 | Production & release (v0.3.0 shipped) |
 
 ## Documentation
 

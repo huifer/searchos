@@ -164,6 +164,6 @@ RFC 不允许仅描述功能目标而缺少可验证的接口、数据结构和�
 2. **跨 Agent 知识隔离**：默认 Workspace 隔离，显式授权后才共享，不应该默认全局共享。
 3. **质量评估边界**：SearchOS 验证证据质量，不保证上层 LLM 最终答案绝对正确。
 
-**RFC Suite Version:** 1.0 (+ Annexes 17–30; RFC-001…087 final catalogue) · latest release v0.2.0; tree targets v0.3.0
-**Status:** Delivered engineering baseline. `docs/rfc-coverage.md` is the authoritative per-RFC status: 83 Delivered, 0 Partial, 4 frozen Reject. The current tree targets v0.3.0; the latest tagged release remains v0.2.0.
-**Next Step:** finish release closure — run the full gate suite, push the branch so CI covers the latest commits, then tag `v0.3.0` after SDK parity, docs and CHANGELOG are green. The four Reject RFCs and LLM answer generation stay non-goals.
+**RFC Suite Version:** 1.0 (+ Annexes 17–30; RFC-001…087 final catalogue) · v0.3.0 released
+**Status:** Delivered engineering baseline. `docs/rfc-coverage.md` is the authoritative per-RFC status: 83 Delivered, 0 Partial, 4 frozen Reject. The latest tagged release is v0.3.0.
+**Release closure:** complete — v0.3.0 was published by release run 44877752741. The four Reject RFCs and LLM answer generation stay non-goals.

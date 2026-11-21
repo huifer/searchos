@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/状态-v0.3.0--ready-6f7277" alt="status" />
+  <img src="https://img.shields.io/badge/状态-v0.3.0%20已实现-6f7277" alt="status" />
   <img src="https://img.shields.io/badge/rust-1.94%2B-orange?logo=rust" alt="rust" />
   <img src="https://img.shields.io/badge/next.js-16-black?logo=nextdotjs" alt="nextjs" />
   <img src="https://img.shields.io/badge/license-MIT-36f555" alt="license" />
@@ -151,12 +151,12 @@ MCP 仅 stdio（ADR-031），因此没有 MCP 容器——远程 agent 走 REST 
 每个版本都会发布预构建镜像：
 
 ```bash
-docker pull ghcr.io/huifer/searchos-gateway:0.2.0     # linux/amd64 + linux/arm64
-docker pull ghcr.io/huifer/searchos-console:0.2.0
+docker pull ghcr.io/huifer/searchos-gateway:0.3.0     # linux/amd64 + linux/arm64
+docker pull ghcr.io/huifer/searchos-console:0.3.0
 ```
 
 镜像由 release 工作流用自己的 `GITHUB_TOKEN` 推送，不需要额外的仓库密钥，
-并且**支持匿名拉取**——已针对已发布的 v0.2.0 产物验证：无需 `docker login`
+并且**支持匿名拉取**——已针对已发布的 v0.3.0 产物验证：无需 `docker login`
 即可 `docker pull`，且从 registry 拉下的网关镜像可直接响应 `/health`、
 `/metrics`，并完成完整的 ingest → search 链路。
 `docker-compose.yml` 使用完全相同的名字与 tag，所以 `docker compose pull` +
@@ -243,7 +243,7 @@ CI 在每次 push / PR 时运行 fmt / clippy / test 以及控制台 typecheck +
 ## 开发路线图
 
 以下分阶段计划属于**历史资料**：[`docs/feature-roadmap.md`](docs/feature-roadmap.md)
-中 Wave 0–4 的全部条目均已关闭并验证，最新已发布版本为 **v0.2.0**；当前代码树目标为 **v0.3.0**，发布尚未打 tag。
+中 Wave 0–4 的全部条目均已关闭并验证，最新已发布版本为 **v0.3.0**。
 [`docs/roadmap.md`](docs/roadmap.md) 的表格仅保留规划依据，不作为当前状态；
 发布记录见 [`CHANGELOG.md`](CHANGELOG.md)。
 
@@ -256,7 +256,7 @@ CI 在每次 push / PR 时运行 fmt / clippy / test 以及控制台 typecheck +
 | P4 | 扩展系统 |
 | P5 | AI 搜索智能 |
 | P6 | Agent 集成（MCP、TypeScript / Python SDK） |
-| P7 | 生产发布（v0.2.0 已发布；v0.3.0 发布待完成） |
+| P7 | 生产发布（v0.3.0 已发布） |
 
 ## 文档
 
