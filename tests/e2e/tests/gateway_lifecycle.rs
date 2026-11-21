@@ -10,7 +10,18 @@ use common::binary;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
+
+/// These tests each spawn a real gateway and race on ephemeral ports when run
+/// in parallel. Serialise them; a failed bind must not look like a product bug.
+static GATEWAY_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+fn serial_gateway_test() -> MutexGuard<'static, ()> {
+    GATEWAY_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 /// A port that was free at the moment it was picked.
 fn free_port() -> u16 {
@@ -50,7 +61,11 @@ impl Gateway {
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             if self.child.try_wait().unwrap().is_some() {
-                panic!("gateway exited before becoming healthy");
+                let mut stderr = String::new();
+                if let Some(mut handle) = self.child.stderr.take() {
+                    let _ = handle.read_to_string(&mut stderr);
+                }
+                panic!("gateway exited before becoming healthy\nstderr: {stderr}");
             }
             if let Ok(mut stream) = std::net::TcpStream::connect(("127.0.0.1", self.port)) {
                 let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
@@ -133,6 +148,7 @@ impl Drop for Gateway {
 /// execution-correctness counters and the process-health gauges.
 #[test]
 fn metrics_endpoint_serves_prometheus_text() {
+    let _serial = serial_gateway_test();
     let gateway = Gateway::start();
     let (status, body) = gateway.get("/metrics");
     assert_eq!(status, 200, "{body}");
@@ -164,6 +180,7 @@ fn metrics_endpoint_serves_prometheus_text() {
 /// drains, the outbox is flushed, and the process reports success.
 #[test]
 fn sigterm_shuts_the_gateway_down_cleanly() {
+    let _serial = serial_gateway_test();
     let mut gateway = Gateway::start();
     // Traffic so the shutdown path has something to drain.
     let (status, _) = gateway.get("/health");
@@ -187,6 +204,7 @@ fn sigterm_shuts_the_gateway_down_cleanly() {
 /// stream closes and the process exits.
 #[test]
 fn sigterm_drains_open_sse_streams() {
+    let _serial = serial_gateway_test();
     let mut gateway = Gateway::start();
 
     // Hold an SSE connection open for the duration of the shutdown.

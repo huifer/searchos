@@ -64,6 +64,23 @@ jobs:
           # explicitly because cargo does not guarantee where a test
           # executable lives (build/<pkg>/<hash>/out on newer layouts).
           SEARCHOS_BIN: ${{ github.workspace }}/target/debug/searchos
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: SDK contract parity
+        run: python3 scripts/check_sdk_parity.py docs/openapi.yaml sdk/typescript/src/client.ts sdk/python/searchos/client.py
+      - name: TypeScript SDK build
+        working-directory: sdk/typescript
+        run: |
+          npm ci
+          npm run build
+      - name: Python SDK syntax + import check
+        run: |
+          python -m compileall -q sdk/python
+          python -c "import sys; sys.path.insert(0, 'sdk/python'); from searchos import SearchOSClient, SearchOSError; print('python sdk import ok')"
       - name: Console
         working-directory: web
         run: |

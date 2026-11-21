@@ -11,7 +11,7 @@ Version numbers are the single source of truth in `Cargo.toml` (workspace
 `v<version>` tag; the `release` workflow builds the artifacts, checksums and
 multi-arch images, and attaches the matching section of this file.
 
-## [Unreleased]
+## [0.3.0] - 2026-11-21
 
 ### Added
 
@@ -42,6 +42,38 @@ multi-arch images, and attaches the matching section of this file.
   OpenAPI and both SDKs. Disabling an agent keeps its history; quota and
   search-admission enforcement remain out of the v1 slice (the rate limiter
   is still the executor).
+- **RFC gap closure: 042/050/051/054/056/081–083.** The frozen v1 catalogue is
+  now 83 Delivered / 0 Partial / 4 Reject: billing invoice views, source
+  discovery + promotion, the crawl frontier, durable background jobs,
+  per-result search streaming, and the opt-in external-process extension host
+  (including its crawler bridge into the fetch path).
+- **SDK parity gate.** `scripts/check_sdk_parity.py` parses `docs/openapi.yaml`
+  and both hand-written clients; CI and release verification now fail when an
+  operation exists in the frozen contract but is missing from either SDK. The
+  TypeScript and Python clients now cover all 95 operations, including batch
+  fetch, search SSE, invoices, durable jobs, source discovery/promotion and
+  document creation.
+- **Source-discovery CLI.** `searchos source discover|list|register|dismiss`
+  exposes the RFC-050 operator surface in Local Mode with the same runtime
+  calls as the HTTP handlers.
+
+### Changed
+
+- **Version and docs sync.** The workspace, OpenAPI document and both SDK
+  manifests target 0.3.0. HTTP and CLI references now document the streaming,
+  batch-fetch, invoice, durable-job and source-discovery surfaces; RFC
+  status summaries were synced to the authoritative coverage matrix.
+
+### Fixed
+
+- **Cost reconciliation contract.** `POST /cost/reconcile` now accepts the
+  documented `actual_cost_micros` integer on both the route and every client;
+  the previous route expected a major-unit `actual_cost` field that the
+  OpenAPI document and SDKs did not send. A named HTTP test reconciles an
+  event and asserts the invoice becomes fully reconciled.
+- **Gateway lifecycle test stability.** Real-gateway lifecycle tests hold a
+  process-local lock and now print the child's stderr if the gateway exits
+  before health, so a failed bind cannot be mistaken for a product failure.
 
 ## [0.2.0] - 2026-11-16
 

@@ -8,6 +8,8 @@
 | Method | Path | Purpose |
 |---|---|---|
 | POST | `/search` | Execute a search (quality-gated, cost-aware) |
+| POST | `/search/stream` | Per-result SSE stream of the same search contract (RFC-056) |
+| POST | `/fetch/batch` | Bounded batch fetch through the cross-host crawl frontier (RFC-051) |
 | POST | `/extract` | Fetch + extract + persist a URL |
 | POST | `/ingest` | Import pasted / typed text locally (RFC-029) |
 | POST | `/ingest/file` | Multipart file upload (RFC-029) |
@@ -26,7 +28,8 @@
 | GET | `/stats/retrieval` | Retrieval/reuse rates + exact-cache counters |
 | GET | `/stats/savings` | Savings / CPQPA / reuse views (alias: `/cost/savings`) |
 | GET | `/cost/reservations` | Budget reserve→settle audit trail |
-| POST | `/cost/reconcile` | Import provider billing (`actual_cost`, `source`) |
+| POST | `/cost/reconcile` | Import provider billing with `cost_event_id`, `actual_cost_micros`, `source`, `currency` |
+| GET | `/cost/invoices` | RFC-042 invoice view grouped by currency / provider / operation |
 | GET | `/api/v1/dashboard/*` | RFC-028 Dashboard API over the Analytics Read Model |
 | GET | `/traces?limit=N` | Recent decision traces for the visual console |
 | GET | `/system/status` | Aggregated runtime health (doctor-style) |
@@ -61,6 +64,13 @@
 | GET | `/deletions` | Deletion audit trail (RFC-087) |
 | POST | `/memory/lifecycle` | Report (or apply) memory lifecycle actions (RFC-070) |
 | GET | `/sources` | Federated source catalog with reliability + latency (RFC-063) |
+| POST | `/sources/discover` | Scan the workspace corpus for publisher hosts (RFC-050) |
+| GET | `/sources/discoveries` | Discovery proposals; filter by `status` |
+| POST | `/sources/discoveries/:host/register` | Promote a host into a federated source |
+| POST | `/sources/discoveries/:host/dismiss` | Dismiss a discovery proposal |
+| GET | `/jobs` | Durable background jobs, newest first (RFC-054) |
+| POST | `/jobs` | Enqueue a durable job (`kind`, `payload`, `run_after`) |
+| GET | `/jobs/:id` | One durable job with attempts and last error |
 | GET | `/publishers` | Publisher-level trust from judged results (RFC-032) |
 | GET | `/health` | Status + index consistency |
 | GET | `/metrics` | Prometheus text exposition 0.0.4 (same auth as the rest) |
@@ -71,6 +81,25 @@ scanner is run on every route change. `server.cors_origin` enables OPTIONS
 preflight and CORS headers for direct browser access; the bundled Next.js
 console uses a server-side proxy instead (see [`docs/ui.md`](../ui.md)).
 `POST /search` accepts an optional `request_id` idempotency key.
+
+## Streaming, jobs and source discovery
+
+`POST /search/stream` accepts exactly the `/search` body and emits Server-Sent
+Events: `start`, one `result` per evidence item (with `index`), `quality`,
+`final` (the complete SearchResponse) and `done`. The current pipeline computes
+the gated response before the first event, so this is per-result delivery, not
+stage/token streaming.
+
+`POST /fetch/batch` accepts up to 200 URLs and reports every input index once
+(`fetched`, `failed`, `duplicate`, `invalid_url`, `queue_full`,
+`not_attempted` or `deadline_exceeded`). Robots and per-host Crawl-delay are
+enforced by `FetchFrontier`; failures are isolated.
+
+`/jobs` is RFC-054's durable scheduler: enqueue a `reindex_document` or
+`fetch_batch` job, optionally with `run_after`, and inspect `state`, `attempts`
+and `last_error`. `/sources/discover` scans only the workspace's own document
+corpus; promotion registers a host-restricted federated publisher source and
+never widens a caller's domain policy.
 
 ## Dashboard API (RFC-028)
 
@@ -309,6 +338,8 @@ return `404` and are absent from `docs/openapi.yaml`).
 | 方法 | 路径 | 用途 |
 |---|---|---|
 | POST | `/search` | 执行搜索（质量门控、成本感知） |
+| POST | `/search/stream` | 同一搜索契约的逐结果 SSE 流（RFC-056） |
+| POST | `/fetch/batch` | 经跨主机爬取前沿的有界批量抓取（RFC-051） |
 | POST | `/extract` | 抓取 + 抽取 + 持久化一个 URL |
 | POST | `/ingest` | 导入粘贴/输入的文本（RFC-029） |
 | POST | `/ingest/file` | multipart 文件上传（RFC-029） |
@@ -327,7 +358,8 @@ return `404` and are absent from `docs/openapi.yaml`).
 | GET | `/stats/retrieval` | 检索/复用率与精确缓存计数 |
 | GET | `/stats/savings` | 节省 / CPQPA / 复用视图（别名 `/cost/savings`） |
 | GET | `/cost/reservations` | 预算 reserve→settle 审计轨迹 |
-| POST | `/cost/reconcile` | 导入 provider 账单（`actual_cost`、`source`） |
+| POST | `/cost/reconcile` | 导入 provider 账单：`cost_event_id`、`actual_cost_micros`、`source`、`currency` |
+| GET | `/cost/invoices` | RFC-042 发票视图，按币种 / provider / operation 分组 |
 | GET | `/api/v1/dashboard/*` | 基于 Analytics Read Model 的 RFC-028 Dashboard API |
 | GET | `/traces?limit=N` | 可视化控制台用的近期决策 trace |
 | GET | `/system/status` | 聚合的运行时健康度（doctor 风格） |
@@ -358,6 +390,13 @@ return `404` and are absent from `docs/openapi.yaml`).
 | GET | `/deletions` | 删除审计轨迹（RFC-087） |
 | POST | `/memory/lifecycle` | 报告（或执行）记忆生命周期动作（RFC-070） |
 | GET | `/sources` | 联邦来源目录，含可靠性与延迟（RFC-063） |
+| POST | `/sources/discover` | 扫描工作区语料发现发布方主机（RFC-050） |
+| GET | `/sources/discoveries` | 发现提案；可按 `status` 过滤 |
+| POST | `/sources/discoveries/:host/register` | 把主机晋升为联邦来源 |
+| POST | `/sources/discoveries/:host/dismiss` | 丢弃发现提案 |
+| GET | `/jobs` | 持久后台作业，最新优先（RFC-054） |
+| POST | `/jobs` | 入队持久作业（`kind`、`payload`、`run_after`） |
+| GET | `/jobs/:id` | 单个作业的尝试次数与最后错误 |
 | GET | `/publishers` | 按人工判定结果计算的发布方级信任（RFC-032） |
 | GET | `/health` | 状态 + 索引一致性 |
 | GET | `/metrics` | Prometheus text exposition 0.0.4（鉴权方式与其他端点相同） |
@@ -366,6 +405,23 @@ return `404` and are absent from `docs/openapi.yaml`).
 不使用 catch-all 路由；每次改动路由都会跑 Axum 路由冲突扫描。`server.cors_origin`
 开启 OPTIONS 预检与 CORS 头，以便浏览器直连；随附的 Next.js 控制台改用服务端代理
 （见 [`docs/ui.md`](../ui.md)）。`POST /search` 接受可选的 `request_id` 幂等键。
+
+## 流式、作业与来源发现
+
+`POST /search/stream` 接受与 `/search` 完全相同的请求体，输出 Server-Sent
+Events：`start`、每条证据一个 `result`（带 `index`）、`quality`、`final`
+（完整 SearchResponse）与 `done`。当前管线在发送第一个事件前已经算完质量门控
+响应，因此这是逐结果投递，不是阶段级或 token 流式。
+
+`POST /fetch/batch` 最多接受 200 个 URL，并保证每个输入索引恰好出现一次
+（`fetched`、`failed`、`duplicate`、`invalid_url`、`queue_full`、
+`not_attempted` 或 `deadline_exceeded`）。robots 与按主机 Crawl-delay 由
+`FetchFrontier` 执行，失败彼此隔离。
+
+`/jobs` 是 RFC-054 的持久调度器：可入队 `reindex_document` 或 `fetch_batch`，
+可指定 `run_after`，并检查 `state`、`attempts` 与 `last_error`。
+`/sources/discover` 只扫描工作区自己的文档语料；晋升会注册一个按主机限制的
+联邦发布方来源，绝不放宽调用方的域名策略。
 
 ## Dashboard API（RFC-028）
 

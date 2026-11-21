@@ -84,7 +84,13 @@ therefore a checklist, not a ceremony:
 3. **SDKs** — the clients mirror `docs/openapi.yaml` by hand. Every new path
    needs a typed method in both (`sdk/typescript/src/client.ts`,
    `sdk/python/searchos/client.py`), otherwise the SDK is lying about the
-   contract.
+   contract. Run the automated parity gate before tagging:
+
+   ```text
+   python3 scripts/check_sdk_parity.py docs/openapi.yaml \
+     sdk/typescript/src/client.ts sdk/python/searchos/client.py
+   ```
+
 4. **Gates** — all of these must be green before tagging:
 
    ```text
@@ -95,6 +101,8 @@ therefore a checklist, not a ceremony:
      bash ~/.agents/skills/axum-route-conflict/scripts/scan-routes.sh
    cd sdk/typescript && npm ci && npm run typecheck && npm run build
    python3 -m compileall -q sdk/python
+   python3 scripts/check_sdk_parity.py docs/openapi.yaml \
+     sdk/typescript/src/client.ts sdk/python/searchos/client.py
    ```
 
 5. **Tag** — `git tag v<x.y.z>` and push. The workflow builds the binary with
@@ -208,7 +216,14 @@ workspace 的 `version` 一致。因此发版是一份清单，而不是仪式�
    标题下。发布正文就是该节。
 3. **SDK** —— 客户端是手工镜像 `docs/openapi.yaml` 的。新增路径必须在两个客户端里
    各有一个带类型的方法（`sdk/typescript/src/client.ts`、
-   `sdk/python/searchos/client.py`），否则 SDK 就在对契约撒谎。
+   `sdk/python/searchos/client.py`），否则 SDK 就在对契约撒谎。打 tag 前运行自动
+   契约对齐门禁：
+
+   ```text
+   python3 scripts/check_sdk_parity.py docs/openapi.yaml \
+     sdk/typescript/src/client.ts sdk/python/searchos/client.py
+   ```
+
 4. **门禁** —— 打 tag 前下列全部必须为绿：
 
    ```text
@@ -219,6 +234,8 @@ workspace 的 `version` 一致。因此发版是一份清单，而不是仪式�
      bash ~/.agents/skills/axum-route-conflict/scripts/scan-routes.sh
    cd sdk/typescript && npm ci && npm run typecheck && npm run build
    python3 -m compileall -q sdk/python
+   python3 scripts/check_sdk_parity.py docs/openapi.yaml \
+     sdk/typescript/src/client.ts sdk/python/searchos/client.py
    ```
 
 5. **打 tag** —— `git tag v<x.y.z>` 并推送。工作流会构建带 SHA-256 校验和的二进制、

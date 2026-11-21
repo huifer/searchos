@@ -3572,8 +3572,8 @@ async fn cost_invoices(
 #[derive(Debug, serde::Deserialize)]
 pub struct ReconcileDto {
     pub cost_event_id: String,
-    /// Actual billed amount in major units (e.g. 0.005 USD).
-    pub actual_cost: f64,
+    /// Actual billed amount in integer micros, matching the append-only ledger.
+    pub actual_cost_micros: i64,
     #[serde(default)]
     pub source: Option<String>,
     #[serde(default)]
@@ -3586,26 +3586,30 @@ async fn cost_reconcile(
     Json(dto): Json<ReconcileDto>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     state.authorize(&headers)?;
-    if dto.actual_cost < 0.0 {
+    if dto.actual_cost_micros < 0 {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
             "VALIDATION_FAILED",
-            "actual_cost must be >= 0",
+            "actual_cost_micros must be >= 0",
         ));
     }
-    let micros = (dto.actual_cost * 1_000_000.0).round() as i64;
     let currency = dto.currency.unwrap_or_else(|| "USD".into());
     let source = dto.source.unwrap_or_else(|| "provider_billing".into());
     state
         .runtime
         .application
         .cost_service
-        .reconcile(&dto.cost_event_id, micros, &source, &currency)
+        .reconcile(
+            &dto.cost_event_id,
+            dto.actual_cost_micros,
+            &source,
+            &currency,
+        )
         .await
         .map_err(|e| ApiError::from_domain(&e))?;
     Ok(Json(serde_json::json!({
         "reconciled": dto.cost_event_id,
-        "actual_cost_micros": micros,
+        "actual_cost_micros": dto.actual_cost_micros,
         "source": source,
         "currency": currency,
     })))
@@ -4590,6 +4594,73 @@ mod tests {
         assert_eq!(inv["total_actual_micros"], 6_000);
         assert_eq!(inv["fully_reconciled"], false);
         assert_eq!(inv["lines"][0]["provider"], "tavily");
+    }
+
+    #[tokio::test]
+    async fn cost_reconcile_accepts_micros_and_updates_the_invoice() {
+        use searchos_domain::cost::{CostEvent, CostOperation};
+        let (st, _d) = state().await;
+        let task = searchos_domain::ids::TaskId::generate();
+        let ws = searchos_domain::ids::WorkspaceId::new("default");
+        searchos_storage_sqlite::repos::TaskRepo::new(&st.runtime.sqlite)
+            .insert(
+                &task,
+                &ws,
+                None,
+                "q",
+                "q",
+                "fp",
+                "general",
+                "1.0.0",
+                "local_first",
+                &searchos_domain::ids::TraceId::generate(),
+            )
+            .unwrap();
+        let event = CostEvent {
+            id: searchos_domain::ids::CostEventId::generate(),
+            task_id: task,
+            workspace_id: ws,
+            agent_id: None,
+            operation: CostOperation::WebSearch,
+            provider_id: Some("tavily".into()),
+            input_units: 1,
+            output_units: 0,
+            estimated_cost: searchos_domain::cost::Money::parse("0.005", "USD").unwrap(),
+            actual_cost: None,
+            duration_ms: 5,
+            occurred_at: chrono::Utc::now(),
+            trace_id: None,
+            shared: false,
+            pricing_model_version: "1".into(),
+            status: Default::default(),
+            error_code: None,
+        };
+        searchos_storage_sqlite::repos::CostRepo::new(&st.runtime.sqlite)
+            .append(&event)
+            .unwrap();
+
+        let app = router(AppState::new(Arc::clone(&st.runtime)));
+        let (status, body) = call_post(
+            app,
+            "/cost/reconcile",
+            serde_json::json!({
+                "cost_event_id": event.id.as_str(),
+                "actual_cost_micros": 6_000,
+                "source": "provider_billing",
+                "currency": "USD"
+            }),
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["actual_cost_micros"], 6_000);
+
+        let body = call(
+            router(AppState::new(Arc::clone(&st.runtime))),
+            "/cost/invoices",
+        )
+        .await;
+        assert_eq!(body["invoices"][0]["total_actual_micros"], 6_000);
+        assert_eq!(body["invoices"][0]["fully_reconciled"], true);
     }
 
     #[tokio::test]

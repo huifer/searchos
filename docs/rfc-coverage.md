@@ -3,9 +3,9 @@
 > Single authoritative status table for the frozen RFC catalogue.
 > 一个权威的 RFC 覆盖状态表。
 
-**As of:** 2026-11-20 working tree (commit 64b05ae + RFC-082 wiring) · **Workspace version:** 0.2.0 · **Verified v0.2.0 release suite:** 865 tests / 0 failed
+**As of:** 2026-11-21 release-closure working tree · **Workspace version:** 0.3.0 · **Latest tagged release:** v0.2.0 (865 tests / 0 failed)
 
-This tree adds RFC-060, the RFC-032 publisher trust catalog, and the RFC-042/050/051/054/056/081–083 completion slices on top of that release; the touched crates' named tests, clippy, fmt, the route scan and the OpenAPI parity gate are locally green. It is not yet a tagged release; the full workspace suite was not re-run end-to-end locally (time budget) and CI is the authority.
+This tree closes the remaining RFC-042/050/051/054/056/081–083 slices, adds the source-discovery CLI, and makes both SDKs cover all 95 OpenAPI operations. The named HTTP/CLI/e2e/SDK/parity gates are locally green; a final uninterrupted full-workspace run and the v0.3.0 CI receipt remain the release gate.
 
 This table answers one question per RFC: *is the capability in the repository
 today, and if so, how far?* It supersedes the scattered status notes in
@@ -76,7 +76,7 @@ per turn #81.
 | 058 | Entity Resolution | **Delivered (v1)** | entity alias registry, `POST /entities/resolve`, `entity_id` on results. |
 | 059 | Contradiction Detection | **Delivered (v1)** | conflicting versions are retained and force `QualityStatus::Conflict`; `MergeReport.conflict_links` records older→newer, and `build_evidence_graph` emits `EvidenceRelation::Contradicts` edges (both raw and canonical endpoints) instead of only an opaque warning string. Response `evidence_graph` + TypeScript SDK carry the new relation. Gap: contradiction detection is still the deterministic text-difference heuristic, not claim-level semantic analysis. |
 | 060 | Agent Registry | **Delivered (v1)** | Declared, workspace-scoped agent identities over additive migration v19: normalized slug ids (trim + lowercase, `[a-z0-9._-]`, ≤64 chars), display name, description, enabled lifecycle flag and advisory request budget. Storage `AgentRepo` upserts while preserving `created_at`, lists by workspace, enables/disables; HTTP `GET/POST /agents`, `GET /agents/:id`, `POST /agents/:id/enabled`; CLI `agent list|register|show|enable|disable`; OpenAPI + both SDKs. Disabled agents keep analytics/trace history. Gap: enforcement of the quota flag and of `enabled` at search admission is not wired (the rate limiter remains the executor). |
-| 061 | SDK | **Delivered** | TypeScript + Python clients covering every OpenAPI path, refreshed to 0.2.0. |
+| 061 | SDK | **Delivered** | TypeScript + Python clients cover all 95 OpenAPI operations; `scripts/check_sdk_parity.py` fails CI on contract drift. |
 | 062 | Federated Search Architecture | **Delivered (v1)** | `SearchSource` kernel, planner with auditable rejection chain, executor with per-source deadline/isolation, `execute` mode with service-side billing, `GET /sources`. |
 | 063 | Source Registry | **Delivered (v1)** | scoped registry, precedence resolution, live reliability + latency profiles, circuit breaker. |
 | 064 | Unified Resource Model | **Delivered (v1)** | `SearchResource` with 11 resource types, stable identity, fail-closed `PermissionRef`, egress default off. |
@@ -147,7 +147,7 @@ per turn #81.
 | 058 | 实体消解 | **Delivered (v1)** | 实体别名注册表、`POST /entities/resolve`、结果上的 `entity_id`。 |
 | 059 | 矛盾检测 | **Delivered (v1)** | 冲突版本被保留并强制 `QualityStatus::Conflict`；`MergeReport.conflict_links` 记录 older→newer，`build_evidence_graph` 输出 `EvidenceRelation::Contradicts` 边（raw + canonical 端点），不再只是提示字符串。响应 `evidence_graph` 与 TypeScript SDK 已携带新关系。差距：矛盾检测仍是确定性文本差异启发式，不是声明级语义分析。 |
 | 060 | Agent 注册表 | **Delivered (v1)** | 基于增量 migration v19 的、按工作区声明的 agent 身份：规范化 slug（trim + 小写、`[a-z0-9._-]`、≤64 字符）、显示名、描述、enabled 生命周期标记与建议性请求配额。存储层 `AgentRepo` upsert 时保留 `created_at`，支持按工作区列出、启用/禁用；HTTP `GET/POST /agents`、`GET /agents/:id`、`POST /agents/:id/enabled`；CLI `agent list|register|show|enable|disable`；OpenAPI 与两个 SDK 同步。禁用 agent 保留分析与 trace 历史。差距：配额与 `enabled` 尚未接到搜索准入强制（限流器仍是执行者）。 |
-| 061 | SDK | **Delivered** | TypeScript + Python 客户端覆盖全部 OpenAPI 路径，已刷新到 0.2.0。 |
+| 061 | SDK | **Delivered** | TypeScript + Python 客户端覆盖全部 95 个 OpenAPI operation；`scripts/check_sdk_parity.py` 在契约漂移时阻断 CI。 |
 | 062 | 联邦检索架构 | **Delivered (v1)** | `SearchSource` 内核、带审计拒绝链的 planner、带按来源截止时间/隔离的 executor、`execute` 模式在服务端计费、`GET /sources`。 |
 | 063 | 来源注册表 | **Delivered (v1)** | 作用域注册表、优先级解析、实时可靠性 + 延迟画像、熔断器。 |
 | 064 | 统一资源模型 | **Delivered (v1)** | `SearchResource` 含 11 种资源类型、稳定身份、失败即拒绝的 `PermissionRef`、默认关闭的外发。 |

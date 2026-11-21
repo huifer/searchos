@@ -150,14 +150,16 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: sdk/typescript/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: SDK contract parity
+        run: python3 scripts/check_sdk_parity.py docs/openapi.yaml sdk/typescript/src/client.ts sdk/python/searchos/client.py
       - name: TypeScript SDK build
         working-directory: sdk/typescript
         run: |
           npm ci
           npm run build
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
       - name: Python SDK syntax + import check
         run: |
           python -m compileall -q sdk/python

@@ -269,6 +269,122 @@ export interface IngestJob {
   items?: IngestJobItem[];
 }
 
+/** RFC-051: one input URL in a bounded batch fetch. */
+export type FetchBatchOutcome =
+  | "fetched"
+  | "failed"
+  | "duplicate"
+  | "invalid_url"
+  | "queue_full"
+  | "not_attempted"
+  | "deadline_exceeded";
+
+export interface FetchBatchItem {
+  input_index: number;
+  url: string;
+  outcome: FetchBatchOutcome;
+  ok: boolean;
+  document_id?: string | null;
+  title?: string | null;
+  error?: string | null;
+}
+
+export interface FetchBatchRequest {
+  urls: string[];
+  workspace_id?: string;
+  persist?: boolean;
+  max_urls?: number;
+  max_per_host?: number;
+  default_interval_ms?: number;
+  max_total_ms?: number;
+}
+
+export interface FetchBatchReport {
+  items: FetchBatchItem[];
+  queued_remaining: number;
+  deadline_exceeded: boolean;
+}
+
+/** RFC-056: one typed SSE frame from `POST /search/stream`. */
+export type SearchStreamEventType = "start" | "result" | "quality" | "final" | "done";
+
+export interface SearchStreamEvent {
+  event: SearchStreamEventType;
+  /** JSON payload; `final.data` has the complete SearchResponse shape. */
+  data: unknown;
+}
+
+export type BackgroundJobState = "pending" | "running" | "succeeded" | "failed";
+
+export interface BackgroundJob {
+  id: string;
+  kind: string;
+  workspace_id: string;
+  payload: Record<string, unknown>;
+  state: BackgroundJobState;
+  attempts: number;
+  max_attempts: number;
+  run_after: string;
+  created_at: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  last_error?: string | null;
+}
+
+export interface EnqueueJobRequest {
+  kind: string;
+  payload?: Record<string, unknown>;
+  workspace_id?: string;
+  max_attempts?: number;
+  run_after?: string;
+}
+
+export interface BillingLine {
+  provider: string;
+  operation: string;
+  events: number;
+  unreconciled_events: number;
+  estimated_micros: number;
+  actual_micros: number;
+  currency: string;
+}
+
+export interface BillingInvoice {
+  currency: string;
+  lines: BillingLine[];
+  total_estimated_micros: number;
+  total_actual_micros: number;
+  events: number;
+  unreconciled_events: number;
+  fully_reconciled: boolean;
+  generated_at: string;
+}
+
+export interface CostInvoicesResponse {
+  invoices: BillingInvoice[];
+  note?: string;
+}
+
+export type SourceDiscoveryStatus = "discovered" | "registered" | "dismissed";
+
+export interface SourceDiscovery {
+  host: string;
+  first_seen_at: string;
+  last_seen_at: string;
+  evidence_count: number;
+  sample_url: string;
+  status: SourceDiscoveryStatus;
+  registered_source_id?: string | null;
+}
+
+export interface SourceDiscoveryReport {
+  scanned_documents?: number;
+  discovered?: number;
+  updated?: number;
+  discoveries?: SourceDiscovery[];
+  [key: string]: unknown;
+}
+
 export type DocumentStatus = "discovered" | "fetched" | "normalized" | "indexed" | "deleted";
 
 export interface DocumentSummary {
@@ -475,6 +591,26 @@ export class SearchOSClient {
     return this.post("/search", request) as Promise<SearchResponse>;
   }
 
+  /** RFC-056: consume the typed SSE stream; `final` carries the full response. */
+  async searchStream(
+    request: SearchRequest,
+    onEvent?: (event: SearchStreamEvent) => void,
+  ): Promise<SearchStreamEvent[]> {
+    const raw = (await this.request("POST", "/search/stream", {
+      body: JSON.stringify(request),
+      headers: { "content-type": "application/json" },
+      parse: "text",
+    })) as string;
+    const events = parseSse(raw);
+    if (onEvent) for (const event of events) onEvent(event);
+    return events;
+  }
+
+  /** RFC-051: fetch a bounded batch through the cross-host crawl frontier. */
+  fetchBatch(request: FetchBatchRequest): Promise<FetchBatchReport> {
+    return this.post("/fetch/batch", request) as Promise<FetchBatchReport>;
+  }
+
   // -- Knowledge ------------------------------------------------------------
 
   extract(request: ExtractRequest): Promise<Record<string, unknown>> {
@@ -512,6 +648,11 @@ export class SearchOSClient {
     query: { workspace_id?: string; source_type?: string; status?: string; limit?: number } = {},
   ): Promise<{ documents: DocumentSummary[] }> {
     return this.get("/documents", query) as Promise<{ documents: DocumentSummary[] }>;
+  }
+
+  /** Fetch and persist a URL as a document. */
+  createDocument(request: { url: string; workspace_id?: string }): Promise<Record<string, unknown>> {
+    return this.post("/documents", request);
   }
 
   getDocument(id: string): Promise<DocumentDetail> {
@@ -575,6 +716,11 @@ export class SearchOSClient {
     return this.get("/cost/reservations") as Promise<{ reservations: Record<string, unknown>[] }>;
   }
 
+  /** RFC-042: invoice view over the append-only ledger, grouped by currency. */
+  costInvoices(query: { workspace_id?: string; from?: string; to?: string } = {}): Promise<CostInvoicesResponse> {
+    return this.get("/cost/invoices", query) as Promise<CostInvoicesResponse>;
+  }
+
   reconcileCost(request: {
     cost_event_id: string;
     actual_cost_micros: number;
@@ -608,6 +754,22 @@ export class SearchOSClient {
 
   systemStatus(): Promise<SystemStatus> {
     return this.get("/system/status") as Promise<SystemStatus>;
+  }
+
+  // -- Durable background jobs (RFC-054) -------------------------------------
+
+  listJobs(
+    query: { workspace_id?: string; state?: BackgroundJobState; limit?: number } = {},
+  ): Promise<{ jobs: BackgroundJob[] }> {
+    return this.get("/jobs", query) as Promise<{ jobs: BackgroundJob[] }>;
+  }
+
+  enqueueJob(request: EnqueueJobRequest): Promise<BackgroundJob> {
+    return this.post("/jobs", request) as Promise<BackgroundJob>;
+  }
+
+  getJob(id: string): Promise<BackgroundJob> {
+    return this.get(`/jobs/${encodeURIComponent(id)}`) as Promise<BackgroundJob>;
   }
 
   listProfiles(): Promise<{ profiles: Record<string, unknown>[] }> {
@@ -923,6 +1085,38 @@ export class SearchOSClient {
     return this.get("/sources");
   }
 
+  // -- Source discovery (RFC-050) --------------------------------------------
+
+  discoverSources(workspaceId?: string): Promise<SourceDiscoveryReport> {
+    return this.post(
+      "/sources/discover",
+      workspaceId ? { workspace_id: workspaceId } : {},
+    ) as Promise<SourceDiscoveryReport>;
+  }
+
+  listSourceDiscoveries(
+    status?: SourceDiscoveryStatus,
+    limit = 100,
+  ): Promise<{ discoveries: SourceDiscovery[] }> {
+    return this.get("/sources/discoveries", { status, limit }) as Promise<{
+      discoveries: SourceDiscovery[];
+    }>;
+  }
+
+  registerDiscoveredSource(host: string, workspaceId?: string): Promise<SourceDiscoveryReport> {
+    return this.post(
+      `/sources/discoveries/${encodeURIComponent(host)}/register`,
+      workspaceId ? { workspace_id: workspaceId } : {},
+    ) as Promise<SourceDiscoveryReport>;
+  }
+
+  dismissDiscoveredSource(host: string): Promise<{ host: string; dismissed: boolean }> {
+    return this.post(
+      `/sources/discoveries/${encodeURIComponent(host)}/dismiss`,
+      {},
+    ) as Promise<{ host: string; dismissed: boolean }>;
+  }
+
   // -- Transport ------------------------------------------------------------
 
 
@@ -990,6 +1184,26 @@ export class SearchOSClient {
   private delete<T>(path: string): Promise<T> {
     return this.request<T>("DELETE", path, {});
   }
+}
+
+function parseSse(raw: string): SearchStreamEvent[] {
+  const events: SearchStreamEvent[] = [];
+  for (const block of raw.split(/\r?\n\r?\n/)) {
+    let event: SearchStreamEventType = "done";
+    const data: string[] = [];
+    for (const line of block.split(/\r?\n/)) {
+      if (line.startsWith("event:")) event = line.slice(6).trim() as SearchStreamEventType;
+      else if (line.startsWith("data:")) data.push(line.slice(5).trimStart());
+    }
+    if (data.length === 0) continue;
+    const payload = data.join("\n");
+    try {
+      events.push({ event, data: JSON.parse(payload) });
+    } catch {
+      events.push({ event, data: payload });
+    }
+  }
+  return events;
 }
 
 export default SearchOSClient;

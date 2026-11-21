@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/status-v0.2.0%20implemented-6f7277" alt="status" />
+  <img src="https://img.shields.io/badge/status-v0.3.0--ready-6f7277" alt="status" />
   <img src="https://img.shields.io/badge/rust-1.94%2B-orange?logo=rust" alt="rust" />
   <img src="https://img.shields.io/badge/next.js-16-black?logo=nextdotjs" alt="nextjs" />
   <img src="https://img.shields.io/badge/license-MIT-36f555" alt="license" />
@@ -182,8 +182,8 @@ grep '^version' Cargo.toml
 # 2. Add a section to CHANGELOG.md for the new version
 
 # 3. Tag and push — the release workflow takes over
-git tag v0.2.0
-git push origin v0.2.0
+git tag v0.3.0
+git push origin v0.3.0
 ```
 
 `.github/workflows/release.yml` then runs the same gates as CI, builds the
@@ -258,7 +258,7 @@ CI runs fmt / clippy / test plus the console typecheck + build on every push and
 
 The phased plan below is **historical**: every Wave 0–4 item in
 [`docs/feature-roadmap.md`](docs/feature-roadmap.md) is closed and verified, and
-this repository is released as **v0.2.0**. The tables in
+the latest tagged release is **v0.2.0**; the current tree targets **v0.3.0** and its release is pending. The tables in
 [`docs/roadmap.md`](docs/roadmap.md) are retained for rationale, not as a status
 list; the release notes are in [`CHANGELOG.md`](CHANGELOG.md).
 
@@ -271,7 +271,7 @@ list; the release notes are in [`CHANGELOG.md`](CHANGELOG.md).
 | P4 | Extension system |
 | P5 | AI search intelligence |
 | P6 | Agent integration (MCP, TypeScript / Python SDK) |
-| P7 | Production & release (shipped as v0.2.0) |
+| P7 | Production & release (v0.2.0 shipped; v0.3.0 release pending) |
 
 ## Documentation
 

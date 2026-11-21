@@ -238,6 +238,11 @@ enum Command {
         #[command(subcommand)]
         cmd: PublisherCmd,
     },
+    /// Automatic source discovery and promotion (RFC-050)
+    Source {
+        #[command(subcommand)]
+        cmd: SourceCmd,
+    },
     /// Deterministic structured extraction (RFC-049)
     Structures {
         /// Text to parse (stdin when neither text nor file is given)
@@ -603,6 +608,38 @@ enum PublisherCmd {
         /// Workspace scope
         #[arg(long, default_value = "default")]
         workspace: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum SourceCmd {
+    /// Scan the workspace corpus for publisher hosts
+    Discover {
+        /// Workspace scope (default: all)
+        #[arg(long)]
+        workspace: Option<String>,
+    },
+    /// List discovery proposals
+    List {
+        /// Filter by status: discovered | registered | dismissed
+        #[arg(long)]
+        status: Option<String>,
+        /// Maximum rows to list
+        #[arg(long, default_value = "100")]
+        limit: u32,
+    },
+    /// Promote a discovered host into a federated source
+    Register {
+        /// Bare publisher host (e.g. example.com)
+        host: String,
+        /// Workspace scope (default: global)
+        #[arg(long)]
+        workspace: Option<String>,
+    },
+    /// Dismiss a discovery proposal
+    Dismiss {
+        /// Bare publisher host
+        host: String,
     },
 }
 
@@ -1942,6 +1979,34 @@ async fn run(cli: Cli) -> Result<(), SearchOsError> {
                 Ok(())
             }
         },
+        Command::Source { cmd } => {
+            let rt = runtime(cli_ref).await?;
+            match cmd {
+                SourceCmd::Discover { workspace } => {
+                    let report = rt.discover_sources(workspace.as_deref()).await?;
+                    print(&report, format);
+                }
+                SourceCmd::List { status, limit } => {
+                    let rows = repos::SourceDiscoveryRepo::new(&rt.sqlite)
+                        .list(status.as_deref(), *limit)?;
+                    print(&serde_json::json!({ "discoveries": rows }), format);
+                }
+                SourceCmd::Register { host, workspace } => {
+                    let report = rt
+                        .register_discovered_source(host, workspace.as_deref())
+                        .await?;
+                    print(&report, format);
+                }
+                SourceCmd::Dismiss { host } => {
+                    repos::SourceDiscoveryRepo::new(&rt.sqlite).dismiss(host)?;
+                    print(
+                        &serde_json::json!({ "host": host, "dismissed": true }),
+                        format,
+                    );
+                }
+            }
+            Ok(())
+        }
         Command::Watch { cmd } => {
             let cli_ref = &cli;
             let rt = runtime(cli_ref).await?;

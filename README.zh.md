@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/状态-v0.2.0%20已实现-6f7277" alt="status" />
+  <img src="https://img.shields.io/badge/状态-v0.3.0--ready-6f7277" alt="status" />
   <img src="https://img.shields.io/badge/rust-1.94%2B-orange?logo=rust" alt="rust" />
   <img src="https://img.shields.io/badge/next.js-16-black?logo=nextdotjs" alt="nextjs" />
   <img src="https://img.shields.io/badge/license-MIT-36f555" alt="license" />
@@ -171,8 +171,8 @@ grep '^version' Cargo.toml
 # 2. 在 CHANGELOG.md 中为新版本添加小节
 
 # 3. 打 tag 并推送——release 工作流会接管
-git tag v0.2.0
-git push origin v0.2.0
+git tag v0.3.0
+git push origin v0.3.0
 ```
 
 `.github/workflows/release.yml` 会先跑与 CI 相同的门禁，再构建带 SHA-256
@@ -243,7 +243,7 @@ CI 在每次 push / PR 时运行 fmt / clippy / test 以及控制台 typecheck +
 ## 开发路线图
 
 以下分阶段计划属于**历史资料**：[`docs/feature-roadmap.md`](docs/feature-roadmap.md)
-中 Wave 0–4 的全部条目均已关闭并验证，当前仓库已发布为 **v0.2.0**。
+中 Wave 0–4 的全部条目均已关闭并验证，最新已发布版本为 **v0.2.0**；当前代码树目标为 **v0.3.0**，发布尚未打 tag。
 [`docs/roadmap.md`](docs/roadmap.md) 的表格仅保留规划依据，不作为当前状态；
 发布记录见 [`CHANGELOG.md`](CHANGELOG.md)。
 
@@ -256,7 +256,7 @@ CI 在每次 push / PR 时运行 fmt / clippy / test 以及控制台 typecheck +
 | P4 | 扩展系统 |
 | P5 | AI 搜索智能 |
 | P6 | Agent 集成（MCP、TypeScript / Python SDK） |
-| P7 | 生产发布（已发布为 v0.2.0） |
+| P7 | 生产发布（v0.2.0 已发布；v0.3.0 发布待完成） |
 
 ## 文档
 

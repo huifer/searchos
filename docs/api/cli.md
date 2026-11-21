@@ -77,6 +77,10 @@ searchos entity resolve "free text to resolve"
 searchos research run "deep question" [--workspace default] [--rounds 3] [--max-cost 0.05]
 searchos research show <session-id>
 searchos publisher list [--workspace default]
+searchos source discover [--workspace <id>]
+searchos source list [--status discovered|registered|dismissed] [--limit 100]
+searchos source register <host> [--workspace <id>]
+searchos source dismiss <host>
 ```
 
 `policy` is versioned and append-only: a rollback moves the LIVE pointer
@@ -96,7 +100,7 @@ full search recorded as a turn of the research session.
 searchos provider list|check-key <tavily|brave>|health   # add = env key check, never writes config
 searchos profile list
 searchos profile inspect <id>                 # versioned SearchProfile
-searchos cost summary|agents|providers|operations|savings|reservations
+searchos cost summary|agents|providers|operations|savings|reservations|invoices
 searchos cost reconcile --event <cost-event-id> --actual 0.005 [--source provider_billing]
 searchos cost export [--out file]
 searchos trace show <trace-id>               # includes structured stage trace
@@ -105,6 +109,18 @@ searchos trace show <trace-id>               # includes structured stage trace
 `cost savings` / `stats savings` expose `SavingsRate`, `CPQPA`, external
 avoidance and the four reuse cost views. `cost reconcile` imports real
 provider billing without ever rewriting the original estimate.
+
+## Durable jobs (RFC-054)
+
+```text
+searchos jobs list [--workspace <id>] [--state pending|running|succeeded|failed] [--limit 50]
+searchos jobs enqueue --kind reindex_document|fetch_batch --payload '<json>' [--run-after <rfc3339>]
+searchos jobs show <job-id>
+```
+
+Jobs are claimed with a lease, retried with exponential backoff for retryable
+errors, and become terminal immediately for non-retryable errors. The gateway
+runs the same worker loop and drains it on shutdown.
 
 ## Index / stats / gateway / config
 
@@ -233,8 +249,19 @@ searchos collection documents <collection-id>
 searchos entity list
 searchos entity register "Canonical Name" [--alias "Alias"] [--source operator|heuristic]
 searchos entity resolve "待解析的自由文本"
+searchos agent list [--workspace <id>]
+searchos agent register <slug> [--workspace default] [--name "..."]
+                          [--description "..."] [--max-requests-per-minute 30]
+searchos agent show <slug> [--workspace default]
+searchos agent enable <slug> [--workspace default]
+searchos agent disable <slug> [--workspace default]
 searchos research run "深度问题" [--workspace default] [--rounds 3] [--max-cost 0.05]
 searchos research show <session-id>
+searchos publisher list [--workspace default]
+searchos source discover [--workspace <id>]
+searchos source list [--status discovered|registered|dismissed] [--limit 100]
+searchos source register <host> [--workspace <id>]
+searchos source dismiss <host>
 ```
 
 `policy` 只追加版本：回滚只是把生效指针指回旧版本，历史永不删除。`collection`
@@ -248,7 +275,7 @@ searchos research show <session-id>
 searchos provider list|check-key <tavily|brave>|health   # add = 检查 env key，不写配置
 searchos profile list
 searchos profile inspect <id>                 # 版本化的 SearchProfile
-searchos cost summary|agents|providers|operations|savings|reservations
+searchos cost summary|agents|providers|operations|savings|reservations|invoices
 searchos cost reconcile --event <cost-event-id> --actual 0.005 [--source provider_billing]
 searchos cost export [--out file]
 searchos trace show <trace-id>               # 含结构化 stage trace
@@ -256,6 +283,17 @@ searchos trace show <trace-id>               # 含结构化 stage trace
 
 `cost savings` / `stats savings` 暴露 `SavingsRate`、`CPQPA`、外部调用规避量和四种
 复用成本视图。`cost reconcile` 导入真实 provider 账单，且永不重写原始估算值。
+
+## 持久作业（RFC-054）
+
+```text
+searchos jobs list [--workspace <id>] [--state pending|running|succeeded|failed] [--limit 50]
+searchos jobs enqueue --kind reindex_document|fetch_batch --payload '<json>' [--run-after <rfc3339>]
+searchos jobs show <job-id>
+```
+
+作业通过租约领取；可重试错误按指数退避重试，不可重试错误首次即终态。
+网关运行同一套 worker 循环，并在停机时排水。
 
 ## 索引 / 统计 / 网关 / 配置
 

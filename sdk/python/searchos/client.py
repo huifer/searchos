@@ -74,6 +74,49 @@ class SearchOSClient:
                 body[key] = value
         return self._post("/search", body)
 
+    def search_stream(
+        self,
+        request: dict[str, Any],
+        on_event: Any = None,
+    ) -> list[dict[str, Any]]:
+        """RFC-056: consume the typed SSE stream; the final event carries the full response."""
+        text = self._request(
+            "POST",
+            "/search/stream",
+            body=json.dumps(request).encode(),
+            content_type="application/json",
+            parse="text",
+        )
+        events = _parse_sse(text)
+        if on_event is not None:
+            for event in events:
+                on_event(event)
+        return events
+
+    def fetch_batch(
+        self,
+        urls: list[str],
+        *,
+        workspace_id: str | None = None,
+        persist: bool = True,
+        max_urls: int = 20,
+        max_per_host: int = 64,
+        default_interval_ms: int = 250,
+        max_total_ms: int = 60_000,
+    ) -> dict[str, Any]:
+        """RFC-051: bounded batch fetch through the cross-host crawl frontier."""
+        body: dict[str, Any] = {
+            "urls": urls,
+            "persist": persist,
+            "max_urls": max_urls,
+            "max_per_host": max_per_host,
+            "default_interval_ms": default_interval_ms,
+            "max_total_ms": max_total_ms,
+        }
+        if workspace_id is not None:
+            body["workspace_id"] = workspace_id
+        return self._post("/fetch/batch", body)
+
     # -- Knowledge ------------------------------------------------------------
 
     def extract(self, url: str, *, workspace_id: str | None = None, persist: bool = True) -> dict[str, Any]:
@@ -167,6 +210,15 @@ class SearchOSClient:
                 query[key] = value
         return self._get("/documents", query).get("documents", [])
 
+    def create_document(
+        self, url: str, *, workspace_id: str | None = None
+    ) -> dict[str, Any]:
+        """Fetch and persist a URL as a document."""
+        body: dict[str, Any] = {"url": url}
+        if workspace_id is not None:
+            body["workspace_id"] = workspace_id
+        return self._post("/documents", body)
+
     def get_document(self, document_id: str) -> dict[str, Any]:
         return self._get(f"/documents/{document_id}")
 
@@ -209,6 +261,20 @@ class SearchOSClient:
     def cost_reservations(self) -> list[dict[str, Any]]:
         return self._get("/cost/reservations").get("reservations", [])
 
+    def cost_invoices(
+        self,
+        *,
+        workspace_id: str | None = None,
+        start: str | None = None,
+        end: str | None = None,
+    ) -> dict[str, Any]:
+        """RFC-042 invoice view over the append-only ledger, grouped by currency."""
+        query: dict[str, Any] = {}
+        for key, value in (("workspace_id", workspace_id), ("from", start), ("to", end)):
+            if value is not None:
+                query[key] = value
+        return self._get("/cost/invoices", query)
+
     def reconcile_cost(
         self, cost_event_id: str, actual_cost_micros: int, source: str, currency: str = "USD"
     ) -> dict[str, Any]:
@@ -238,6 +304,44 @@ class SearchOSClient:
 
     def list_traces(self, limit: int = 20) -> list[dict[str, Any]]:
         return self._get("/traces", {"limit": limit}).get("traces", [])
+
+    # -- Durable background jobs (RFC-054) ------------------------------------
+
+    def list_jobs(
+        self,
+        *,
+        workspace_id: str | None = None,
+        state: str | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        query: dict[str, Any] = {"limit": limit}
+        for key, value in (("workspace_id", workspace_id), ("state", state)):
+            if value is not None:
+                query[key] = value
+        return self._get("/jobs", query).get("jobs", [])
+
+    def enqueue_job(
+        self,
+        kind: str,
+        *,
+        payload: dict[str, Any] | None = None,
+        workspace_id: str | None = None,
+        max_attempts: int = 3,
+        run_after: str | None = None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "kind": kind,
+            "payload": payload or {},
+            "max_attempts": max_attempts,
+        }
+        if workspace_id is not None:
+            body["workspace_id"] = workspace_id
+        if run_after is not None:
+            body["run_after"] = run_after
+        return self._post("/jobs", body)
+
+    def get_job(self, job_id: str) -> dict[str, Any]:
+        return self._get(f"/jobs/{job_id}")
 
     def system_status(self) -> dict[str, Any]:
         return self._get("/system/status")
@@ -471,6 +575,29 @@ class SearchOSClient:
     def sources(self) -> dict[str, Any]:
         return self._get("/sources")
 
+    # -- Source discovery (RFC-050) -------------------------------------------
+
+    def discover_sources(self, workspace_id: str | None = None) -> dict[str, Any]:
+        body = {"workspace_id": workspace_id} if workspace_id else {}
+        return self._post("/sources/discover", body)
+
+    def list_source_discoveries(
+        self, *, status: str | None = None, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        query: dict[str, Any] = {"limit": limit}
+        if status is not None:
+            query["status"] = status
+        return self._get("/sources/discoveries", query).get("discoveries", [])
+
+    def register_discovered_source(
+        self, host: str, workspace_id: str | None = None
+    ) -> dict[str, Any]:
+        body = {"workspace_id": workspace_id} if workspace_id else {}
+        return self._post(f"/sources/discoveries/{host}/register", body)
+
+    def dismiss_discovered_source(self, host: str) -> dict[str, Any]:
+        return self._post(f"/sources/discoveries/{host}/dismiss", {})
+
     # -- Analytics (RFC-026/027/028) ------------------------------------------
 
     # -- Analytics (RFC-026/027/028) ------------------------------------------
@@ -514,29 +641,6 @@ class SearchOSClient:
 
     # -- Transport ------------------------------------------------------------
 
-
-    def _get(self, path: str, query: dict[str, Any] | None = None) -> dict[str, Any]:
-        return self._request("GET", path, query=query)
-
-    def _post(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
-        payload = json.dumps(body).encode()
-        text = self._request("POST", path, body=payload, content_type="application/json")
-        return json.loads(text)
-
-    def _put(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
-        payload = json.dumps(body).encode()
-        text = self._request("PUT", path, body=payload, content_type="application/json")
-        return json.loads(text)
-
-    def _delete(self, path: str) -> None:
-        self._request("DELETE", path)
-
-    def _url(self, path: str) -> str:
-        base = self.base_url.rstrip("/")
-        if self.base_path:
-            base = f"{base}{self.base_path}"
-        return f"{base}{path}"
-
     def _get(self, path: str, query: dict[str, Any] | None = None) -> dict[str, Any]:
         suffix = ""
         if query:
@@ -551,6 +655,21 @@ class SearchOSClient:
             "POST", path, body=json.dumps(body).encode(), content_type="application/json", parse="text"
         )
         return json.loads(text)
+
+    def _put(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
+        text = self._request(
+            "PUT", path, body=json.dumps(body).encode(), content_type="application/json", parse="text"
+        )
+        return json.loads(text)
+
+    def _delete(self, path: str) -> None:
+        self._request("DELETE", path)
+
+    def _url(self, path: str) -> str:
+        base = self.base_url.rstrip("/")
+        if self.base_path:
+            base = f"{base}{self.base_path}"
+        return f"{base}{path}"
 
     def _request(
         self,
@@ -595,6 +714,28 @@ class SearchOSClient:
         if parse == "text":
             return text
         return json.loads(text)
+
+
+def _parse_sse(raw: str) -> list[dict[str, Any]]:
+    """Parse `event:` / `data:` frames from the RFC-056 search stream."""
+    events: list[dict[str, Any]] = []
+    for block in raw.replace("\r\n", "\n").split("\n\n"):
+        event = "done"
+        data: list[str] = []
+        for line in block.split("\n"):
+            if line.startswith("event:"):
+                event = line[6:].strip()
+            elif line.startswith("data:"):
+                data.append(line[5:].lstrip())
+        if not data:
+            continue
+        payload = "\n".join(data)
+        try:
+            parsed: Any = json.loads(payload)
+        except json.JSONDecodeError:
+            parsed = payload
+        events.append({"event": event, "data": parsed})
+    return events
 
 
 __all__ = ["SearchOSClient", "SearchOSError"]

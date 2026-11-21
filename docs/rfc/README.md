@@ -100,7 +100,7 @@ priority, M0–M8 milestones and a 24-section RFC template.
 | RFC-068 | Token Budget Management | Delivered (`searchos-context`) |
 | RFC-069–074 | Agent Memory & Deep Research | Delivered (v1 slices) |
 | RFC-075–080 | Cost, Provider & Benchmark | Delivered (v1 slices) |
-| RFC-081–083 | Extension SDK / Crawler / Isolation | Partial (no external-process plugins) |
+| RFC-081–083 | Extension SDK / Crawler / Isolation | Delivered (v1; opt-in external-process host) |
 | RFC-084–085 | Distributed Runtime / Multi-node | Reject for v1 (frozen *Staged* decision) |
 | RFC-086 | Search Intelligence Evaluation | Delivered (v1) |
 | RFC-087 | Privacy-aware Ingestion & Egress | Delivered (v1 slice) |
@@ -164,6 +164,6 @@ RFC 不允许仅描述功能目标而缺少可验证的接口、数据结构和�
 2. **跨 Agent 知识隔离**：默认 Workspace 隔离，显式授权后才共享，不应该默认全局共享。
 3. **质量评估边界**：SearchOS 验证证据质量，不保证上层 LLM 最终答案绝对正确。
 
-**RFC Suite Version:** 1.0 (+ Annexes 17–30; RFC-001…087 final catalogue) · v0.2.0 released
-**Status:** Delivered engineering baseline. `docs/rfc-coverage.md` is the authoritative per-RFC status: 75 Delivered, 8 Partial, 4 frozen Reject after RFC-060, RFC-039, RFC-032 and the RFC-059 contradiction graph.
-**Next Step:** close the remaining Partial gaps in priority order (042 billing, 050 source discovery, 051 crawl frontier, 054 job scheduling, 056 streaming, 081–083 external-process/sandboxed extensions). Keep the Part 23 acceptance tests and the v0.2.0 gates green on every change; the four Reject RFCs and LLM answer generation stay non-goals.
+**RFC Suite Version:** 1.0 (+ Annexes 17–30; RFC-001…087 final catalogue) · latest release v0.2.0; tree targets v0.3.0
+**Status:** Delivered engineering baseline. `docs/rfc-coverage.md` is the authoritative per-RFC status: 83 Delivered, 0 Partial, 4 frozen Reject. The current tree targets v0.3.0; the latest tagged release remains v0.2.0.
+**Next Step:** finish release closure — run the full gate suite, push the branch so CI covers the latest commits, then tag `v0.3.0` after SDK parity, docs and CHANGELOG are green. The four Reject RFCs and LLM answer generation stay non-goals.
